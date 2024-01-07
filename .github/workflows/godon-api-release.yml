@@ -44,6 +44,9 @@ jobs:
           string: ${{ github.ref }}
           split-by: '-'
 
+      - run: |
+          echo "${{ steps.split.outputs._2}}"
+
       - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@v4
