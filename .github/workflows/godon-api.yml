@@ -23,4 +23,4 @@ jobs:
           sudo cargo install mask --vers 0.11.3
       - name: regenerate api
         run: >
-          pushd api && mask api generate && popd;
+          pushd godon-api && mask api generate && popd;
