@@ -24,4 +24,3 @@ jobs:
       - name: regenerate api
         run: >
           pushd api && mask api generate && popd;
-          chmod 0744 requirements.txt;
