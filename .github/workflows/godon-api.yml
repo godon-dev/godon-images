@@ -20,7 +20,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install cargo
-          sudo cargo install mask --vers 0.11.3
+          sudo cargo install mask --vers 0.11.3 --root /usr/local
       - name: regenerate api
         run: >
           pushd godon-api && mask api generate && popd;
