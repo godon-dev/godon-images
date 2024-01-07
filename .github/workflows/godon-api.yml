@@ -19,8 +19,8 @@ jobs:
       - name: install tooling
         run: |
           sudo apt-get update
-          sudo apt-get install mask
+          sudo apt-get install cargo
+          sudo cargo install mask --vers 0.11.3 --root /usr/local
       - name: regenerate api
         run: >
-          pushd api && mask api generate && popd;
-          chmod 0744 requirements.txt;
+          pushd godon-api; sudo mask api generate; popd;
