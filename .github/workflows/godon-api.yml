@@ -1,0 +1,26 @@
+
+name: "run godon api image tests"
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "godon-api/**"
+
+jobs:
+  build-and-test-image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: install tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install mask
+      - name: regenerate api
+        run: >
+          pushd api && mask api generate && popd;
+          chmod 0744 requirements.txt;
