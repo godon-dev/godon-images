@@ -29,7 +29,7 @@ along with this godon. If not, see <http://www.gnu.org/licenses/>.
 ~~~bash
 set -eEux
 
-docker run --rm -v "${PWD}:/local" openapitools/openapi-generator-cli validate -i /local/openapi.yml
+docker run --rm -v "${PWD}:/local" openapitools/openapi-generator-cli:v7.1.0 validate -i /local/openapi.yml
 ~~~
 
 ### api generate
@@ -39,7 +39,7 @@ docker run --rm -v "${PWD}:/local" openapitools/openapi-generator-cli validate -
 ~~~bash
 set -eEux
 
-docker run --rm -v "${MASKFILE_DIR}:/local" openapitools/openapi-generator-cli generate \
+docker run --rm -v "${MASKFILE_DIR}:/local" openapitools/openapi-generator-cli:v7.1.0 generate \
             -i /local/openapi.yml \
             --template-dir /local/templates/ \
             --generator-name python-flask \
