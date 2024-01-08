@@ -55,5 +55,5 @@ echo "Jinja2 == 3.1.2" >> ./flask/requirements.txt
 echo "psycopg2-binary == 2.9.9" >> ./flask/requirements.txt
 
  # pin base image version
-sed -i -E 's:3-alpine:3-alpine3.12:g' ./flask/Dockerfile
+sed -i -E 's:3-alpine:3-alpine3.16:g' ./flask/Dockerfile
 ~~~
