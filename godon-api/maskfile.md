@@ -54,6 +54,9 @@ echo "apache-airflow-client == 2.3.0" >> ./flask/requirements.txt
 echo "Jinja2 == 3.1.2" >> ./flask/requirements.txt
 echo "psycopg2-binary == 2.9.9" >> ./flask/requirements.txt
 
+# constrain connexion to below 3.0.0
+echo ""connexion[swagger-ui] <= 2.14.2; python_version>"3.5" >> ./flask/requirements.txt
+
  # pin base image version
-sed -i -E 's:3-alpine:3-alpine3.16:g' ./flask/Dockerfile
+sed -i -E 's:3-alpine:3.10.13-alpine3.19:g' ./flask/Dockerfile
 ~~~
