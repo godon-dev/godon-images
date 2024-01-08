@@ -53,4 +53,7 @@ touch ./flask/openapi_server/controllers/__init__.py
 echo "apache-airflow-client == 2.3.0" >> ./flask/requirements.txt
 echo "Jinja2 == 3.1.2" >> ./flask/requirements.txt
 echo "psycopg2-binary == 2.9.9" >> ./flask/requirements.txt
+
+ # pin base image version
+sed -i -E 's:3-alpine:3-alpine3.12:g' ./flask/Dockerfile
 ~~~
