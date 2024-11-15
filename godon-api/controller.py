@@ -108,16 +108,17 @@ def breeders_get():  # noqa: E501
     """
     configured_breeders = list()
 
-    ## fetch breeder meta data list
-    db_config = META_DB_CONFIG.copy()
-    db_config.update(dict(dbname='meta_data'))
-    db_table_name = 'breeder_meta_data'
+    # Revise if has to be workflow
+    url = "https://app.windmill.dev/api/w/__WORKSPACE__/jobs/run/f/__PATH__/CLEANUP_BREEDER" # DEFINE FULLY
+    token = "GET ME - SET ME"
 
-    __query = meta_data.queries.fetch_breeders_list(table_name=db_table_name)
-    breeder_meta_data_list = archive.archive_db.execute(db_info=db_config, query=__query, with_result=True)
+    payload = { "ANY_ADDITIONAL_PROPERTY": "anything" }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+        }
 
-    # preformat timestamp to be stringifyable
-    configured_breeders = [(breeder_row[0],breeder_row[1].isoformat()) for breeder_row in breeder_meta_data_list]
+    response = requests.post(url, json=payload, headers=headers)
 
     logging.error(json.dumps(configured_breeders))
 
@@ -133,15 +134,19 @@ def breeders_id_get(breeder_uuid):  # noqa: E501
 
     """
 
-    ## fetch breeder meta data
-    db_config = META_DB_CONFIG.copy()
-    db_config.update(dict(dbname='meta_data'))
-    db_table_name = 'breeder_meta_data'
+    # Revise if has to be workflow
+    url = "https://app.windmill.dev/api/w/__WORKSPACE__/jobs/run/f/__PATH__/CLEANUP_BREEDER" # DEFINE FULLY
+    token = "GET ME - SET ME"
 
-    __query = meta_data.queries.fetch_meta_data(table_name=db_table_name, breeder_id=breeder_uuid)
-    breeder_meta_data = archive.archive_db.execute(db_info=db_config, query=__query, with_result=True)
+    payload = { "ANY_ADDITIONAL_PROPERTY": "anything" }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+        }
 
-    breeder_meta_data_row = breeder_meta_data[0]
+    response = requests.post(url, json=payload, headers=headers)
+
+    logging.error(json.dumps(configured_breeders))
 
     return Response(response=json.dumps(dict(creation_timestamp=breeder_meta_data_row[0].isoformat(),
                                              breeder_definition=breeder_meta_data_row[1])),
