@@ -84,49 +84,16 @@ def breeders_id_delete(breeder_id):  # noqa: E501
 
     """
 
-    # cleanup dag definition config file
-    filename = f"{DAG_DIR}/{breeder_id}.py"
+    url = "https://app.windmill.dev/api/w/__WORKSPACE__/jobs/run/f/__PATH__/CLEANUP_BREEDER" # DEFINE FULLY
+    token = "GET ME - SET ME"
 
-    if os.path.exists(filename):
-        os.remove(filename)
+    payload = { "ANY_ADDITIONAL_PROPERTY": "anything" }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+        }
 
-    time.sleep(2) # wait as workaround until synchronous reload of dags implemented
-
-    ## cleanup knowledge archive db relevant state
-
-    # set dbname to work with to breeder_id
-    db_config = ARCHIVE_DB_CONFIG.copy()
-    db_config.update(dict(dbname="archive_db"))
-
-    __query = archive.queries.delete_breeder_table(table_name=breeder_id)
-    archive.archive_db.execute(db_info=db_config, query=__query)
-
-    __query = archive.queries.fetch_procedures(breeder_id=breeder_id)
-    procedures = archive.archive_db.execute(db_info=db_config, query=__query, with_result=True)
-
-    for procedure_name in procedures:
-        logging.error(type(procedure_name))
-        logging.error(procedure_name)
-        __query = archive.queries.delete_procedure(procedure_name=procedure_name[0])
-        archive.archive_db.execute(db_info=db_config, query=__query)
-
-    __query = archive.queries.fetch_tables(breeder_id=breeder_id)
-    archive_tables = archive.archive_db.execute(db_info=db_config, query=__query, with_result=True)
-
-    for table_name in archive_tables:
-        logging.error(table_name)
-        __query = archive.queries.delete_breeder_table(table_name=table_name[0])
-        archive.archive_db.execute(db_info=db_config, query=__query)
-
-
-    ## cleanup breeder meta data db state
-    db_config = META_DB_CONFIG.copy()
-    db_config.update(dict(dbname='meta_data'))
-    db_table_name = 'breeder_meta_data'
-
-    __query = meta_data.queries.remove_breeder_meta(table_name=db_table_name,
-                                                    breeder_id=breeder_id)
-    archive.archive_db.execute(db_info=db_config, query=__query)
+    response = requests.post(url, json=payload, headers=headers)
 
     return Response(json.dumps(dict(message=f"Purged Breeder named {breeder_id}")),
                     status=200,
@@ -141,16 +108,17 @@ def breeders_get():  # noqa: E501
     """
     configured_breeders = list()
 
-    ## fetch breeder meta data list
-    db_config = META_DB_CONFIG.copy()
-    db_config.update(dict(dbname='meta_data'))
-    db_table_name = 'breeder_meta_data'
+    # Revise if has to be workflow
+    url = "https://app.windmill.dev/api/w/__WORKSPACE__/jobs/run/f/__PATH__/CLEANUP_BREEDER" # DEFINE FULLY
+    token = "GET ME - SET ME"
 
-    __query = meta_data.queries.fetch_breeders_list(table_name=db_table_name)
-    breeder_meta_data_list = archive.archive_db.execute(db_info=db_config, query=__query, with_result=True)
+    payload = { "ANY_ADDITIONAL_PROPERTY": "anything" }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+        }
 
-    # preformat timestamp to be stringifyable
-    configured_breeders = [(breeder_row[0],breeder_row[1].isoformat()) for breeder_row in breeder_meta_data_list]
+    response = requests.post(url, json=payload, headers=headers)
 
     logging.error(json.dumps(configured_breeders))
 
@@ -166,15 +134,19 @@ def breeders_id_get(breeder_uuid):  # noqa: E501
 
     """
 
-    ## fetch breeder meta data
-    db_config = META_DB_CONFIG.copy()
-    db_config.update(dict(dbname='meta_data'))
-    db_table_name = 'breeder_meta_data'
+    # Revise if has to be workflow
+    url = "https://app.windmill.dev/api/w/__WORKSPACE__/jobs/run/f/__PATH__/CLEANUP_BREEDER" # DEFINE FULLY
+    token = "GET ME - SET ME"
 
-    __query = meta_data.queries.fetch_meta_data(table_name=db_table_name, breeder_id=breeder_uuid)
-    breeder_meta_data = archive.archive_db.execute(db_info=db_config, query=__query, with_result=True)
+    payload = { "ANY_ADDITIONAL_PROPERTY": "anything" }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+        }
 
-    breeder_meta_data_row = breeder_meta_data[0]
+    response = requests.post(url, json=payload, headers=headers)
+
+    logging.error(json.dumps(configured_breeders))
 
     return Response(response=json.dumps(dict(creation_timestamp=breeder_meta_data_row[0].isoformat(),
                                              breeder_definition=breeder_meta_data_row[1])),
@@ -196,73 +168,16 @@ def breeders_post(content):  # noqa: E501
     uuid = uuid.uuid4()
     config.update(dict(uuid=uuid))
 
-    def create_breeder(api_client, content):
+    url = "https://app.windmill.dev/api/w/__WORKSPACE__/jobs/run/f/__PATH__/CLEANUP_BREEDER" # DEFINE FULLY
+    token = "GET ME - SET ME"
 
-        # templating related
-        environment = Environment(loader=FileSystemLoader(DAG_TEMPLATES_DIR))
-        template = environment.get_template("root_dag.py")
-        filename = f"{DAG_DIR}/{breeder_id}.py"
-        rendered_dag = template.render(breeder_config_full)
+    payload = { "ANY_ADDITIONAL_PROPERTY": "anything" }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+        }
 
-        with open(filename, mode="w", encoding="utf-8") as dag_file:
-            dag_file.write(rendered_dag)
-
-        time.sleep(2) # wait as workaround until synchronous reload of dags implemented
-
-
-        # extract config from request
-        parallel_runs = breeder_config.get('run').get('parallel')
-        targets = breeder_config.get('effectuation').get('targets')
-        consolidation_probability = breeder_config.get('cooperation').get('consolidation').get('probability')
-        dag_name = breeder_config.get('name')
-
-        ## create knowledge archive db relevant state
-
-        # set dbname to work with to breeder_id
-        db_config = ARCHIVE_DB_CONFIG.copy()
-        db_config.update(dict(dbname="archive_db"))
-
-        __query = archive.queries.create_breeder_table(table_name=uuid)
-        archive.archive_db.execute(db_info=db_config, query=__query)
-
-        for target in targets:
-            hash_suffix = hashlib.sha256(str.encode(target.get('address'))).hexdigest()[0:6]
-            for run_id in range(0, parallel_runs):
-                dag_id = f'{uuid}_{run_id}_{hash_suffix}'
-
-                __query = archive.queries.create_breeder_table(table_name=dag_id)
-                archive.archive_db.execute(db_info=db_config, query=__query)
-
-                __query = archive.queries.create_procedure(procedure_name=f'{dag_id}_procedure',
-                                                           probability=consolidation_probability,
-                                                           source_table_name=dag_id,
-                                                           target_table_name=dag_name)
-                archive.archive_db.execute(db_info=db_config, query=__query)
-
-                __query = archive.queries.create_trigger(trigger_name=f'{dag_id}_trigger',
-                                                         table_name=dag_id,
-                                                         procedure_name=f'{dag_id}_procedure')
-                archive.archive_db.execute(db_info=db_config, query=__query)
-
-        ## create and fill breeder meta data db
-        db_config = META_DB_CONFIG.copy()
-        db_config.update(dict(dbname='meta_data'))
-        db_table_name = 'breeder_meta_data'
-
-        __query = meta_data.queries.create_meta_breeder_table(table_name=db_table_name)
-        archive.archive_db.execute(db_info=db_config, query=__query)
-
-        __query = meta_data.queries.insert_breeder_meta(table_name=db_table_name,
-                                                      breeder_id=uuid,
-                                                      creation_ts=datetime.datetime.now(),
-                                                      meta_state=breeder_config)
-        archive.archive_db.execute(db_info=db_config, query=__query)
-
-
-    with client.ApiClient(configuration) as api_client:
-        # Do not create connection dynamically for now
-        #api_response['breeder'] = create_breeder(api_client, content).to_dict()
-        create_breeder(api_client, content)
+    response = requests.post(url, json=payload, headers=headers)
 
     return Response(json.dumps(dict(message=f"Created Breeder named {breeder_id}")),
                                status=200,
