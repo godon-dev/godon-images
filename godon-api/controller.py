@@ -84,49 +84,16 @@ def breeders_id_delete(breeder_id):  # noqa: E501
 
     """
 
-    # cleanup dag definition config file
-    filename = f"{DAG_DIR}/{breeder_id}.py"
+    url = "https://app.windmill.dev/api/w/__WORKSPACE__/jobs/run/f/__PATH__/CLEANUP_BREEDER" # DEFINE FULLY
+    token = "GET ME - SET ME"
 
-    if os.path.exists(filename):
-        os.remove(filename)
+    payload = { "ANY_ADDITIONAL_PROPERTY": "anything" }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+        }
 
-    time.sleep(2) # wait as workaround until synchronous reload of dags implemented
-
-    ## cleanup knowledge archive db relevant state
-
-    # set dbname to work with to breeder_id
-    db_config = ARCHIVE_DB_CONFIG.copy()
-    db_config.update(dict(dbname="archive_db"))
-
-    __query = archive.queries.delete_breeder_table(table_name=breeder_id)
-    archive.archive_db.execute(db_info=db_config, query=__query)
-
-    __query = archive.queries.fetch_procedures(breeder_id=breeder_id)
-    procedures = archive.archive_db.execute(db_info=db_config, query=__query, with_result=True)
-
-    for procedure_name in procedures:
-        logging.error(type(procedure_name))
-        logging.error(procedure_name)
-        __query = archive.queries.delete_procedure(procedure_name=procedure_name[0])
-        archive.archive_db.execute(db_info=db_config, query=__query)
-
-    __query = archive.queries.fetch_tables(breeder_id=breeder_id)
-    archive_tables = archive.archive_db.execute(db_info=db_config, query=__query, with_result=True)
-
-    for table_name in archive_tables:
-        logging.error(table_name)
-        __query = archive.queries.delete_breeder_table(table_name=table_name[0])
-        archive.archive_db.execute(db_info=db_config, query=__query)
-
-
-    ## cleanup breeder meta data db state
-    db_config = META_DB_CONFIG.copy()
-    db_config.update(dict(dbname='meta_data'))
-    db_table_name = 'breeder_meta_data'
-
-    __query = meta_data.queries.remove_breeder_meta(table_name=db_table_name,
-                                                    breeder_id=breeder_id)
-    archive.archive_db.execute(db_info=db_config, query=__query)
+    response = requests.post(url, json=payload, headers=headers)
 
     return Response(json.dumps(dict(message=f"Purged Breeder named {breeder_id}")),
                     status=200,
