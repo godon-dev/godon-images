@@ -26,55 +26,14 @@ import hashlib
 from pprint import pprint
 from dateutil.parser import parse as dateutil_parser
 
-import airflow_client.client as client
-from airflow_client.client.api import dag_run_api
-from airflow_client.client.model.dag_run import DAGRun
-from airflow_client.client.model.error import Error
-from airflow_client.client.model.list_dag_runs_form import ListDagRunsForm
-from airflow_client.client.model.dag_run_collection import DAGRunCollection
-from airflow_client.client.model.dag_state import DagState
-from airflow_client.client.api import connection_api
-from airflow_client.client.model.connection import Connection
-
 from flask import abort
 from flask import Response
-
-from jinja2 import Environment, FileSystemLoader
-
-import openapi_server.controllers.archive_db as archive
-import openapi_server.controllers.meta_data_db as meta_data
 
 import logging
 
 import json
 import uuid
 
-
-AIRFLOW_API_BASE_URL = os.environ.get('AIRFLOW__URL')
-AIRFLOW_API_VERSION = "v1"
-AIRFLOW_API_AUTH_USER = "airflow"
-AIRFLOW_API_AUTH_PW = "airflow"
-
-DAG_TEMPLATES_DIR = "/usr/src/app/openapi_server/templates/"
-DAG_DIR = "/usr/src/app/openapi_server/dags/"
-
-ARCHIVE_DB_CONFIG = dict(user="yugabyte",
-                         password="yugabyte",
-                         host=os.environ.get('ARCHIVE_DB_HOSTNAME'),
-                         port=os.environ.get('ARCHIVE_DB_PORT'))
-
-META_DB_CONFIG = dict(user="meta_data",
-                      password="meta_data",
-                      host=os.environ.get('META_DB_HOSTNAME'),
-                      port=os.environ.get('META_DB_PORT'))
-
-breeders_db = dict()
-
-configuration = client.Configuration(
-    host = f"{AIRFLOW_API_BASE_URL}/api/{AIRFLOW_API_VERSION}",
-    username = f"{AIRFLOW_API_AUTH_USER}",
-    password = f"{AIRFLOW_API_AUTH_PW}"
-)
 
 def windmill_perform_login():
 
