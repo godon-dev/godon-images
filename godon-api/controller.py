@@ -76,6 +76,23 @@ configuration = client.Configuration(
     password = f"{AIRFLOW_API_AUTH_PW}"
 )
 
+def windmill_perform_login():
+
+    url = "https://app.windmill.dev/api/auth/login" #
+
+    payload = { "email": "admin@windmill.dev", "password": "changeme" }
+    headers = {
+        "Content-Type": "application/json",
+        }
+
+    response = requests.post(url, json=payload, headers=headers)
+
+    response_data = response.json()
+
+    token = response_data.get("token")
+
+    return token
+
 
 def breeders_id_delete(breeder_id):  # noqa: E501
     """breeders_delete
@@ -84,10 +101,10 @@ def breeders_id_delete(breeder_id):  # noqa: E501
 
     """
 
-    url = "https://app.windmill.dev/api/w/__WORKSPACE__/jobs/run/f/__PATH__/CLEANUP_BREEDER" # DEFINE FULLY
-    token = "GET ME - SET ME"
+    url = "https://app.windmill.dev/api/w/godon/jobs/run/f/godon/breeder_delete.py"
+    token = windmill_perform_login()
 
-    payload = { "ANY_ADDITIONAL_PROPERTY": "anything" }
+    payload = { "breeder_id": breeder_id }
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}"
@@ -99,7 +116,6 @@ def breeders_id_delete(breeder_id):  # noqa: E501
                     status=200,
                     mimetype='application/json')
 
-
 def breeders_get():  # noqa: E501
     """breeders_get
 
@@ -108,11 +124,10 @@ def breeders_get():  # noqa: E501
     """
     configured_breeders = list()
 
-    # Revise if has to be workflow
-    url = "https://app.windmill.dev/api/w/__WORKSPACE__/jobs/run/f/__PATH__/CLEANUP_BREEDER" # DEFINE FULLY
-    token = "GET ME - SET ME"
+    url = "https://app.windmill.dev/api/w/godon/jobs/run/f/godon/breeders_list.py"
+    token = windmill_perform_login()
 
-    payload = { "ANY_ADDITIONAL_PROPERTY": "anything" }
+    payload = { }
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}"
@@ -120,7 +135,9 @@ def breeders_get():  # noqa: E501
 
     response = requests.post(url, json=payload, headers=headers)
 
-    logging.error(json.dumps(configured_breeders))
+    response_data = response.json()
+
+    configured_breeders = response_data.get("breeders")
 
     return Response(response=json.dumps(configured_breeders),
                     status=200,
@@ -134,11 +151,10 @@ def breeders_id_get(breeder_uuid):  # noqa: E501
 
     """
 
-    # Revise if has to be workflow
-    url = "https://app.windmill.dev/api/w/__WORKSPACE__/jobs/run/f/__PATH__/CLEANUP_BREEDER" # DEFINE FULLY
-    token = "GET ME - SET ME"
+    url = "https://app.windmill.dev/api/w/godon/jobs/run/f/godon/breeder_get.py"
+    token = windmill_perform_login()
 
-    payload = { "ANY_ADDITIONAL_PROPERTY": "anything" }
+    payload = { "breeder_id": breeder_uuid }
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}"
@@ -146,11 +162,12 @@ def breeders_id_get(breeder_uuid):  # noqa: E501
 
     response = requests.post(url, json=payload, headers=headers)
 
-    logging.error(json.dumps(configured_breeders))
+    response_data = response.json()
 
-    return Response(response=json.dumps(dict(creation_timestamp=breeder_meta_data_row[0].isoformat(),
-                                             breeder_definition=breeder_meta_data_row[1])),
+    return_data = dict(breeder_creation_ts=response_data.get("breeder_creation_timestamp"),
+                       breeder_definition=response_data.get("breeder_definition"))
 
+    return Response(response=json.dumps(return_data),
                     status=200,
                     mimetype='application/json')
 
@@ -168,16 +185,20 @@ def breeders_post(content):  # noqa: E501
     uuid = uuid.uuid4()
     config.update(dict(uuid=uuid))
 
-    url = "https://app.windmill.dev/api/w/__WORKSPACE__/jobs/run/f/__PATH__/CLEANUP_BREEDER" # DEFINE FULLY
-    token = "GET ME - SET ME"
+    url = "https://app.windmill.dev/api/w/godon/jobs/run/f/godon/breeder_create.py"
+    token = windmill_perform_login()
 
-    payload = { "ANY_ADDITIONAL_PROPERTY": "anything" }
+    payload = { "config": content }
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}"
         }
 
     response = requests.post(url, json=payload, headers=headers)
+
+    response_data = response.json()
+
+    breeder_id = response_data.get("breeder_id")
 
     return Response(json.dumps(dict(message=f"Created Breeder named {breeder_id}")),
                                status=200,
