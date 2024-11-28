@@ -46,8 +46,6 @@ docker run --rm -v "${MASKFILE_DIR}:/local" openapitools/openapi-generator-cli:v
             -o /local/flask
 
 cp "${MASKFILE_DIR}"/controller.py ./flask/openapi_server/controllers/controller.py
-cp "${MASKFILE_DIR}"/archive_db.py ./flask/openapi_server/controllers/archive_db.py
-cp "${MASKFILE_DIR}"/meta_data_db.py ./flask/openapi_server/controllers/meta_data_db.py
 touch ./flask/openapi_server/controllers/__init__.py
 
 # constrain connexion to below 3.0.0
