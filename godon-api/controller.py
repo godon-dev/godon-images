@@ -123,10 +123,9 @@ def breeders_id_get(breeder_uuid):  # noqa: E501
 
     response_data = response.json()
 
-    return_data = dict(breeder_creation_ts=response_data.get("breeder_creation_timestamp"),
-                       breeder_definition=response_data.get("breeder_definition"))
+    breeder_data = response_data.get("breeder_data")
 
-    return Response(response=json.dumps(return_data),
+    return Response(response=json.dumps(breeder_data),
                     status=200,
                     mimetype='application/json')
 
@@ -137,17 +136,12 @@ def breeders_post(content):  # noqa: E501
 
     """
 
-
     breeder_config_full = content
-    breeder_config = dict(content.get('breeder'))
-    breeder_name = breeder_config.get('name')
-    uuid = uuid.uuid4()
-    config.update(dict(uuid=uuid))
 
     url = "https://app.windmill.dev/api/w/godon/jobs/run/f/godon/breeder_create.py"
     token = windmill_perform_login()
 
-    payload = { "config": content }
+    payload = { "breeder_config": breeder_config_full }
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}"
