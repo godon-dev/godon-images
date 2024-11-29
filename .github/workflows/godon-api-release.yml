@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: cherusk/godon-api
+  IMAGE_NAME: godon-dev/godon-api
 
 jobs:
   build-and-release-image:
