@@ -7,7 +7,7 @@ set -o pipefail
 shopt -s inherit_errexit
 
 ## Logging in to Windmill to attain token
-export WMILL_TOKEN="$(curl godon-windmill_server-1:8000/api/auth/login \
+export WMILL_TOKEN="$(curl windmill-app:8000/api/auth/login \
                       --request POST \
                       --header 'Content-Type: application/json' \
                       --data '{
