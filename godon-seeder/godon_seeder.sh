@@ -6,8 +6,12 @@ set -eEux
 set -o pipefail
 shopt -s inherit_errexit
 
+
+## Set Windmill API Base URL
+export WMILL_BASE_URL="windmill-app:8000"
+
 ## Logging in to Windmill to attain token
-export WMILL_TOKEN="$(curl windmill-app:8000/api/auth/login \
+export WMILL_TOKEN="$(curl ${WMILL_BASE_URL}/api/auth/login \
                       --request POST \
                       --header 'Content-Type: application/json' \
                       --data '{
@@ -18,24 +22,20 @@ export WMILL_TOKEN="$(curl windmill-app:8000/api/auth/login \
 ## Set Default Windmill Workspace
 export WMILL_WORKSPACE="godon"
 
-## Set Windmill API Base URL
-export WMILL_BASE_URL="http://godon-windmill_server-1:8000"
-
 ## Clone and Checkout the Relevant Scripts and Flows Version
 echo "Seeding from ${GODON_VERSION}"
 pushd "${GODON_DIR}"
 git checkout -B "${GODON_VERSION}" "${GODON_VERSION}"
 
 echo "Creating godon logic workspace"
-wmill --base-url "${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" workspace add "${WMILL_WORKSPACE}" "${WMILL_WORKSPACE}" "http://godon-windmill_server-1"
+wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" workspace add "${WMILL_WORKSPACE}" "${WMILL_WORKSPACE}" "http://windmill-app"
 
+# create controller folder
+mkdir -p f/controller
 
 ### Seed Controller Logic ###
 pushd controller
 wmill init
-
-# create controller folder
-mkdir -p f/controller
 
 for script in $(ls -1 *.py)
 do
@@ -43,7 +43,7 @@ do
 
     mv "${script}" f/controller
 
-    wmill --base-url "${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
+    wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
           script push f/controller/${script}
 
     echo "## Controller ... DONE"
