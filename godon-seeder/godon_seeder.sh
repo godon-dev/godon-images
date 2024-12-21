@@ -49,3 +49,37 @@ do
     echo "## Controller ... DONE"
 done
 
+popd
+
+### Seed Breeder Logic ###
+
+wmill_breeder_folder="f/breeder/linux_network_stack"
+
+pushd "${wmill_breeder_folder}"
+wmill init
+
+# create breeder folder
+
+mkdir -p "${wmill_breeder_folder}"
+
+echo "## performing seeding for linux_network_stack breeder logic"
+
+for script in $(ls -1 *.py)
+do
+
+    mv "${script}" "${wmill_breeder_folder}"
+
+    wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
+          script push  "${wmill_breeder_folder}/${script}"
+
+done
+
+for flow in $(ls -1 *.yaml)
+do
+
+    wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
+          flow push "${flow}" "${wmill_breeder_folder}/${flow}"
+
+done
+
+echo "## linux_network_stack breeder ... DONE"
