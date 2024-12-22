@@ -82,7 +82,7 @@ for flow in $(ls -1 *.yaml)
 do
 
     wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
-          flow push "${flow}" "${wmill_breeder_folder}/${flow}"
+        flow push "$(pwd)/${flow}" "${wmill_breeder_folder}/${flow}"
 
 done
 
