@@ -28,7 +28,8 @@ pushd "${GODON_DIR}"
 git checkout -B "${GODON_VERSION}" "${GODON_VERSION}"
 
 echo "Creating godon logic workspace"
-wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" workspace add "${WMILL_WORKSPACE}" "${WMILL_WORKSPACE}" "http://${WMILL_BASE_URL}"
+wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" workspace add \
+      --create "${WMILL_WORKSPACE}" "${WMILL_WORKSPACE}" "http://${WMILL_BASE_URL}"
 
 ### Seed Controller Logic ###
 pushd controller
