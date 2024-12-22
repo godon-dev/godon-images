@@ -83,7 +83,7 @@ do
     cp "$(pwd)/${flow}" "$(pwd)/flow.yaml"
 
     wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
-        flow push "$(pwd)/flow.yaml" "${wmill_breeder_folder}/${flow}"
+        flow push "$(pwd)" "${wmill_breeder_folder}/${flow}"
 
 done
 
