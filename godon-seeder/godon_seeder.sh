@@ -54,13 +54,17 @@ popd
 
 ### Seed Breeder Logic ###
 
-wmill_breeder_folder="f/breeder/linux_network_stack"
+local_breeder_foler="breeder/linux_network_stack"
+
+pushd "${local_breeder_foler}"
+wmill init
+
+wmill_breeder_folder="f/${local_breeder_foler}"
 
 # create breeder folder
 mkdir -p "${wmill_breeder_folder}"
 
-pushd "${wmill_breeder_folder}"
-wmill init
+
 
 echo "## performing seeding for linux_network_stack breeder logic"
 
