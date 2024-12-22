@@ -55,12 +55,11 @@ popd
 
 wmill_breeder_folder="f/breeder/linux_network_stack"
 
+# create breeder folder
+mkdir -p "${wmill_breeder_folder}"
+
 pushd "${wmill_breeder_folder}"
 wmill init
-
-# create breeder folder
-
-mkdir -p "${wmill_breeder_folder}"
 
 echo "## performing seeding for linux_network_stack breeder logic"
 
