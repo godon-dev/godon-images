@@ -78,13 +78,23 @@ do
 
 done
 
+
 for flow in $(ls -1 *.yaml)
 do
-    cp "$(pwd)/${flow}" "$(pwd)/flow.yaml"
+
+    if [[ "${flow}" =~ ^wmill.+yaml$ ]]
+    then
+      continue
+    fi
+
+    cp "$(pwd)/${flow}" "${wmill_breeder_folder}/flow.yaml"
+
+    flow_name="$(basename $(basename ${flow}) ".yaml" )"
 
     wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
-        flow push "$(pwd)" "${wmill_breeder_folder}/${flow}"
+        flow push "${wmill_breeder_folder}" "${wmill_breeder_folder}/${flow_name}"
 
 done
+
 
 echo "## linux_network_stack breeder ... DONE"
