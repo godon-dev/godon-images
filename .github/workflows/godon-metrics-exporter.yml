@@ -27,16 +27,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: install tooling
-        run: |
-          sudo apt-get update
-          sudo apt-get install cargo
-          sudo cargo install mask --vers 0.11.3 --root /usr/local
-
-      - name: regenerate api
-        run: >
-          pushd godon-metrics-exporter; sudo mask api generate; popd;
-
       - name: Log in to the Container registry
         uses: docker/login-action@v2
         with:
