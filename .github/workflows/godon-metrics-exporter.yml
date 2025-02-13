@@ -1,0 +1,69 @@
+
+name: "release godon-metrics-exporter image"
+
+on:
+  release:
+    types: [published, edited]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: godon-dev/godon-metrics-exporter
+
+jobs:
+  build-and-release-image:
+    if: ${{ startsWith(github.ref, 'refs/tags/godon-metrics-exporter') }}
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: install tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install cargo
+          sudo cargo install mask --vers 0.11.3 --root /usr/local
+
+      - name: regenerate api
+        run: >
+          pushd godon-metrics-exporter; sudo mask api generate; popd;
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: extract version from tag
+        uses: rishabhgupta/split-by@v1
+        id: split
+        with:
+          string: ${{ github.ref }}
+          split-by: '-'
+
+      - run: |
+          echo "${{ steps.split.outputs._2}}"
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: type=semver,pattern={{version}},value=${{ steps.split.outputs._2 }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: ./godon-metrics-exporter/flask/
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
