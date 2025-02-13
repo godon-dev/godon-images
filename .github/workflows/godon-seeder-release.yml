@@ -1,5 +1,5 @@
 
-name: "release godon-metrics-exporter image"
+name: "release godon-seeder image"
 
 on:
   release:
@@ -7,11 +7,11 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: godon-dev/godon-metrics-exporter
+  IMAGE_NAME: godon-dev/godon-seeder
 
 jobs:
   build-and-release-image:
-    if: ${{ startsWith(github.ref, 'refs/tags/godon-metrics-exporter') }}
+    if: ${{ startsWith(github.ref, 'refs/tags/godon-seeder') }}
     runs-on: ubuntu-latest
 
     permissions:
@@ -54,6 +54,6 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
-          context: ./godon-metrics-exporter/
+          context: ./godon-seeder/
           push: true
           tags: ${{ steps.meta.outputs.tags }}
