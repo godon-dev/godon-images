@@ -10,7 +10,6 @@ import std/parseopt
 import std/strutils
 
 import db_connector/db_postgres
-import std/db_postgres
 
 const ARCHIVE_DB_USER = getEnv("ARCHIVE_DB_USER")
 const ARCHIVE_DB_PW = getEnv("ARCHIVE_DB_PW")
@@ -46,7 +45,7 @@ when defined(metrics):
                   ARCHIVE_DB_USER,
                   ARCHIVE_DB_PW,
                   ARCHIVE_DB_DATABASE_NAME)
-    defer db.close()
+    defer: db.close()
 
     # query all breeder tables row count from archive db
     let sql_qery = "SELECT relname, n_live_tup FROM pg_stat_user_tables;"
