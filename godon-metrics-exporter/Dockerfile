@@ -21,5 +21,4 @@ RUN install "${EXPORTER_DIR}/exporter" "/usr/local/bin/godon-metrics-exporter"
 
 EXPOSE 8089
 
-ENTRYPOINT godon-metrics-exporter --port="${PORT}" --config="{CONFIG_FILE}"
-
+ENTRYPOINT godon-metrics-exporter --port="${PORT}"
