@@ -14,7 +14,7 @@ COPY ./*.nim "${EXPORTER_DIR}"
 
 # Compile Exporter
 RUN cd "${EXPORTER_DIR}" && \
-    nim compile -d:release exporter.nim
+    nim compile --threads:on -d:release -d:metrics exporter.nim
 
 # Install Exporter Binary
 RUN install "${EXPORTER_DIR}/exporter" "/usr/local/bin/godon-metrics-exporter"
