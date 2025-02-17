@@ -14,7 +14,7 @@ import db_connector/db_postgres
 const ARCHIVE_DB_USER = getEnv("ARCHIVE_DB_USER")
 const ARCHIVE_DB_PW = getEnv("ARCHIVE_DB_PW")
 const ARCHIVE_DB_HOST = getEnv("ARCHIVE_DB_HOST")
-const ARCHIVE_DB_DATABASE_NAME = getEnv("ARCHIVE_DB_DATABASE_NAME=")
+const ARCHIVE_DB_DATABASE_NAME = getEnv("ARCHIVE_DB_DATABASE_NAME")
 
 proc parse_args(): Table[string, string] =
   var args = initTable[string, string]()
