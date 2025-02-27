@@ -69,4 +69,9 @@ var args = parse_args()
 
 echo "port - $1" % [ args["port"] ]
 
-startMetricsHttpServer("127.0.0.1", Port(parseInt(args["port"])))
+chronos_httpserver.startMetricsHttpServer("127.0.0.1", Port(parseInt(args["port"])))
+
+## Todo: improve the loop in the main thread with something
+## more threading native
+while true:
+  sleep(10000)
