@@ -9,6 +9,9 @@ ENV EXPORTER_DIR="/user/local/godon_exporter/"
 RUN nimble install metrics && \
     nimble install db_connector
 
+RUN apt update && apt install -y libpq5 && \\
+    apt-get clean
+
 # Place nim code
 COPY ./*.nim "${EXPORTER_DIR}"
 
