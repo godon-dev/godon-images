@@ -38,7 +38,24 @@ import uuid
 WINDMILL_APP_SERVICE_HOST = os.environ['WINDMILL_APP_SERVICE_HOST']
 WINDMILL_APP_SERVICE_PORT = os.environ['WINDMILL_APP_SERVICE_PORT']
 
-WINDMILL_BASE_URL=f"http://${WINDMILL_APP_SERVICE_HOST}:${WINDMILL_APP_SERVICE_PORT}"
+WINDMILL_BASE_URL=f"http://{WINDMILL_APP_SERVICE_HOST}:{WINDMILL_APP_SERVICE_PORT}"
+
+
+def windmill_perform_login():
+
+    url = f"{WINDMILL_BASE_URL}/api/auth/login"
+
+    payload = { "email": "admin@windmill.dev", "password": "changeme" }
+    headers = {
+        "Content-Type": "application/json",
+        }
+
+    response = requests.post(url, json=payload, headers=headers)
+    response.raise_for_status()
+
+    token = response.text
+
+    return token
 
 
 def windmill_perform_login():
