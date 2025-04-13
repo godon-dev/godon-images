@@ -68,6 +68,7 @@ def windmill_perform_login():
         }
 
     response = requests.post(url, json=payload, headers=headers)
+    response.raise_for_status()
 
     response_data = response.json()
 
@@ -93,6 +94,7 @@ def breeders_id_delete(breeder_id):  # noqa: E501
         }
 
     response = requests.post(url, json=payload, headers=headers)
+    response.raise_for_status()
 
     return Response(json.dumps(dict(message=f"Purged Breeder named {breeder_id}")),
                     status=200,
@@ -116,6 +118,7 @@ def breeders_get():  # noqa: E501
         }
 
     response = requests.post(url, json=payload, headers=headers)
+    response.raise_for_status()
 
     response_data = response.json()
 
@@ -143,6 +146,29 @@ def breeders_id_get(breeder_uuid):  # noqa: E501
         }
 
     response = requests.post(url, json=payload, headers=headers)
+    response.raise_for_status()
+
+    response_data = response.json()
+
+    configured_breeders = response_data.get("breeders")
+
+    return Response(response=json.dumps(configured_breeders),
+                    status=200,
+                    mimetype='application/json')
+
+
+def breeders_id_get(breeder_uuid):  # noqa: E501
+    """breeders_name_get
+
+    Obtain information about breeder from its name # noqa: E501
+
+    """
+
+    url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/f/godon/breeder_get.py"
+    token = windmill_perform_login()
+
+    response = requests.post(url, json=payload, headers=headers)
+    response.raise_for_status()
 
     response_data = response.json()
 
@@ -171,6 +197,7 @@ def breeders_post(content):  # noqa: E501
         }
 
     response = requests.post(url, json=payload, headers=headers)
+    response.raise_for_status()
 
     response_data = response.json()
 
