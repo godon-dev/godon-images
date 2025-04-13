@@ -58,25 +58,6 @@ def windmill_perform_login():
     return token
 
 
-def windmill_perform_login():
-
-    url = f"{WINDMILL_BASE_URL}/api/auth/login" #
-
-    payload = { "email": "admin@windmill.dev", "password": "changeme" }
-    headers = {
-        "Content-Type": "application/json",
-        }
-
-    response = requests.post(url, json=payload, headers=headers)
-    response.raise_for_status()
-
-    response_data = response.json()
-
-    token = response_data.get("token")
-
-    return token
-
-
 def breeders_id_delete(breeder_id):  # noqa: E501
     """breeders_delete
 
