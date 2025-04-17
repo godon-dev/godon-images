@@ -91,7 +91,7 @@ def breeders_get():  # noqa: E501
     """
     configured_breeders = list()
 
-    url = f"{WINDMILL_API_BASE_URL}/breeders_list"
+    url = f"{WINDMILL_API_BASE_URL}/breeders_get"
     token = windmill_perform_login()
 
     payload = { }
