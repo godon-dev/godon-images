@@ -38,8 +38,11 @@ import uuid
 WINDMILL_APP_SERVICE_HOST = os.environ['WINDMILL_APP_SERVICE_HOST']
 WINDMILL_APP_SERVICE_PORT = os.environ['WINDMILL_APP_SERVICE_PORT']
 
-WINDMILL_BASE_URL=f"http://{WINDMILL_APP_SERVICE_HOST}:{WINDMILL_APP_SERVICE_PORT}"
+WINDMILL_WORKSPACE="godon"
+WINDMILL_FOLDER="controller"
 
+WINDMILL_BASE_URL=f"http://{WINDMILL_APP_SERVICE_HOST}:{WINDMILL_APP_SERVICE_PORT}"
+WINDMILL_API_BASE_URL=f"{WINDMILL_BASE_URL}/api/w/{WINDMILL_WORKSPACE}/jobs/run/p/f/{WINDMILL_FOLDER}"
 
 def windmill_perform_login():
 
@@ -64,7 +67,7 @@ def breeders_id_delete(uuid):  # noqa: E501
     Purge a breeder # noqa: E501
 
     """
-    url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/controller/breeder_delete"
+    url = f"{WINDMILL_API_BASE_URL}/breeder_delete"
     token = windmill_perform_login()
 
     payload = { "breeder_id": uuid }
@@ -88,7 +91,7 @@ def breeders_get():  # noqa: E501
     """
     configured_breeders = list()
 
-    url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/controller/breeders_list"
+    url = f"{WINDMILL_API_BASE_URL}/breeders_get"
     token = windmill_perform_login()
 
     payload = { }
@@ -116,7 +119,7 @@ def breeders_id_get(uuid):  # noqa: E501
 
     """
 
-    url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/controller/breeder_get"
+    url = f"{WINDMILL_API_BASE_URL}/breeder_get"
     token = windmill_perform_login()
 
     payload = { "breeder_id": uuid }
@@ -146,7 +149,7 @@ def breeders_post(content):  # noqa: E501
 
     breeder_config_full = content
 
-    url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/controller/breeder_create"
+    url = f"{WINDMILL_API_BASE_URL}/breeder_create"
     token = windmill_perform_login()
 
     payload = { "breeder_config": breeder_config_full }
