@@ -64,8 +64,7 @@ def breeders_id_delete(uuid):  # noqa: E501
     Purge a breeder # noqa: E501
 
     """
-
-    url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/godon/breeder_delete"
+    url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/controller/breeder_delete"
     token = windmill_perform_login()
 
     payload = { "breeder_id": uuid }
@@ -89,7 +88,7 @@ def breeders_get():  # noqa: E501
     """
     configured_breeders = list()
 
-    url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/godon/breeders_list"
+    url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/controller/breeders_list"
     token = windmill_perform_login()
 
     payload = { }
@@ -117,7 +116,7 @@ def breeders_id_get(uuid):  # noqa: E501
 
     """
 
-    url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/godon/breeder_get"
+    url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/controller/breeder_get"
     token = windmill_perform_login()
 
     payload = { "breeder_id": uuid }
@@ -147,7 +146,7 @@ def breeders_post(content):  # noqa: E501
 
     breeder_config_full = content
 
-    url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/godon/breeder_create"
+    url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/controller/breeder_create"
     token = windmill_perform_login()
 
     payload = { "breeder_config": breeder_config_full }
