@@ -58,7 +58,7 @@ def windmill_perform_login():
     return token
 
 
-def breeders_id_delete(breeder_id):  # noqa: E501
+def breeders_id_delete(uuid):  # noqa: E501
     """breeders_delete
 
     Purge a breeder # noqa: E501
@@ -68,7 +68,7 @@ def breeders_id_delete(breeder_id):  # noqa: E501
     url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/godon/breeder_delete"
     token = windmill_perform_login()
 
-    payload = { "breeder_id": breeder_id }
+    payload = { "breeder_id": uuid }
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}"
@@ -110,7 +110,7 @@ def breeders_get():  # noqa: E501
                     mimetype='application/json')
 
 
-def breeders_id_get(breeder_uuid):  # noqa: E501
+def breeders_id_get(uuid):  # noqa: E501
     """breeders_name_get
 
     Obtain information about breeder from its name # noqa: E501
@@ -120,7 +120,7 @@ def breeders_id_get(breeder_uuid):  # noqa: E501
     url = f"{WINDMILL_BASE_URL}/api/w/godon/jobs/run/p/f/godon/breeder_get"
     token = windmill_perform_login()
 
-    payload = { "breeder_id": breeder_uuid }
+    payload = { "breeder_id": uuid }
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}"
