@@ -112,7 +112,7 @@ def breeders_get():  # noqa: E501
                     mimetype='application/json')
 
 
-def breeders_id_get(uuid):  # noqa: E501
+def breeder_id_get(uuid):  # noqa: E501
     """breeders_name_get
 
     Obtain information about breeder from its name # noqa: E501
