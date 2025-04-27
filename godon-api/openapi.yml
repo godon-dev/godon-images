@@ -102,8 +102,8 @@ paths:
     delete:
       description: Purge a breeder
       parameters:
-        - name: id
-          in: query 
+        - name: uuid
+          in: query
           required: true
           schema:
             type: string
@@ -129,7 +129,7 @@ paths:
     get:
       description: Obtain information about breeder from its id(uuid)
       parameters:
-        - name: id
+        - name: uuid
           in: query
           required: true
           schema:
