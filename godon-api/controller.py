@@ -44,6 +44,7 @@ WINDMILL_FOLDER="controller"
 WINDMILL_BASE_URL=f"http://{WINDMILL_APP_SERVICE_HOST}:{WINDMILL_APP_SERVICE_PORT}"
 WINDMILL_API_BASE_URL=f"{WINDMILL_BASE_URL}/api/w/{WINDMILL_WORKSPACE}/jobs/run/p/f/{WINDMILL_FOLDER}"
 
+
 def windmill_perform_login():
 
     url = f"{WINDMILL_BASE_URL}/api/auth/login"
@@ -60,28 +61,6 @@ def windmill_perform_login():
 
     return token
 
-
-def breeders_id_delete(uuid):  # noqa: E501
-    """breeders_delete
-
-    Purge a breeder # noqa: E501
-
-    """
-    url = f"{WINDMILL_API_BASE_URL}/breeder_delete"
-    token = windmill_perform_login()
-
-    payload = { "breeder_id": uuid }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {token}"
-        }
-
-    response = requests.post(url, json=payload, headers=headers)
-    response.raise_for_status()
-
-    return Response(json.dumps(dict(message=f"Purged Breeder named {breeder_id}")),
-                    status=200,
-                    mimetype='application/json')
 
 def breeders_get():  # noqa: E501
     """breeders_get
@@ -112,10 +91,33 @@ def breeders_get():  # noqa: E501
                     mimetype='application/json')
 
 
-def breeder_id_get(uuid):  # noqa: E501
-    """breeders_name_get
+def breeder_delete(uuid):  # noqa: E501
+    """breeder_delete
 
-    Obtain information about breeder from its name # noqa: E501
+    Purge a breeder identified by its uuid # noqa: E501
+
+    """
+    url = f"{WINDMILL_API_BASE_URL}/breeder_delete"
+    token = windmill_perform_login()
+
+    payload = { "breeder_id": uuid }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}"
+        }
+
+    response = requests.post(url, json=payload, headers=headers)
+    response.raise_for_status()
+
+    return Response(json.dumps(dict(message=f"Purged Breeder named {breeder_id}")),
+                    status=200,
+                    mimetype='application/json')
+
+
+def breeder_get(uuid):  # noqa: E501
+    """breeder__get
+
+    Obtain information about breeder from its uuid # noqa: E501
 
     """
 
