@@ -42,7 +42,7 @@ WINDMILL_WORKSPACE="godon"
 WINDMILL_FOLDER="controller"
 
 WINDMILL_BASE_URL=f"http://{WINDMILL_APP_SERVICE_HOST}:{WINDMILL_APP_SERVICE_PORT}"
-WINDMILL_API_BASE_URL=f"{WINDMILL_BASE_URL}/api/w/{WINDMILL_WORKSPACE}/jobs/run/p/f/{WINDMILL_FOLDER}"
+WINDMILL_API_BASE_URL=f"{WINDMILL_BASE_URL}/api/w/{WINDMILL_WORKSPACE}/jobs/run_wait_result/p/f/{WINDMILL_FOLDER}"
 
 
 def windmill_perform_login():
@@ -135,9 +135,9 @@ def breeder_get(uuid):  # noqa: E501
 
     response_data = response.json()
 
-    configured_breeders = response_data.get("breeders")
+    breeder_data = response_data.get("breeder_data")
 
-    return Response(response=json.dumps(configured_breeders),
+    return Response(response=json.dumps(breeder_data),
                     status=200,
                     mimetype='application/json')
 
