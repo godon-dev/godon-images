@@ -55,7 +55,7 @@ done
 
 ## push all scripts at once
 wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
-      sync push --yes --fail-conflicts --message "init"
+      sync push --yes --message "init"
 
 popd
 
@@ -93,7 +93,7 @@ echo 'restart_unless_cancelled: true' >> "${wmill_breeder_folder}/communication_
 
 ## push all scripts at once
 wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
-      sync push --yes --fail-conflicts --message "init"
+      sync push --yes --message "init"
 
 
 for flow in $(ls -1 *.yaml)
