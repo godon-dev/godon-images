@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: cherusk/godon-dask
+  IMAGE_NAME: godon-dev/godon-dask
 
 jobs:
   build-and-release-image:
