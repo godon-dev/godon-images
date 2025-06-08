@@ -13,6 +13,13 @@ jobs:
   build-and-release-image:
     if: ${{ startsWith(github.ref, 'refs/tags/godon-dask') }}
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
     steps:
 
       - name: Checkout
