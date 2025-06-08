@@ -20,7 +20,7 @@ export WMILL_TOKEN="$(curl ${WMILL_BASE_URL}/api/auth/login \
                        }')"
 
 ## Set Default Windmill Workspace
-export WMILL_WORKSPACE="godon"
+export WMILL_WORKSPACE="godon-test3"
 
 ## Clone and Checkout the Relevant Scripts and Flows Version
 echo "Seeding from ${GODON_VERSION}"
@@ -35,38 +35,48 @@ wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" workspace a
 pushd controller
 wmill init
 
+# adjust scope of wmill
+sed -E 's:f/:f/controller/:g' -i wmill.yaml
+
 # create controller folder
 mkdir -p f/controller
 
 for script in $(ls -1 *.py)
 do
-    echo "## performing seeding for controller logic"
+    echo "## performing config seeding for controller logic"
 
     mv "${script}" f/controller
 
     wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
-          script push f/controller/${script}
+          script generate-metadata f/controller/${script}
 
     echo "## Controller ... DONE"
 done
+
+## push all scripts at once
+wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
+      sync push --yes --fail-conflicts --message "init"
 
 popd
 
 ### Seed Breeder Logic ###
 
-local_breeder_foler="breeder/linux_network_stack"
+local_breeder_folder="breeder/linux_network_stack"
 
-pushd "${local_breeder_foler}"
+pushd "${local_breeder_folder}"
 wmill init
 
-wmill_breeder_folder="f/${local_breeder_foler}"
+# adjust scope of wmill
+sed -E 's:f/:f/'"${local_breeder_folder}"'/:g' -i wmill.yaml
+
+wmill_breeder_folder="f/${local_breeder_folder}"
 
 # create breeder folder
 mkdir -p "${wmill_breeder_folder}"
 
 
 
-echo "## performing seeding for linux_network_stack breeder logic"
+echo "## performing config seeding for linux_network_stack breeder logic"
 
 for script in $(ls -1 *.py)
 do
@@ -74,9 +84,16 @@ do
     mv "${script}" "${wmill_breeder_folder}"
 
     wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
-          script push  "${wmill_breeder_folder}/${script}"
+          script generate-metadata "${wmill_breeder_folder}/${script}"
 
 done
+
+## Adjust flags for communication script - perpetual script
+echo 'restart_unless_cancelled: true' >> "${wmill_breeder_folder}/communication_perpetual.script.yaml"
+
+## push all scripts at once
+wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
+      sync push --yes --fail-conflicts --message "init"
 
 
 for flow in $(ls -1 *.yaml)
@@ -95,6 +112,5 @@ do
         flow push "${wmill_breeder_folder}" "${wmill_breeder_folder}/${flow_name}"
 
 done
-
 
 echo "## linux_network_stack breeder ... DONE"
