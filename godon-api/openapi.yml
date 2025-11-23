@@ -1,159 +1,469 @@
 ---
-#Copyright (c) 2019 Matthias Tafelmeier.
+# Copyright (c) 2019 Matthias Tafelmeier.
 #
-#This file is part of godon
+# This file is part of godon
 #
-#godon is free software: you can redistribute it and/or modify
-#it under the terms of the GNU Affero General Public License as
-#published by the Free Software Foundation, either version 3 of the
-#License, or (at your option) any later version.
+# godon is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
 #
-#godon is distributed in the hope that it will be useful,
-#but WITHOUT ANY WARRANTY; without even the implied warranty of
-#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#GNU Affero General Public License for more details.
+# godon is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
 #
-#You should have received a copy of the GNU Affero General Public License
-#along with this godon. If not, see <http://www.gnu.org/licenses/>.
+# You should have received a copy of the GNU Affero General Public License
+# along with this godon. If not, see <http://www.gnu.org/licenses/>.
 
 openapi: 3.0.0
 info:
   version: 0.0.0
-  title: godon control API
-  description: API for controlling godon optimizer
+  title: Godon Control API
+  description: |
+    RESTful API for controlling and managing the godon optimizer breeders.
+    This API allows you to create, read, update, and delete breeder configurations.
+  contact:
+    name: Godon Development Team
+    url: https://github.com/godon-dev
+  license:
+    name: GNU Affero General Public License v3.0
+    url: https://www.gnu.org/licenses/agpl-3.0.html
 
 servers:
   - url: /v0
+    description: Lab server v0
+
+tags:
+  - name: breeders
+    description: Operations for managing optimizer breeders
 
 paths:
   /breeders:
     get:
-      description: Provides info on configured breeders
+      tags:
+        - breeders
+      operationId: listBreeders
+      summary: List all breeders
+      description: Retrieves a list of all configured optimizer breeders
       responses:
         '200':
-           description: Successfully returned list of configured breeders
-           content:
-             application/json:
-               schema:
-                 type: array
-                 items:
-                   type: object
-                   required:
-                     - id
-                   properties:
-                     id:
-                       type: string
-        '400':
-           description: Invalid request
-           content:
-             application/json:
-               schema:
-                 type: object
-                 properties:
-                   message:
-                     type: string
-    post:
-      description: Create a breeder
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        '200':
-           description: Successfully created the breeder
-        '400':
-           description: Invalid request
-           content:
-             application/json:
-               schema:
-                 type: object
-                 properties:
-                   message:
-                     type: string
-    put:
-      description: Update a breeder configuration
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - name
-              properties:
-                name:
-                  type: string
-      responses:
-        '200':
-           description: Successfully updated the running breeder
-        '400':
-           description: Invalid request
-           content:
-             application/json:
-               schema:
-                 type: object
-                 properties:
-                   message:
-                     type: string
+          description: Successfully returned list of configured breeders
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BreederList'
+              examples:
+                breeders:
+                  summary: Example list of breeders
+                  value:
+                    - id: "550e8400-e29b-41d4-a716-446655440000"
+                      name: "genetic-optimizer-1"
+                      status: "active"
+                      createdAt: "2024-01-15T10:30:00Z"
+                      updatedAt: "2024-01-15T10:30:00Z"
+                    - id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+                      name: "neural-breeder-2"
+                      status: "paused"
+                      createdAt: "2024-01-16T14:20:00Z"
+                      updatedAt: "2024-01-16T15:45:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
-  /breeder:
-    delete:
-      description: Purge a breeder
-      parameters:
-        - name: uuid
-          in: query
-          required: true
-          schema:
-            type: string
+    post:
+      tags:
+        - breeders
+      operationId: createBreeder
+      summary: Create a new breeder
+      description: Creates a new optimizer breeder with the provided configuration
+      requestBody:
+        required: true
+        description: Breeder configuration details
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BreederCreate'
+            examples:
+              basic:
+                summary: Basic breeder configuration
+                value:
+                  name: "genetic-optimizer-1"
+                  algorithmType: "genetic"
+                  populationSize: 100
+                  mutationRate: 0.01
       responses:
-        '200':
-           description: Successfully purged the breeder
-           content:
-             application/json:
-               schema:
-                 type: object
-                 properties:
-                   message:
-                     type: string
+        '201':
+          description: Successfully created the breeder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Breeder'
+              examples:
+                created:
+                  summary: Newly created breeder
+                  value:
+                    id: "550e8400-e29b-41d4-a716-446655440000"
+                    name: "genetic-optimizer-1"
+                    status: "active"
+                    algorithmType: "genetic"
+                    populationSize: 100
+                    mutationRate: 0.01
+                    createdAt: "2024-01-15T10:30:00Z"
+                    updatedAt: "2024-01-15T10:30:00Z"
         '400':
-           description: Invalid request
-           content:
-             application/json:
-               schema:
-                 type: object
-                 properties:
-                   message:
-                     type: string
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /breeders/{uuid}:
+    parameters:
+      - $ref: '#/components/parameters/BreederUuid'
+
     get:
-      description: Obtain information about breeder from its id(uuid)
-      parameters:
-        - name: uuid
-          in: query
-          required: true
-          schema:
-            type: string
+      tags:
+        - breeders
+      operationId: getBreeder
+      summary: Get breeder by ID
+      description: Retrieves detailed information about a specific breeder
       responses:
         '200':
-           description: Successfully returned list of configured breeders
-           content:
-             application/json:
-               schema:
-                 type: array
-                 items:
-                   type: object
-                   required:
-                     - id
-                   properties:
-                     id:
-                       type: string
+          description: Successfully returned breeder information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Breeder'
+              examples:
+                breeder:
+                  summary: Example breeder details
+                  value:
+                    id: "550e8400-e29b-41d4-a716-446655440000"
+                    name: "genetic-optimizer-1"
+                    status: "active"
+                    algorithmType: "genetic"
+                    populationSize: 100
+                    mutationRate: 0.01
+                    createdAt: "2024-01-15T10:30:00Z"
+                    updatedAt: "2024-01-15T10:30:00Z"
         '400':
-           description: Invalid request
-           content:
-             application/json:
-               schema:
-                 type: object
-                 properties:
-                   message:
-                     type: string
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    put:
+      tags:
+        - breeders
+      operationId: updateBreeder
+      summary: Update breeder configuration
+      description: Updates the configuration of an existing breeder
+      requestBody:
+        required: true
+        description: Updated breeder configuration
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BreederUpdate'
+            examples:
+              update:
+                summary: Update breeder parameters
+                value:
+                  name: "genetic-optimizer-1-updated"
+                  populationSize: 150
+                  mutationRate: 0.015
+      responses:
+        '200':
+          description: Successfully updated the breeder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Breeder'
+              examples:
+                updated:
+                  summary: Updated breeder
+                  value:
+                    id: "550e8400-e29b-41d4-a716-446655440000"
+                    name: "genetic-optimizer-1-updated"
+                    status: "active"
+                    algorithmType: "genetic"
+                    populationSize: 150
+                    mutationRate: 0.015
+                    createdAt: "2024-01-15T10:30:00Z"
+                    updatedAt: "2024-01-15T11:45:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags:
+        - breeders
+      operationId: deleteBreeder
+      summary: Delete a breeder
+      description: Permanently removes a breeder and its configuration
+      responses:
+        '200':
+          description: Successfully deleted the breeder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+              examples:
+                deleted:
+                  summary: Deletion confirmation
+                  value:
+                    message: "Breeder 550e8400-e29b-41d4-a716-446655440000 successfully deleted"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+components:
+  parameters:
+    BreederUuid:
+      name: uuid
+      in: path
+      required: true
+      description: Unique identifier (UUID v4) for the breeder
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+  schemas:
+    Breeder:
+      type: object
+      required:
+        - id
+        - name
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier for the breeder
+          readOnly: true
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Human-readable name for the breeder
+          example: "genetic-optimizer-1"
+        status:
+          type: string
+          enum: [active, paused, stopped, error]
+          description: Current operational status of the breeder
+          example: "active"
+        algorithmType:
+          type: string
+          enum: [genetic, evolutionary, particle_swarm, simulated_annealing]
+          description: Type of optimization algorithm used
+          example: "genetic"
+        populationSize:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: Size of the population for the optimization algorithm
+          example: 100
+        mutationRate:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Mutation rate for genetic algorithms (0.0 to 1.0)
+          example: 0.01
+        createdAt:
+          type: string
+          format: date-time
+          description: Timestamp when the breeder was created
+          readOnly: true
+          example: "2024-01-15T10:30:00Z"
+        updatedAt:
+          type: string
+          format: date-time
+          description: Timestamp when the breeder was last updated
+          readOnly: true
+          example: "2024-01-15T10:30:00Z"
+
+    BreederCreate:
+      type: object
+      required:
+        - name
+        - algorithmType
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Human-readable name for the breeder
+          example: "genetic-optimizer-1"
+        algorithmType:
+          type: string
+          enum: [genetic, evolutionary, particle_swarm, simulated_annealing]
+          description: Type of optimization algorithm to use
+          example: "genetic"
+        populationSize:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          default: 100
+          description: Size of the population for the optimization algorithm
+          example: 100
+        mutationRate:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.01
+          description: Mutation rate for genetic algorithms (0.0 to 1.0)
+          example: 0.01
+
+    BreederUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Updated name for the breeder
+          example: "genetic-optimizer-1-updated"
+        status:
+          type: string
+          enum: [active, paused, stopped]
+          description: Updated operational status
+          example: "paused"
+        populationSize:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: Updated population size
+          example: 150
+        mutationRate:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Updated mutation rate
+          example: 0.015
+
+    BreederList:
+      type: array
+      items:
+        $ref: '#/components/schemas/Breeder'
+      description: Array of breeder objects
+
+    Error:
+      type: object
+      required:
+        - message
+        - code
+      properties:
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Invalid request parameters"
+        code:
+          type: string
+          description: Machine-readable error code
+          example: "INVALID_INPUT"
+        details:
+          type: object
+          description: Additional error details and context
+          additionalProperties: true
+          example:
+            field: "name"
+            reason: "Name must be between 1 and 255 characters"
+
+    SuccessMessage:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          description: Human-readable success message
+          example: "Operation completed successfully"
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters or malformed request body
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalidInput:
+              summary: Invalid input validation
+              value:
+                message: "Invalid request parameters"
+                code: "INVALID_INPUT"
+                details:
+                  field: "mutationRate"
+                  reason: "Must be between 0.0 and 1.0"
+
+    NotFound:
+      description: The requested resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            notFound:
+              summary: Breeder not found
+              value:
+                message: "Breeder not found"
+                code: "NOT_FOUND"
+                details:
+                  uuid: "550e8400-e29b-41d4-a716-446655440000"
+
+    Conflict:
+      description: Resource conflict (e.g., duplicate name)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            duplicate:
+              summary: Duplicate breeder name
+              value:
+                message: "A breeder with this name already exists"
+                code: "DUPLICATE_RESOURCE"
+                details:
+                  field: "name"
+                  value: "genetic-optimizer-1"
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            serverError:
+              summary: Unexpected server error
+              value:
+                message: "An unexpected error occurred"
+                code: "INTERNAL_SERVER_ERROR"
+
+  # Uncomment if you need authentication
+  # securitySchemes:
+  #   bearerAuth:
+  #     type: http
+  #     scheme: bearer
+  #     bearerFormat: JWT
+  #     description: JWT token-based authentication
+
+# Uncomment to apply security globally
+# security:
+#   - bearerAuth: []
