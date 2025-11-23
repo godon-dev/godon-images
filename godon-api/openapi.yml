@@ -61,10 +61,12 @@ paths:
                       name: "genetic-optimizer-1"
                       status: "active"
                       createdAt: "2024-01-15T10:30:00Z"
+                      config: "{}"
                     - id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
                       name: "neural-breeder-2"
                       status: "paused"
                       createdAt: "2024-01-16T14:20:00Z"
+                      config: "{}"
         '500':
           $ref: '#/components/responses/InternalServerError'
 
@@ -132,6 +134,7 @@ paths:
                     id: "550e8400-e29b-41d4-a716-446655440000"
                     name: "genetic-optimizer-1"
                     createdAt: "2024-01-15T10:30:00Z"
+                    config: "{}"
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -146,44 +149,13 @@ paths:
       summary: Update breeder configuration
       description: Updates the configuration of an existing breeder
       requestBody:
-        required: true
-        description: Updated breeder configuration
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BreederUpdate'
-            examples:
-              update:
-                summary: Update breeder parameters
-                value:
-                  name: "genetic-optimizer-1-updated"
-                  populationSize: 150
-                  mutationRate: 0.015
+        required: false
+
       responses:
-        '200':
-          description: Successfully updated the breeder
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Breeder'
-              examples:
-                updated:
-                  summary: Updated breeder
-                  value:
-                    id: "550e8400-e29b-41d4-a716-446655440000"
-                    name: "genetic-optimizer-1-updated"
-                    status: "active"
-                    algorithmType: "genetic"
-                    populationSize: 150
-                    mutationRate: 0.015
-                    createdAt: "2024-01-15T10:30:00Z"
-                    updatedAt: "2024-01-15T11:45:00Z"
         '400':
           $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
+        '501':
+          $ref: '#/components/responses/NotImplementedServerError'
 
     delete:
       tags:
@@ -249,36 +221,22 @@ components:
           enum: [active, paused, stopped, error]
           description: Current operational status of the breeder
           example: "active"
-        algorithmType:
-          type: string
-          enum: [genetic, evolutionary, particle_swarm, simulated_annealing]
-          description: Type of optimization algorithm used
-          example: "genetic"
-        populationSize:
-          type: integer
-          minimum: 1
-          maximum: 10000
-          description: Size of the population for the optimization algorithm
-          example: 100
-        mutationRate:
-          type: number
-          format: float
-          minimum: 0.0
-          maximum: 1.0
-          description: Mutation rate for genetic algorithms (0.0 to 1.0)
-          example: 0.01
         createdAt:
           type: string
           format: date-time
           description: Timestamp when the breeder was created
           readOnly: true
           example: "2024-01-15T10:30:00Z"
+        config:
+          type: object
+          description: Configuration object for the breeder
+          additionalProperties: true
 
     BreederCreate:
       type: object
       required:
         - name
-        - algorithmType
+        - config
       properties:
         name:
           type: string
@@ -286,6 +244,10 @@ components:
           maxLength: 255
           description: Human-readable name for the breeder
           example: "genetic-optimizer-1"
+        config:
+          type: object
+          description: Configuration object for the breeder
+          additionalProperties: true
 
     BreederList:
       type: array
@@ -385,4 +347,17 @@ components:
               value:
                 message: "An unexpected error occurred"
                 code: "INTERNAL_SERVER_ERROR"
+
+    NotImplementedServerError:
+      description: Not Implented
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            serverError:
+              summary: Not implemented
+              value:
+                message: "Not implemented on server side"
+                code: "NOT_IMPLEMENTED_ERROR"
 
