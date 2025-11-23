@@ -61,12 +61,10 @@ paths:
                       name: "genetic-optimizer-1"
                       status: "active"
                       createdAt: "2024-01-15T10:30:00Z"
-                      updatedAt: "2024-01-15T10:30:00Z"
                     - id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
                       name: "neural-breeder-2"
                       status: "paused"
                       createdAt: "2024-01-16T14:20:00Z"
-                      updatedAt: "2024-01-16T15:45:00Z"
         '500':
           $ref: '#/components/responses/InternalServerError'
 
@@ -88,9 +86,6 @@ paths:
                 summary: Basic breeder configuration
                 value:
                   name: "genetic-optimizer-1"
-                  algorithmType: "genetic"
-                  populationSize: 100
-                  mutationRate: 0.01
       responses:
         '201':
           description: Successfully created the breeder
@@ -105,11 +100,7 @@ paths:
                     id: "550e8400-e29b-41d4-a716-446655440000"
                     name: "genetic-optimizer-1"
                     status: "active"
-                    algorithmType: "genetic"
-                    populationSize: 100
-                    mutationRate: 0.01
                     createdAt: "2024-01-15T10:30:00Z"
-                    updatedAt: "2024-01-15T10:30:00Z"
         '400':
           $ref: '#/components/responses/BadRequest'
         '409':
@@ -140,12 +131,7 @@ paths:
                   value:
                     id: "550e8400-e29b-41d4-a716-446655440000"
                     name: "genetic-optimizer-1"
-                    status: "active"
-                    algorithmType: "genetic"
-                    populationSize: 100
-                    mutationRate: 0.01
                     createdAt: "2024-01-15T10:30:00Z"
-                    updatedAt: "2024-01-15T10:30:00Z"
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -245,7 +231,6 @@ components:
         - name
         - status
         - createdAt
-        - updatedAt
       properties:
         id:
           type: string
@@ -288,12 +273,6 @@ components:
           description: Timestamp when the breeder was created
           readOnly: true
           example: "2024-01-15T10:30:00Z"
-        updatedAt:
-          type: string
-          format: date-time
-          description: Timestamp when the breeder was last updated
-          readOnly: true
-          example: "2024-01-15T10:30:00Z"
 
     BreederCreate:
       type: object
@@ -307,55 +286,6 @@ components:
           maxLength: 255
           description: Human-readable name for the breeder
           example: "genetic-optimizer-1"
-        algorithmType:
-          type: string
-          enum: [genetic, evolutionary, particle_swarm, simulated_annealing]
-          description: Type of optimization algorithm to use
-          example: "genetic"
-        populationSize:
-          type: integer
-          minimum: 1
-          maximum: 10000
-          default: 100
-          description: Size of the population for the optimization algorithm
-          example: 100
-        mutationRate:
-          type: number
-          format: float
-          minimum: 0.0
-          maximum: 1.0
-          default: 0.01
-          description: Mutation rate for genetic algorithms (0.0 to 1.0)
-          example: 0.01
-
-    BreederUpdate:
-      type: object
-      minProperties: 1
-      properties:
-        name:
-          type: string
-          minLength: 1
-          maxLength: 255
-          description: Updated name for the breeder
-          example: "genetic-optimizer-1-updated"
-        status:
-          type: string
-          enum: [active, paused, stopped]
-          description: Updated operational status
-          example: "paused"
-        populationSize:
-          type: integer
-          minimum: 1
-          maximum: 10000
-          description: Updated population size
-          example: 150
-        mutationRate:
-          type: number
-          format: float
-          minimum: 0.0
-          maximum: 1.0
-          description: Updated mutation rate
-          example: 0.015
 
     BreederList:
       type: array
@@ -456,14 +386,3 @@ components:
                 message: "An unexpected error occurred"
                 code: "INTERNAL_SERVER_ERROR"
 
-  # Uncomment if you need authentication
-  # securitySchemes:
-  #   bearerAuth:
-  #     type: http
-  #     scheme: bearer
-  #     bearerFormat: JWT
-  #     description: JWT token-based authentication
-
-# Uncomment to apply security globally
-# security:
-#   - bearerAuth: []
