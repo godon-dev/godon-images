@@ -5,6 +5,7 @@ on:
     branches: [ main ]
     paths:
       - 'images/godon-api/**'
+  workflow_dispatch:
 
 env:
   NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.05
