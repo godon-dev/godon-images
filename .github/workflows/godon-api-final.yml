@@ -1,4 +1,4 @@
-name: Godon API CI (Working Version)
+name: Godon API CI
 
 on:
   pull_request:
@@ -67,6 +67,22 @@ jobs:
           echo "Attempt $i/30 - waiting for Prism..."
           sleep 2
         done
+        
+        # Test Prism endpoints
+        echo "Testing Prism mock service..."
+        AUTH_RESPONSE=$(curl -s -X POST \
+          -H "Content-Type: application/json" \
+          -d '{"email":"admin@windmill.dev","password":"changeme"}' \
+          http://localhost:8001/api/auth/login)
+        
+        echo "Auth test response: $AUTH_RESPONSE"
+        
+        if echo "$AUTH_RESPONSE" | grep -q "token\|error"; then
+          echo "✅ Prism mock service is working correctly"
+        else
+          echo "❌ Prism mock service test failed"
+          exit 1
+        fi
 
     - name: Run unit tests in container
       run: |
@@ -92,6 +108,8 @@ jobs:
     - name: Test container as running service
       run: |
         echo "Testing container as running service..."
+        
+        # Start container as service
         docker run -d --name godon-service-test \
           --network host \
           -e PORT=8080 \
@@ -112,6 +130,19 @@ jobs:
         # Test service endpoints
         echo "Testing service endpoints..."
         curl -f http://localhost:8080/health | jq .
+        curl -f http://localhost:8080/ | jq .
+        
+        # Test breeder endpoints through service
+        echo "Testing breeder endpoints via service..."
+        BREEDERS_RESPONSE=$(curl -s -X GET http://localhost:8080/v0/breeders)
+        echo "GET /v0/breeders response: $BREEDERS_RESPONSE"
+        
+        # POST create breeder
+        CREATE_RESPONSE=$(curl -s -X POST \
+          -H "Content-Type: application/json" \
+          -d '{"name":"integration-test-breeder","config":{"mutationRate":0.15}}' \
+          http://localhost:8080/v0/breeders)
+        echo "POST /v0/breeders response: $CREATE_RESPONSE"
         
         # Clean up service
         docker stop godon-service-test || true
@@ -124,3 +155,22 @@ jobs:
         docker stop godon-service-test || true
         docker rm godon-service-test || true
         docker rmi godon-api-test:test-${{ github.run_number }} || true
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'godon-api-test:test-${{ github.run_number }}'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
