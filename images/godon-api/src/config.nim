@@ -18,4 +18,6 @@ proc loadConfig*(): Config =
   result.windmillWorkspace = "godon"
   result.windmillFolder = "controller"
   result.windmillBaseUrl = "http://" & host & ":" & port
+  # Exact same URL pattern as Python implementation:
+  # WINDMILL_API_BASE_URL=f"{WINDMILL_BASE_URL}/api/w/{WINDMILL_WORKSPACE}/jobs/run_wait_result/p/f/{WINDMILL_FOLDER}"
   result.windmillApiBaseUrl = result.windmillBaseUrl & "/api/w/" & result.windmillWorkspace & "/jobs/run_wait_result/p/f/" & result.windmillFolder

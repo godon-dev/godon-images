@@ -43,6 +43,7 @@ set -euo pipefail
 
 # Default values
 DEFAULT_NIX_FILE="default.nix"
+DEFAULT_BUILD_TESTS="false"
 
 # Color codes for output
 if [[ -t 1 ]]; then
@@ -75,6 +76,7 @@ parse_args() {
     BUILDER_FILE="${BUILDER_FILE:-Dockerfile.nix-builder}"
     OUTPUT_FILE="${OUTPUT_FILE:-}"
     CORES="${CORES:-}"
+    BUILD_TESTS="${BUILD_TESTS:-$DEFAULT_BUILD_TESTS}"
     NO_CACHE="false"
     NO_CLEAN="false"
     DRY_RUN="false"
@@ -122,6 +124,10 @@ parse_args() {
                 NO_CLEAN="true"
                 shift
                 ;;
+            --build-tests)
+                BUILD_TESTS="true"
+                shift
+                ;;
             --dry-run)
                 DRY_RUN="true"
                 shift
@@ -161,6 +167,7 @@ OPTIONAL OPTIONS:
     -f, --file FILE           Nix file to use (default: default.nix)
     -o, --output FILE         Output tarball path (default: IMAGE_NAME-VERSION-nix-minimal.tar.gz)
     -c, --cores NUM           Number of CPU cores for build (default: auto-detect)
+    --build-tests             Include test binaries in container (default: false)
     --no-cache                Force rebuild without cache
     --no-clean               Skip builder container cleanup
     --dry-run                Show what would be executed without running
@@ -180,6 +187,7 @@ ENVIRONMENT VARIABLES:
     NIX_FILE      Nix file to use (overrides -f)
     OUTPUT_FILE   Output tarball path (overrides -o)
     CORES         Number of CPU cores (overrides -c)
+    BUILD_TESTS   Include test binaries (overrides --build-tests)
     QUIET         Minimal output (set to 1, overrides -q)
 EOF
 }
@@ -341,6 +349,7 @@ execute_build() {
         -e "NIX_FILE=/source/$NIX_FILE" \
         -e "CI_ENV=false" \
         -e "NO_CACHE=$NO_CACHE" \
+        -e "BUILD_TESTS=$BUILD_TESTS" \
         "$BUILDER_TAG" \
         sh -c "
             nix-build \$NIX_FILE -A containerImage \
@@ -348,6 +357,7 @@ execute_build() {
                 --cores \$BUILD_CORES \
                 --argstr version \"\$VERSION\" \
                 --argstr imageName \"\$IMAGE_NAME\" \
+                --argstr buildTests \"\$BUILD_TESTS\" \
                 ${NO_CACHE:+--no-build-output} && \
             cp result /output/$OUTPUT_FILE
         " || {
