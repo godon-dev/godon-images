@@ -13,10 +13,3 @@ requires "jsony >= 1.1.5"
 
 skipFiles = @[]
 bin           = @["godon_api"]
-
-# Tasks
-task build, "Build the API server":
-  exec "nim c -d:release src/godon_api.nim"
-
-task run, "Run the API server":
-  exec "nim c -r src/godon_api.nim"
