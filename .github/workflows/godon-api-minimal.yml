@@ -4,7 +4,7 @@ name: Godon API Minimal
 on:
   pull_request:
     branches: [ main ]
-workflow_dispatch:
+  workflow_dispatch:
 
 env:
   NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.05
