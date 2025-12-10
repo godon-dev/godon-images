@@ -1,0 +1,13 @@
+name: Godon Minimal Test
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Basic test
+      run: echo "Godon minimal test is running!"
