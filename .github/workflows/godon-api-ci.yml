@@ -1,0 +1,147 @@
+name: Godon API CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'images/godon-api/**'
+
+env:
+  NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.05
+
+jobs:
+  test:
+    name: Test Godon API
+    runs-on: ubuntu-latest
+    
+    # Service containers - Prism mock Windmill API
+    services:
+      windmill-mock:
+        image: stoplight/prism:4
+        env:
+          PRISM_LOG_LEVEL: info
+        ports:
+          - 8001:8001
+        options: >-
+          --name windmill-mock-service
+          -v ${{ github.workspace }}/images/godon-api/tests/windmill-openapi.yaml:/tmp/openapi.yaml:ro
+        cmd: mock -h 0.0.0.0 -p 8001 /tmp/openapi.yaml
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Nix
+      uses: cachix/install-nix-action@v22
+      with:
+        nix_path: nixpkgs=${{ env.NIXPKGS_CHANNEL }}
+
+    - name: Build godon-api container with Nix
+      run: |
+        echo "Building godon-api container using established Nix build system..."
+        VERSION="test-${{ github.run_number }}" \
+        IMAGE_NAME="godon-api-test" \
+        BUILD_TESTS="true" \
+        ./build/build-container-nix.sh \
+          --version "test-${{ github.run_number }}" \
+          --name "godon-api-test" \
+          --no-cache
+
+    - name: Wait for Prism service to be ready
+      run: |
+        echo "Waiting for Prism mock service to be ready..."
+        for i in {1..30}; do
+          if curl -f http://localhost:8001/api/auth/login >/dev/null 2>&1; then
+            echo "✅ Prism mock service is ready!"
+            break
+          fi
+          echo "Attempt $i/30 - waiting for Prism..."
+          sleep 2
+        done
+        
+        # Test Prism endpoints
+        echo "Testing Prism mock service..."
+        AUTH_RESPONSE=$(curl -s -X POST \
+          -H "Content-Type: application/json" \
+          -d '{"email":"admin@windmill.dev","password":"changeme"}' \
+          http://localhost:8001/api/auth/login)
+        
+        echo "Auth test response: $AUTH_RESPONSE"
+        
+        if echo "$AUTH_RESPONSE" | grep -q "token\|error"; then
+          echo "✅ Prism mock service is working correctly"
+        else
+          echo "❌ Prism mock service test failed"
+          exit 1
+        fi
+
+    - name: Run unit tests in container
+      run: |
+        echo "Running unit tests inside container..."
+        docker run --rm \
+          --network host \
+          -e WINDMILL_BASE_URL=http://localhost:8001 \
+          -e WINDMILL_API_BASE_URL=http://localhost:8001 \
+          godon-api-test:test-${{ github.run_number }} \
+          /app/tests/run_tests unit
+
+    - name: Run integration tests in container
+      run: |
+        echo "Running integration tests inside container..."
+        docker run --rm \
+          --network host \
+          -e PORT=8080 \
+          -e WINDMILL_BASE_URL=http://localhost:8001 \
+          -e WINDMILL_API_BASE_URL=http://localhost:8001 \
+          godon-api-test:test-${{ github.run_number }} \
+          /app/tests/run_tests integration
+
+    - name: Test container as running service
+      run: |
+        echo "Testing container as running service..."
+        
+        # Start container as service
+        docker run -d --name godon-service-test \
+          --network host \
+          -e PORT=8080 \
+          -e WINDMILL_BASE_URL=http://localhost:8001 \
+          -e WINDMILL_API_BASE_URL=http://localhost:8001 \
+          godon-api-test:test-${{ github.run_number }}
+        
+        # Wait for service to be ready
+        for i in {1..30}; do
+          if curl -f http://localhost:8080/health > /dev/null 2>&1; then
+            echo "✅ Godon API service is ready!"
+            break
+          fi
+          echo "Attempt $i/30 - waiting for service..."
+          sleep 2
+        done
+        
+        # Test service endpoints
+        echo "Testing service endpoints..."
+        curl -f http://localhost:8080/health | jq .
+        curl -f http://localhost:8080/ | jq .
+        
+        # Test breeder endpoints through service
+        echo "Testing breeder endpoints via service..."
+        BREEDERS_RESPONSE=$(curl -s -X GET http://localhost:8080/v0/breeders)
+        echo "GET /v0/breeders response: $BREEDERS_RESPONSE"
+        
+        # POST create breeder
+        CREATE_RESPONSE=$(curl -s -X POST \
+          -H "Content-Type: application/json" \
+          -d '{"name":"integration-test-breeder","config":{"mutationRate":0.15}}' \
+          http://localhost:8080/v0/breeders)
+        echo "POST /v0/breeders response: $CREATE_RESPONSE"
+        
+        # Clean up service
+        docker stop godon-service-test
+
+    - name: Container cleanup
+      if: always()
+      run: |
+        echo "Cleaning up test containers..."
+        docker stop godon-service-test || true
+        docker rm godon-service-test || true
+        docker rmi godon-api-test:test-${{ github.run_number }} || true
