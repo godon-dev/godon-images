@@ -3,7 +3,7 @@ version       = "0.1.0"
 author        = "Matthias Tafelmeier"
 description   = "Godon Control API - RESTful API for managing optimizer breeders"
 license       = "AGPL-3.0"
-srcDir        = "src"
+srcDir        = "."
 installExt    = @["nim"]
 
 # Dependencies
