@@ -3,8 +3,6 @@ name: Godon API CI
 on:
   pull_request:
     branches: [ main ]
-    paths:
-      - 'images/godon-api/**'
   workflow_dispatch:
 
 env:
