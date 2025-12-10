@@ -1,5 +1,6 @@
 import os, strutils
 
+###
 type
   Config* = object
     windmillHost*: string
