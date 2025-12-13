@@ -214,7 +214,8 @@ components:
           type: string
           minLength: 1
           maxLength: 255
-          description: Human-readable name for the breeder
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: Human-readable name for the breeder (alphanumeric, hyphens, and underscores only)
           example: "genetic-optimizer-1"
         status:
           type: string
@@ -231,6 +232,10 @@ components:
           type: object
           description: Configuration object for the breeder
           additionalProperties: true
+          example:
+            setting1: "value1"
+            setting2: 42
+            optimization_target: "performance"
 
     BreederCreate:
       type: object
@@ -301,8 +306,8 @@ components:
                 message: "Invalid request parameters"
                 code: "INVALID_INPUT"
                 details:
-                  field: "mutationRate"
-                  reason: "Must be between 0.0 and 1.0"
+                  field: "name"
+                  reason: "Name is required and must contain only alphanumeric characters, hyphens, and underscores (no spaces)"
 
     NotFound:
       description: The requested resource was not found

@@ -1,0 +1,138 @@
+name: Godon API CI
+
+on:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.05
+
+jobs:
+  test:
+    name: Test Godon API
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Build godon-api container with Nix
+      run: |
+        echo "Building godon-api container using established Nix build system..."
+        cd images/godon-api
+        VERSION="test-${{ github.run_number }}" \
+        IMAGE_NAME="godon-api-test" \
+        BUILD_TESTS="true" \
+        ../../build/build-container-nix.sh \
+          --version "test-${{ github.run_number }}" \
+          --name "godon-api-test" \
+          --build-tests \
+          --builder-file ../../build/Dockerfile.nix-builder
+
+    - name: Start Prism mock server
+      run: |
+        echo "Starting Prism mock server with Windmill OpenAPI spec..."
+
+        # Start Prism container with working approach
+        docker run -d --name windmill-mock \
+          -p 8001:4010 \
+          -v ${{ github.workspace }}/images/godon-api/tests/windmill-openapi.yaml:/tmp/windmill-openapi.yaml:ro \
+          stoplight/prism:5 \
+          mock -h 0.0.0.0 -p 4010 /tmp/windmill-openapi.yaml
+
+        echo "Prism mock server started, waiting 15 seconds for initialization..."
+        sleep 15
+
+    - name: Verify Prism mock server
+      run: |
+        echo "Verifying Prism mock server..."
+
+        # Check container status
+        docker ps | grep windmill-mock || echo "❌ Windmill mock container not found"
+
+        # Test basic connectivity
+        curl -f http://localhost:8001 || echo "❌ Basic connectivity test failed"
+
+        echo "✅ Prism mock server is ready!"
+
+    - name: Run unit tests in container
+      run: |
+        echo "Running unit tests inside container..."
+        docker run --rm \
+          --network host \
+          -e WINDMILL_BASE_URL=http://localhost:8001 \
+          -e WINDMILL_API_BASE_URL=http://localhost:8001 \
+          godon-api-test:test-${{ github.run_number }} \
+          /app/tests/run_tests unit
+
+    - name: Run integration tests in container
+      run: |
+        echo "Running integration tests inside container..."
+        docker run --rm \
+          --network host \
+          -e PORT=8080 \
+          -e WINDMILL_BASE_URL=http://localhost:8001 \
+          -e WINDMILL_API_BASE_URL=http://localhost:8001 \
+          godon-api-test:test-${{ github.run_number }} \
+          /app/tests/run_tests integration
+
+    - name: Test container as running service
+      run: |
+        echo "Testing container as running service..."
+
+        # Start container as service
+        docker run -d --name godon-service-test \
+          --network host \
+          -e PORT=8080 \
+          -e WINDMILL_BASE_URL=http://localhost:8001 \
+          -e WINDMILL_API_BASE_URL=http://localhost:8001 \
+          godon-api-test:test-${{ github.run_number }}
+
+        # Wait for service to be ready
+        for i in {1..30}; do
+          if curl -f http://localhost:8080/health > /dev/null 2>&1; then
+            echo "✅ Godon API service is ready!"
+            break
+          fi
+          echo "Attempt $i/30 - waiting for service..."
+          sleep 2
+        done
+
+        # Test service endpoints
+        echo "Testing service endpoints..."
+        echo "Health endpoint:"
+        curl -f http://localhost:8080/health | jq .
+
+        echo "Root endpoint:"
+        curl -f http://localhost:8080/ | jq .
+
+        # Test breeder endpoints through service
+        echo "Testing breeder endpoints via service..."
+
+        # GET breeders list
+        BREEDERS_RESPONSE=$(curl -s -X GET http://localhost:8080/v0/breeders)
+        echo "GET /v0/breeders response: $BREEDERS_RESPONSE"
+
+        # POST create breeder
+        CREATE_RESPONSE=$(curl -s -X POST \
+          -H "Content-Type: application/json" \
+          -d '{"name":"integration-test-breeder","config":{"mutationRate":0.15}}' \
+          http://localhost:8080/v0/breeders)
+        echo "POST /v0/breeders response: $CREATE_RESPONSE"
+
+        # Clean up service
+        docker stop godon-service-test || true
+        docker rm godon-service-test || true
+
+    - name: Container cleanup
+      if: always()
+      run: |
+        echo "Cleaning up test containers..."
+        docker stop godon-service-test || true
+        docker rm godon-service-test || true
+        docker stop windmill-mock || true
+        docker rm windmill-mock || true
+        docker rmi godon-api-test:test-${{ github.run_number }} || true
