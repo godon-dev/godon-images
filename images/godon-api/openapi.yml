@@ -301,8 +301,8 @@ components:
                 message: "Invalid request parameters"
                 code: "INVALID_INPUT"
                 details:
-                  field: "mutationRate"
-                  reason: "Must be between 0.0 and 1.0"
+                  field: "name"
+                  reason: "Name is required and must contain only alphanumeric characters, hyphens, and underscores (no spaces)"
 
     NotFound:
       description: The requested resource was not found
