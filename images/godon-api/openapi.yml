@@ -148,11 +148,44 @@ paths:
       summary: Update breeder configuration
       description: Updates the configuration of an existing breeder
       requestBody:
-        required: false
+        required: true
+        description: Updated breeder configuration
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BreederUpdate'
+            examples:
+              update:
+                summary: Updated breeder configuration
+                value:
+                  name: "updated-genetic-optimizer"
+                  description: "Updated optimizer configuration"
+                  config:
+                    setting1: "new_value1"
+                    setting2: 200
 
       responses:
+        '200':
+          description: Successfully updated the breeder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Breeder'
+              examples:
+                updated:
+                  summary: Updated breeder
+                  value:
+                    id: "550e8400-e29b-41d4-a716-446655440000"
+                    name: "updated-genetic-optimizer"
+                    status: "active"
+                    createdAt: "2024-01-15T10:30:00Z"
+                    config:
+                      setting1: "new_value1"
+                      setting2: 200
         '400':
           $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '501':
           $ref: '#/components/responses/NotImplementedServerError'
 
@@ -284,6 +317,28 @@ components:
         config:
           type: object
           description: Configuration object for the breeder
+          additionalProperties: true
+
+    BreederUpdate:
+      type: object
+      required:
+        - name
+        - description
+        - config
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Human-readable name for the breeder
+          example: "updated-genetic-optimizer"
+        description:
+          type: string
+          description: Description of the breeder updates
+          example: "Updated optimizer configuration"
+        config:
+          type: object
+          description: Updated configuration object for the breeder
           additionalProperties: true
 
     BreederList:
