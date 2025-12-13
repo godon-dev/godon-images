@@ -61,12 +61,10 @@ paths:
                       name: "genetic-optimizer-1"
                       status: "active"
                       createdAt: "2024-01-15T10:30:00Z"
-                      config: "{}"
                     - id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
                       name: "neural-breeder-2"
                       status: "paused"
                       createdAt: "2024-01-16T14:20:00Z"
-                      config: "{}"
         '500':
           $ref: '#/components/responses/InternalServerError'
 
@@ -94,7 +92,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Breeder'
+                $ref: '#/components/schemas/BreederSummary'
               examples:
                 created:
                   summary: Newly created breeder
@@ -237,6 +235,39 @@ components:
             setting2: 42
             optimization_target: "performance"
 
+    BreederSummary:
+      type: object
+      required:
+        - id
+        - name
+        - status
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier for the breeder
+          readOnly: true
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: Human-readable name for the breeder (alphanumeric, hyphens, and underscores only)
+          example: "genetic-optimizer-1"
+        status:
+          type: string
+          enum: [active, paused, stopped, error]
+          description: Current operational status of the breeder
+          example: "active"
+        createdAt:
+          type: string
+          format: date-time
+          description: Timestamp when the breeder was created
+          readOnly: true
+          example: "2024-01-15T10:30:00Z"
+
     BreederCreate:
       type: object
       required:
@@ -257,8 +288,8 @@ components:
     BreederList:
       type: array
       items:
-        $ref: '#/components/schemas/Breeder'
-      description: Array of breeder objects
+        $ref: '#/components/schemas/BreederSummary'
+      description: Array of breeder summary objects (without configuration details)
 
     Error:
       type: object
