@@ -3,10 +3,12 @@
 
 FROM nixos/nix:2.19.2
 
-# Install dependencies efficiently
+# Install dependencies efficiently and enable flakes
 RUN nix-channel --add https://nixos.org/channels/nixos-25.05 nixpkgs && \
     nix-channel --update && \
-    nix-env -iA nixpkgs.docker-client nixpkgs.git nixpkgs.cacert
+    nix-env -iA nixpkgs.docker-client nixpkgs.git nixpkgs.cacert && \
+    mkdir -p /etc/nix && \
+    echo 'experimental-features = nix-command flakes' >> /etc/nix/nix.conf
 
 # Set up SSL certificates for the builder
 RUN mkdir -p /etc/ssl/certs && \
