@@ -5,8 +5,9 @@ let
   # Use the direct flake approach as recommended in the documentation
   system = builtins.currentSystem or "x86_64-linux";
 
-  # Use builtins.getFlake directly since we now have flakes enabled in the builder
-  godon-cli-flake = builtins.getFlake "github:godon-dev/godon-cli/0.1.0";
+  # Use the version parameter to select the appropriate CLI tag to pull
+  # VERSION specifies which CLI container tag to use
+  godon-cli-flake = builtins.getFlake "github:godon-dev/godon-cli/${version}";
 
   # Get the package and nixpkgs from the flake's outputs to avoid duplication
   pkgs = godon-cli-flake.inputs.nixpkgs.legacyPackages.${system};
