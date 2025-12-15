@@ -11,6 +11,10 @@ on:
         required: true
         type: string
 
+permissions:
+  packages: write
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   ORG: godon-dev
