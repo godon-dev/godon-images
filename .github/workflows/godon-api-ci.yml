@@ -89,56 +89,34 @@ jobs:
 
         echo "✅ Prism mock server is ready!"
 
-    - name: Download godon_cli for integration testing
+    - name: Pull godon_cli container for integration testing
+      id: cli-image
       run: |
-        echo "Downloading godon_cli for integration testing..."
+        echo "Pulling godon_cli container for integration testing..."
 
-        # Determine architecture and download appropriate binary
-        ARCH=$(uname -m)
-        VERSION="0.1.0"
-        CLI_FILE="godon-cli-${VERSION}-${ARCH}-linux.tar.gz"
-
-        echo "Downloading godon_cli $CLI_FILE for $ARCH..."
-
-        # Download latest release
-        curl -L -o godon_cli.tar.gz \
-          "https://github.com/godon-dev/godon-cli/releases/download/${VERSION}/${CLI_FILE}"
-
-        # Extract and install
-        tar -xzf godon_cli.tar.gz
-        
-        # Check what was extracted
-        echo "Extracted files:"
-        ls -la
-        
-        # Try to find the binary
-        if [ -f "godon_cli" ]; then
-          echo "Found godon_cli binary"
-          chmod +x godon_cli
-        elif [ -f "godon-cli" ]; then
-          echo "Found godon-cli binary, renaming to godon_cli"
-          mv godon-cli godon_cli
-          chmod +x godon_cli
+        # Fetch latest CLI version from godon-cli repo
+        echo "Fetching latest release tag from godon-cli repo..."
+        LATEST_TAG=$(curl -s https://api.github.com/repos/godon-dev/godon-cli/releases/latest | jq -r '.tag_name')
+        if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
+          echo "No release tags found, falling back to 0.2.0"
+          VERSION="0.2.0"
         else
-          echo "❌ No godon binary found in extracted files"
-          exit 1
+          VERSION="$LATEST_TAG"
+          echo "Found latest tag: $VERSION"
         fi
         
-        # Test binary before moving
-        echo "Testing binary..."
-        ./godon_cli --version || {
-          echo "❌ Binary execution failed, checking dependencies..."
-          ldd godon_cli || echo "ldd failed"
-          file godon_cli
-          exit 1
-        }
-        
-        # Move to system path
-        sudo mv godon_cli /usr/local/bin/
+        CLI_CONTAINER_IMAGE="ghcr.io/godon-dev/godon-cli:$VERSION"
+        echo "Using CLI container image: $CLI_CONTAINER_IMAGE"
 
-        # Verify installation
-        godon_cli --version
-        echo "✅ godon_cli installed successfully"
+        echo "CLI_CONTAINER_IMAGE=$CLI_CONTAINER_IMAGE" >> $GITHUB_OUTPUT
+        
+        echo "Pulling godon_cli container $CLI_CONTAINER_IMAGE..."
+        docker pull $CLI_CONTAINER_IMAGE
+
+        # Test the container CLI mode
+        echo "Testing godon_cli container in CLI mode..."
+        docker run --rm $CLI_CONTAINER_IMAGE --help
+        echo "✅ godon_cli container ready for CLI mode"
 
     - name: Test container with godon_cli client
       run: |
@@ -162,12 +140,12 @@ jobs:
           sleep 2
         done
 
-        # Test breeder operations with godon_cli using explicit host/port
-        echo "Testing breeder operations via godon_cli..."
+        # Test breeder operations with godon_cli container using explicit host/port
+        echo "Testing breeder operations via godon_cli container..."
 
         # List breeders (should return empty or mock data)
         echo "Listing breeders:"
-        godon_cli --host localhost --port 8080 breeders list || echo "⚠️ Breeders list command failed - API may need endpoint adjustment"
+        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder list
 
         # Create a test breeder
         echo "Creating test breeder..."
@@ -176,40 +154,39 @@ jobs:
         echo "setting: example" > breeder-config.yaml
         echo "enabled: true" >> breeder-config.yaml
 
-        godon_cli --host localhost --port 8080 breeders create \
-          --name "integration-test-breeder" \
-          --config-file breeder-config.yaml || echo "⚠️ Create breeder command failed - API may need endpoint adjustment"
+        docker run --rm --network host -v "$(pwd)/breeder-config.yaml:/breeder-config.yaml:ro" \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder create --file /breeder-config.yaml
 
         # List breeders again to see if creation worked
         echo "Listing breeders after creation:"
-        godon_cli --host localhost --port 8080 breeders list || echo "⚠️ Breeders list command failed"
+        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder list
 
         # Test getting a specific breeder (using a sample UUID)
         echo "Testing get specific breeder:"
-        godon_cli --host localhost --port 8080 breeders get 550e8400-e29b-41d4-a716-446655440000 || echo "⚠️ Get breeder command failed - may not exist yet"
+        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder show --id 550e8400-e29b-41d4-a716-446655440000
 
         # Test updating a breeder
         echo "Testing update breeder:"
         echo "updated_setting: new_value" > update-config.yaml
         echo "enabled: false" >> update-config.yaml
 
-        godon_cli --host localhost --port 8080 breeders update 550e8400-e29b-41d4-a716-446655440000 \
-          --config-file update-config.yaml || echo "⚠️ Update breeder command failed - may not be implemented"
+        docker run --rm --network host -v "$(pwd)/update-config.yaml:/update-config.yaml:ro" \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder update --file /update-config.yaml
 
         # Test deleting a breeder
         echo "Testing delete breeder:"
-        godon_cli --host localhost --port 8080 breeders delete 550e8400-e29b-41d4-a716-446655440000 || echo "⚠️ Delete breeder command failed - breeder may not exist"
+        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder purge --id 550e8400-e29b-41d4-a716-446655440000
 
         # Test error scenarios
         echo "Testing error scenarios..."
 
-        # Test with invalid UUID
-        echo "Testing invalid UUID handling:"
-        godon_cli --host localhost --port 8080 breeders get invalid-uuid-format || echo "✅ Invalid UUID properly rejected"
+        # Test with invalid UUID (using show command) - this should fail
+        echo "Testing invalid UUID handling (should fail):"
+        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder show --id invalid-uuid-format || echo "✅ Invalid UUID properly rejected"
 
-        # Test with non-existent breeder
-        echo "Testing non-existent breeder:"
-        godon_cli --host localhost --port 8080 breeders get 00000000-0000-0000-0000-000000000000 || echo "✅ Non-existent breeder properly handled"
+        # Test with non-existent breeder (should fail)
+        echo "Testing non-existent breeder (should fail):"
+        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder show --id 00000000-0000-0000-0000-000000000000 || echo "✅ Non-existent breeder properly handled"
 
         # Test with curl for fallback comparison
         echo "Fallback testing with curl for comparison..."
