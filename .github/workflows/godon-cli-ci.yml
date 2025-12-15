@@ -1,0 +1,45 @@
+name: Build and Test godon-cli
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'images/godon-cli/**'
+      - 'build/**'
+  workflow_dispatch:
+
+env:
+  VERSION: ${{ github.ref_name }}-${{ github.run_number }}
+  IMAGE_NAME: godon-cli
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Build godon-cli container
+      run: |
+        export VERSION=${{ env.VERSION }}
+        export IMAGE_NAME=${{ env.IMAGE_NAME }}
+        cd images/godon-cli
+        bash ../../build/build-container-nix.sh --builder-file ../../build/Dockerfile.nix-builder
+
+    - name: Test container invocation
+      run: |
+        echo "Testing godon-cli container..."
+
+        # Test basic help command
+        docker run --rm ${{ env.IMAGE_NAME }}:${{ env.VERSION }} --help
+
+        echo "✅ Container tests passed"
+
+    - name: Show container info
+      run: |
+        echo "=== Container Information ==="
+        docker images ${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+        echo ""
+        echo "=== Container layers (top 10) ==="
+        docker history ${{ env.IMAGE_NAME }}:${{ env.VERSION }} --human | head -10
