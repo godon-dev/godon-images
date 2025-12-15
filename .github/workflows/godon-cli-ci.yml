@@ -7,9 +7,13 @@ on:
       - 'images/godon-cli/**'
       - 'build/**'
   workflow_dispatch:
+    inputs:
+      VERSION:
+        description: 'CLI version to test against (e.g., 0.1.0, main, develop)'
+        required: false
+        default: '0.2.0'
 
 env:
-  VERSION: ${{ github.ref_name }}-${{ github.run_number }}
   IMAGE_NAME: godon-cli
 
 jobs:
@@ -20,7 +24,28 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    - name: Get latest CLI version
+      id: version
+      run: |
+        if [ -n "${{ github.event.inputs.VERSION }}" ]; then
+          VERSION="${{ github.event.inputs.VERSION }}"
+          echo "Using provided VERSION: $VERSION"
+        else
+          echo "Fetching latest release tag from godon-cli repo..."
+          LATEST_TAG=$(curl -s https://api.github.com/repos/godon-dev/godon-cli/releases/latest | jq -r '.tag_name')
+          if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
+            echo "No release tags found, falling back to 0.2.0"
+            VERSION="0.2.0"
+          else
+            VERSION="$LATEST_TAG"
+            echo "Found latest tag: $VERSION"
+          fi
+        fi
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
     - name: Build godon-cli container
+      env:
+        VERSION: ${{ steps.version.outputs.VERSION }}
       run: |
         export VERSION=${{ env.VERSION }}
         export IMAGE_NAME=${{ env.IMAGE_NAME }}
@@ -30,16 +55,18 @@ jobs:
     - name: Test container invocation
       run: |
         echo "Testing godon-cli container..."
+        VERSION="${{ steps.version.outputs.VERSION }}"
 
         # Test basic help command
-        docker run --rm ${{ env.IMAGE_NAME }}:${{ env.VERSION }} --help
+        docker run --rm ${{ env.IMAGE_NAME }}:$VERSION --help
 
         echo "✅ Container tests passed"
 
     - name: Show container info
       run: |
         echo "=== Container Information ==="
-        docker images ${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+        VERSION="${{ steps.version.outputs.VERSION }}"
+        docker images ${{ env.IMAGE_NAME }}:$VERSION
         echo ""
         echo "=== Container layers (top 10) ==="
-        docker history ${{ env.IMAGE_NAME }}:${{ env.VERSION }} --human | head -10
+        docker history ${{ env.IMAGE_NAME }}:$VERSION --human | head -10
