@@ -29,10 +29,10 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set tag from ref
-      if: github.event_name == 'push'
+    - name: Set tag from release
+      if: github.event_name == 'release'
       run: |
-        TAG="${{ github.ref_name }}"
+        TAG="${{ github.event.release.tag_name }}"
         echo "TAG=$TAG" >> $GITHUB_ENV
 
     - name: Set tag from input
