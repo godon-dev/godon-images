@@ -1,5 +1,6 @@
 import std/[strutils, os, json]
 import jester
+import handlers
 
 settings:
   port = Port(parseInt(getEnv("PORT", "8080")))
@@ -31,6 +32,57 @@ routes:
       key: "Access-Control-Allow-Origin",
       val: "*"
     )], $(%*{"message": "Godon API is running", "version": "0.1.0"})
+
+  # Breeder endpoints
+  get "/breeders":
+    let (code, response) = handleBreedersGet(request)
+    resp code, [(
+      key: "Content-Type", 
+      val: "application/json"
+    ), (
+      key: "Access-Control-Allow-Origin",
+      val: "*"
+    )], response
+
+  post "/breeders":
+    let (code, response) = handleBreedersPost(request)
+    resp code, [(
+      key: "Content-Type", 
+      val: "application/json"
+    ), (
+      key: "Access-Control-Allow-Origin",
+      val: "*"
+    )], response
+
+  get "/breeders/@id":
+    let (code, response) = handleBreederGet(request, @"id")
+    resp code, [(
+      key: "Content-Type", 
+      val: "application/json"
+    ), (
+      key: "Access-Control-Allow-Origin",
+      val: "*"
+    )], response
+
+  put "/breeders/@id":
+    let (code, response) = handleBreederPut(request, @"id")
+    resp code, [(
+      key: "Content-Type", 
+      val: "application/json"
+    ), (
+      key: "Access-Control-Allow-Origin",
+      val: "*"
+    )], response
+
+  delete "/breeders/@id":
+    let (code, response) = handleBreederDelete(request, @"id")
+    resp code, [(
+      key: "Content-Type", 
+      val: "application/json"
+    ), (
+      key: "Access-Control-Allow-Origin",
+      val: "*"
+    )], response
 
   error Http404:
     let errorResponse = %*{"message": "Not found", "code": "NOT_FOUND"}
