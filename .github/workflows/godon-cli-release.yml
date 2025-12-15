@@ -1,4 +1,4 @@
-name: Release Images
+name: Godon CLI Release Image
 
 on:
   push:
