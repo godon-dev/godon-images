@@ -34,6 +34,6 @@ proc loadConfig*(): Config =
   
   result.windmillWorkspace = "godon"
   result.windmillFolder = "controller"
-  # Exact same URL pattern as Python implementation:
-  # WINDMILL_API_BASE_URL=f"{WINDMILL_BASE_URL}/api/w/{WINDMILL_WORKSPACE}/jobs/run_wait_result/p/f/{WINDMILL_FOLDER}"
-  result.windmillApiBaseUrl = result.windmillBaseUrl & "/api/w/" & result.windmillWorkspace & "/jobs/run_wait_result/p/f/" & result.windmillFolder
+  # Windmill API URL pattern: {BASE_URL}/api/w/{WORKSPACE}/jobs/run_wait_result/p/f/{FOLDER}
+  # But for mock servers, the base URL might already include the /api prefix
+  result.windmillApiBaseUrl = result.windmillBaseUrl & "/w/" & result.windmillWorkspace & "/jobs/run_wait_result/p/f/" & result.windmillFolder
