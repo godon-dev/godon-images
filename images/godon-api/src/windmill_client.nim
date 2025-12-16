@@ -1,4 +1,4 @@
-import std/[httpclient, json, strformat, tables]
+import std/[httpclient, json, strformat, tables, uri]
 import config, types
 
 type
@@ -33,7 +33,9 @@ proc runFlow*(client: WindmillClient, flowPath: string, args: JsonNode = nil): J
   ## Run a Windmill flow by path and wait for result
   ## This is the main method for executing custom controller scripts
   ## Uses the exact same URL pattern as the original Python implementation
-  let url = &"{client.config.windmillApiBaseUrl}/{flowPath}"
+  let fullPath = "f/" & client.config.windmillFolder & "/" & flowPath
+  let encodedPath = encodeUrl(fullPath)  # URL encode the path containing slashes
+  let url = &"{client.config.windmillApiBaseUrl}/{encodedPath}"
   
   var http = newHttpClient()
   http.headers = newHttpHeaders({
