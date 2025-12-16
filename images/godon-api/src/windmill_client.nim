@@ -7,7 +7,7 @@ type
     token: string
 
 proc login*(client: var WindmillClient) =
-  let url = &"{client.config.windmillBaseUrl}/api/auth/login"
+  let url = &"{client.config.windmillBaseUrl}/auth/login"
   let payload = %* {
     "email": "admin@windmill.dev",
     "password": "changeme"
