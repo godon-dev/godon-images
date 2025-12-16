@@ -47,7 +47,7 @@ jobs:
           -p 8001:4010 \
           -v ${{ github.workspace }}/images/godon-api/tests/windmill-openapi.yaml:/tmp/windmill-openapi.yaml:ro \
           stoplight/prism:5 \
-          mock -h 0.0.0.0 -p 4010 /tmp/windmill-openapi.yaml --errors=false
+          mock -h 0.0.0.0 -p 4010 /tmp/windmill-openapi.yaml --dynamic --errors=false
 
         echo "Prism mock server started, waiting 15 seconds for initialization..."
         sleep 15
