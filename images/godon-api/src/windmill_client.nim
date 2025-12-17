@@ -84,10 +84,7 @@ proc getBreeder*(client: WindmillClient, breederId: string): Breeder =
   ## Execute the custom 'breeder_get' controller flow
   let args = %* {"breeder_id": breederId}
   let response = client.runFlow("breeder_get", args)
-  if response.hasKey("breeder_data"):
-    result = parseBreederFromJson(response["breeder_data"])
-  else:
-    raise newException(ValueError, "No breeder_data returned from flow")
+  result = parseBreederFromJson(response)
 
 proc deleteBreeder*(client: WindmillClient, breederId: string) =
   ## Execute the custom 'breeder_delete' controller flow

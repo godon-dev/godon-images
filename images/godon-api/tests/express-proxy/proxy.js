@@ -45,19 +45,24 @@ const mockResponses = {
     success: true
   },
   '/w/godon/jobs/run_wait_result/p/f/controller/breeder_update': {
-    breeder_id: "550e8400-e29b-41d4-a716-446655440000",
-    updated: true
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "updated-genetic-optimizer",
+    status: "active",
+    createdAt: "2024-01-15T10:30:00Z",
+    config: {
+      setting1: "new_value1",
+      setting2: 200
+    }
   },
   '/w/godon/jobs/run_wait_result/p/f/controller/breeder_get': {
     id: "550e8400-e29b-41d4-a716-446655440000",
     name: "genetic-optimizer-test",
     status: "active",
+    createdAt: "2024-01-15T10:30:00Z",
     config: {
       step_size: 3,
       max_iterations: 100
-    },
-    created_at: "2024-01-15T10:30:00Z",
-    updated_at: "2024-01-20T14:22:00Z"
+    }
   }
 };
 
