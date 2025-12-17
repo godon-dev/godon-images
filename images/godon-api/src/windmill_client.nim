@@ -70,10 +70,15 @@ proc createBreeder*(client: WindmillClient, config: JsonNode): string =
   ## Execute the custom 'breeder_create' controller flow
   let args = %* {"breeder_config": config}
   let response = client.runFlow("breeder_create", args)
-  if response.hasKey("breeder_id"):
-    result = response["breeder_id"].getStr()
+  if response.hasKey("id"):
+    result = response["id"].getStr()
   else:
-    raise newException(ValueError, "No breeder_id returned from flow")
+    raise newException(ValueError, "No id returned from flow")
+
+proc createBreederResponse*(client: WindmillClient, config: JsonNode): JsonNode =
+  ## Execute the custom 'breeder_create' controller flow and return raw response
+  let args = %* {"breeder_config": config}
+  result = client.runFlow("breeder_create", args)
 
 proc getBreeder*(client: WindmillClient, breederId: string): Breeder =
   ## Execute the custom 'breeder_get' controller flow
