@@ -1,0 +1,14 @@
+{
+  "name": "windmill-proxy",
+  "version": "1.0.0",
+  "description": "Simple Express proxy for Windmill/Prism with response transformation",
+  "main": "proxy.js",
+  "scripts": {
+    "start": "node proxy.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "http-proxy-middleware": "^2.0.6",
+    "axios": "^1.6.0"
+  }
+}

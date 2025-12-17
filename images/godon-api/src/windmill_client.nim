@@ -1,4 +1,4 @@
-import std/[httpclient, json, strformat, tables]
+import std/[httpclient, json, strformat, tables, uri]
 import config, types
 
 type
@@ -7,7 +7,7 @@ type
     token: string
 
 proc login*(client: var WindmillClient) =
-  let url = &"{client.config.windmillBaseUrl}/api/auth/login"
+  let url = &"{client.config.windmillBaseUrl}/auth/login"
   let payload = %* {
     "email": "admin@windmill.dev",
     "password": "changeme"
@@ -33,7 +33,9 @@ proc runFlow*(client: WindmillClient, flowPath: string, args: JsonNode = nil): J
   ## Run a Windmill flow by path and wait for result
   ## This is the main method for executing custom controller scripts
   ## Uses the exact same URL pattern as the original Python implementation
-  let url = &"{client.config.windmillApiBaseUrl}/{flowPath}"
+  let fullPath = "f/" & client.config.windmillFolder & "/" & flowPath
+  let encodedPath = encodeUrl(fullPath)  # URL encode the path containing slashes
+  let url = &"{client.config.windmillApiBaseUrl}/{encodedPath}"
   
   var http = newHttpClient()
   http.headers = newHttpHeaders({
@@ -68,19 +70,21 @@ proc createBreeder*(client: WindmillClient, config: JsonNode): string =
   ## Execute the custom 'breeder_create' controller flow
   let args = %* {"breeder_config": config}
   let response = client.runFlow("breeder_create", args)
-  if response.hasKey("breeder_id"):
-    result = response["breeder_id"].getStr()
+  if response.hasKey("id"):
+    result = response["id"].getStr()
   else:
-    raise newException(ValueError, "No breeder_id returned from flow")
+    raise newException(ValueError, "No id returned from flow")
+
+proc createBreederResponse*(client: WindmillClient, config: JsonNode): JsonNode =
+  ## Execute the custom 'breeder_create' controller flow and return raw response
+  let args = %* {"breeder_config": config}
+  result = client.runFlow("breeder_create", args)
 
 proc getBreeder*(client: WindmillClient, breederId: string): Breeder =
   ## Execute the custom 'breeder_get' controller flow
   let args = %* {"breeder_id": breederId}
   let response = client.runFlow("breeder_get", args)
-  if response.hasKey("breeder_data"):
-    result = parseBreederFromJson(response["breeder_data"])
-  else:
-    raise newException(ValueError, "No breeder_data returned from flow")
+  result = parseBreederFromJson(response)
 
 proc deleteBreeder*(client: WindmillClient, breederId: string) =
   ## Execute the custom 'breeder_delete' controller flow
