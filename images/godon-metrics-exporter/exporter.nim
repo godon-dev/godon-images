@@ -1,26 +1,96 @@
 
+import std/[os, strutils, logging, options, times, parseopt, sequtils,
+    tables, strformat]
 import metrics
 import metrics/chronos_httpserver
 import net
-import os
-
-import std/tables
-import std/parseopt
-import std/strutils
-
 import db_connector/db_postgres
 
-const ARCHIVE_DB_USER = getEnv("ARCHIVE_DB_USER")
-const ARCHIVE_DB_PW = getEnv("ARCHIVE_DB_PW")
-const ARCHIVE_DB_HOST = getEnv("ARCHIVE_DB_HOST")
-const ARCHIVE_DB_DATABASE_NAME = getEnv("ARCHIVE_DB_DATABASE_NAME")
+const
+  version {.strdefine.} = "1.0.0"  # Can be overridden with -d:version="X.Y.Z"
+  appName = "Godon Metrics Exporter (Nim)"
 
-proc parse_args(): Table[string, string] =
-  var args = initTable[string, string]()
+type
+  ExporterConfig = ref object
+    host: string
+    port: int
+    dbHost: string
+    dbUser: string
+    dbPassword: string
+    dbName: string
+
+proc setupLogging*(level: Level = lvlInfo) =
+  ## Setup console logging with proper formatting
+  let fmtStr = "$datetime [$levelname] "
+  var logger = newConsoleLogger(levelThreshold = level, fmtStr = fmtStr)
+  addHandler(logger)
+
+proc printVersion*() =
+  ## Print version information
+  echo appName, " v", version
+  echo "Built with Nim - high performance systems programming language"
+
+proc printUsage*() =
+  ## Print usage information
+  echo """
+Usage: godon-metrics-exporter [options]
+
+Options:
+  -h, --help              Show this help message
+  -v, --version           Show version information
+  -H, --host:HOST         Bind address (default: 127.0.0.1)
+  -p, --port:PORT         HTTP server port (default: 8089)
+  --log-level:LEVEL       Logging level (DEBUG, INFO, WARN, ERROR)
+
+Environment Variables:
+  ARCHIVE_DB_HOST         PostgreSQL host (required)
+  ARCHIVE_DB_USER         PostgreSQL user (required)
+  ARCHIVE_DB_PW           PostgreSQL password (required)
+  ARCHIVE_DB_DATABASE_NAME PostgreSQL database name (required)
+
+Examples:
+  godon-metrics-exporter                                    # Run with defaults
+  godon-metrics-exporter -H 0.0.0.0 -p 9090                 # Custom host and port
+  godon-metrics-exporter --log-level:DEBUG                  # Debug logging
+
+Database Configuration:
+  The exporter connects to a PostgreSQL database to collect metrics about
+  breeder tables. All database connection parameters must be provided via
+  environment variables.
+"""
+
+proc loadConfig*(host: string, port: int): ExporterConfig =
+  ## Load configuration from arguments and environment
+  let dbHost = getEnv("ARCHIVE_DB_HOST", "")
+  let dbUser = getEnv("ARCHIVE_DB_USER", "")
+  let dbPassword = getEnv("ARCHIVE_DB_PW", "")
+  let dbName = getEnv("ARCHIVE_DB_DATABASE_NAME", "")
   
-  # Set defaults
-  args["host"] = "127.0.0.1"
-  args["port"] = "8089"
+  # Validate required environment variables
+  if dbHost.len == 0:
+    error "ARCHIVE_DB_HOST environment variable is required"
+    quit(QuitFailure)
+  if dbUser.len == 0:
+    error "ARCHIVE_DB_USER environment variable is required"
+    quit(QuitFailure)
+  if dbPassword.len == 0:
+    error "ARCHIVE_DB_PW environment variable is required"
+    quit(QuitFailure)
+  if dbName.len == 0:
+    error "ARCHIVE_DB_DATABASE_NAME environment variable is required"
+    quit(QuitFailure)
+  
+  result = ExporterConfig(
+    host: host,
+    port: port,
+    dbHost: dbHost,
+    dbUser: dbUser,
+    dbPassword: dbPassword,
+    dbName: dbName
+  )
+
+proc parseArgs(): Table[string, string] =
+  var args = initTable[string, string]()
 
   for kind, key, val in getopt():
     case kind
@@ -28,70 +98,161 @@ proc parse_args(): Table[string, string] =
       discard
     of cmdLongOption, cmdShortOption:
       case key:
-      of "host": # --host:<value> binding address
+      of "host", "H":
         args["host"] = val
-      of "port": # --port:<value> binding port
+      of "port", "p":
         args["port"] = val
-      of "help":
-        echo "Usage: godon-metrics-exporter [options]"
-        echo "Options:"
-        echo "  --host:HOST     Bind address (default: 127.0.0.1)"
-        echo "  --port:PORT     Bind port (default: 8089)"
-        echo "  --help          Show this help message"
+      of "log-level":
+        args["log-level"] = val
+      of "help", "h":
+        printVersion()
         echo ""
-        echo "Environment variables:"
-        echo "  ARCHIVE_DB_HOST         PostgreSQL host"
-        echo "  ARCHIVE_DB_USER         PostgreSQL user"
-        echo "  ARCHIVE_DB_PW           PostgreSQL password"
-        echo "  ARCHIVE_DB_DATABASE_NAME PostgreSQL database name"
-        quit(0)
+        printUsage()
+        quit(QuitSuccess)
+      of "version", "v":
+        printVersion()
+        quit(QuitSuccess)
     of cmdEnd:
-      discard
+      break
 
-  result = args
+  return args
 
 
 when defined(metrics):
   type GodonCollector = ref object of Collector
-  let godonCollector  = GodonCollector.newCollector(name = "godon_metrics", help = "Offers metrics from internas of the godon logic.")
+    config: ExporterConfig
+
+  proc newGodonCollector(config: ExporterConfig): GodonCollector =
+    result = GodonCollector.newCollector(name = "godon_metrics", help = "Offers metrics from internals of the godon logic.")
+    result.config = config
 
   method collect(collector: GodonCollector, output: MetricHandler) =
     let timestamp = collector.now()
 
     try:
+      debug "Connecting to database: ", collector.config.dbHost, "/", collector.config.dbName
       # connect to godon archive DB
-      let db = open(ARCHIVE_DB_HOST,
-                    ARCHIVE_DB_USER,
-                    ARCHIVE_DB_PW,
-                    ARCHIVE_DB_DATABASE_NAME)
+      let db = open(collector.config.dbHost,
+                    collector.config.dbUser,
+                    collector.config.dbPassword,
+                    collector.config.dbName)
       defer: db.close()
 
-      # query all breeder tables row count from archive db
-      let sql_qery = sql"SELECT relname, n_live_tup FROM pg_stat_user_tables;"
-      var breeder_tables_row_count_list = db.getAllRows(sql_qery)
+      debug "Connected to database successfully"
 
-      for row in breeder_tables_row_count_list:
-        let breeder_table_name = row[0]
-        let settings_count = row[1]
+      # query all breeder tables row count from archive db
+      let sqlQuery = sql"SELECT relname, n_live_tup FROM pg_stat_user_tables WHERE relname LIKE 'breeder_%';"
+      var breederTablesRowCountList = db.getAllRows(sqlQuery)
+
+      debug "Found ", $breederTablesRowCountList.len, " breeder tables"
+
+      for row in breederTablesRowCountList:
+        let breederTableName = row[0]
+        let settingsCount = row[1]
+
+        # Extract breeder ID from table name (assuming format: breeder_XXXXXXXXXXXX)
+        let breederId = if breederTableName.len > 8: breederTableName[8..^1] else: breederTableName
+
+        debug "Exporting metric for breeder: ", breederId, " count: ", settingsCount
 
         output(
           name = "godon_breeder_settings_explored",
           labels = @["breeder_id"],
-          labelValues = @[breeder_table_name],
-          value = parseFloat(settings_count),
+          labelValues = @[breederId],
+          value = parseFloat(settingsCount),
           timestamp = timestamp
         )
+
+      info "Successfully exported ", $breederTablesRowCountList.len, " breeder metrics"
+
     except CatchableError as e:
-      echo e.msg
+      error "Failed to collect metrics: ", e.msg
+      error "Database connection error - check connection parameters"
+      debug "Exception details: ", e.name, ": ", e.getStackTrace()
 
-var args = parse_args()
+proc initGodonCollector(config: ExporterConfig) =
+  ## Initialize the Godon metrics collector
+  info "Initializing Godon metrics collector..."
+  let collector = newGodonCollector(config)
+  info "Godon metrics collector initialized successfully"
 
-echo "Starting godon-metrics-exporter..."
-echo "Binding to $1:$2" % [ args["host"], args["port"] ]
+proc main*(host = "127.0.0.1", port = 8089, logLevel = "INFO") =
+  ## Main entry point for the Godon metrics exporter
 
-chronos_httpserver.startMetricsHttpServer(args["host"], Port(parseInt(args["port"])))
+  # Setup logging
+  let level = case logLevel.toUpperAscii():
+    of "DEBUG": lvlDebug
+    of "INFO": lvlInfo
+    of "WARN": lvlWarn
+    of "ERROR": lvlError
+    else: lvlInfo
 
-## Todo: improve the loop in the main thread with something
-## more threading native
-while true:
-  sleep(10000)
+  setupLogging(level)
+
+  info "Starting ", appName, " v", version
+  info "Nim compiler version: ", NimVersion
+  info "Process ID: ", getCurrentProcessId()
+
+  # Load and validate configuration
+  let config = loadConfig(host, port)
+  info "Configuration loaded successfully"
+  info "Database host: ", config.dbHost
+  info "Database name: ", config.dbName
+  info "Bind address: ", config.host, ":", config.port
+
+  # Initialize metrics collector
+  initGodonCollector(config)
+
+  # Start Prometheus metrics HTTP server
+  info "Starting Prometheus metrics HTTP server..."
+  try:
+    chronos_httpserver.startMetricsHttpServer(config.host, Port(config.port))
+    # Note: startMetricsHttpServer is blocking and runs indefinitely
+    # This line will never be reached under normal operation
+    warn "Metrics server stopped"
+
+  except CatchableError as e:
+    error "Failed to start metrics HTTP server: ", e.msg
+    error "Exception details: ", e.name, ": ", e.msg
+    error "Stack trace: ", e.getStackTrace()
+    quit(QuitFailure)
+
+when isMainModule:
+  # Parse command line arguments
+  let args = parseArgs()
+
+  # Set defaults and override with parsed arguments
+  var host = "127.0.0.1"
+  var port = 8089
+  var logLevel = "INFO"
+
+  # Apply parsed arguments with validation
+  if args.contains("host"):
+    let hostStr = args["host"]
+    if hostStr.len == 0:
+      echo "Error: --host requires a value"
+      quit(QuitFailure)
+    host = hostStr
+
+  if args.contains("port"):
+    let portStr = args["port"]
+    if portStr.len == 0:
+      echo "Error: --port requires a numeric value"
+      quit(QuitFailure)
+    try:
+      port = parseInt(portStr)
+      if port <= 0 or port > 65535:
+        echo "Error: --port must be between 1 and 65535, got: ", portStr
+        quit(QuitFailure)
+    except ValueError:
+      echo "Error: --port requires a valid numeric value, got: ", portStr
+      quit(QuitFailure)
+
+  if args.contains("log-level"):
+    let logStr = args["log-level"]
+    if logStr.len == 0:
+      echo "Error: --log-level requires a value (DEBUG, INFO, WARN, ERROR)"
+      quit(QuitFailure)
+    logLevel = logStr
+
+  main(host, port, logLevel)
