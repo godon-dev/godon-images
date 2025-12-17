@@ -17,6 +17,10 @@ const ARCHIVE_DB_DATABASE_NAME = getEnv("ARCHIVE_DB_DATABASE_NAME")
 
 proc parse_args(): Table[string, string] =
   var args = initTable[string, string]()
+  
+  # Set defaults
+  args["host"] = "127.0.0.1"
+  args["port"] = "8089"
 
   for kind, key, val in getopt():
     case kind
@@ -24,8 +28,23 @@ proc parse_args(): Table[string, string] =
       discard
     of cmdLongOption, cmdShortOption:
       case key:
-      of "port": # --varName:<value> in the console when executing
-        args["port"] = val # do input sanitization in production systems
+      of "host": # --host:<value> binding address
+        args["host"] = val
+      of "port": # --port:<value> binding port
+        args["port"] = val
+      of "help":
+        echo "Usage: godon-metrics-exporter [options]"
+        echo "Options:"
+        echo "  --host:HOST     Bind address (default: 127.0.0.1)"
+        echo "  --port:PORT     Bind port (default: 8089)"
+        echo "  --help          Show this help message"
+        echo ""
+        echo "Environment variables:"
+        echo "  ARCHIVE_DB_HOST         PostgreSQL host"
+        echo "  ARCHIVE_DB_USER         PostgreSQL user"
+        echo "  ARCHIVE_DB_PW           PostgreSQL password"
+        echo "  ARCHIVE_DB_DATABASE_NAME PostgreSQL database name"
+        quit(0)
     of cmdEnd:
       discard
 
@@ -67,9 +86,10 @@ when defined(metrics):
 
 var args = parse_args()
 
-echo "port - $1" % [ args["port"] ]
+echo "Starting godon-metrics-exporter..."
+echo "Binding to $1:$2" % [ args["host"], args["port"] ]
 
-chronos_httpserver.startMetricsHttpServer("127.0.0.1", Port(parseInt(args["port"])))
+chronos_httpserver.startMetricsHttpServer(args["host"], Port(parseInt(args["port"])))
 
 ## Todo: improve the loop in the main thread with something
 ## more threading native
