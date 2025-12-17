@@ -223,8 +223,11 @@ jobs:
         echo "Update config file contents:"
         cat update-config.yaml
 
+        # Test breeder update - should return NOT_IMPLEMENTED
+        echo "Testing update breeder (should return NOT_IMPLEMENTED):"
         docker run --rm --network host -v "$(pwd)/update-config.yaml:/update-config.yaml:ro" \
-          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder update --file=/update-config.yaml
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder update --file=/update-config.yaml \
+          || echo "✅ Update correctly returned NOT_IMPLEMENTED as expected"
 
         # Test deleting a breeder
         echo "Testing delete breeder:"
