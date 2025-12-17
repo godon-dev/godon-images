@@ -6,6 +6,7 @@ on:
     paths:
       - 'images/godon-api/**'
       - 'build/**'
+      - '.github/workflows/godon-api-ci.yml'
   workflow_dispatch:
 
 env:
@@ -89,6 +90,49 @@ jobs:
 
         echo "✅ Prism mock server is ready!"
 
+    - name: Start Express proxy for response transformation
+      run: |
+        echo "Starting Express proxy for Windmill API with response transformation..."
+        
+        # Stop existing container if running
+        docker stop express-proxy 2>/dev/null || true
+        docker rm express-proxy 2>/dev/null || true
+        
+        # Get Prism container IP dynamically
+        PRISM_IP=$(docker inspect windmill-mock --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+        echo "📡 Prism container IP: $PRISM_IP"
+        
+        # Update proxy.js with correct Prism IP
+        sed -i "s/const PRISM_URL = 'http:\/\/172.17.0.8:4010'/const PRISM_URL = 'http:\/\/$PRISM_IP:4010'/" ${{ github.workspace }}/images/godon-api/tests/express-proxy/proxy.js
+        
+        # Install dependencies and start Express proxy
+        docker run -d --name express-proxy \
+          -p 8000:8000 \
+          --add-host=host.docker.internal:host-gateway \
+          -v ${{ github.workspace }}/images/godon-api/tests/express-proxy:/app \
+          -w /app \
+          node:alpine \
+          sh -c "npm install && node proxy.js"
+        
+        echo "✅ Express proxy starting on port 8000..."
+        
+        # Wait for proxy to be healthy
+        for i in {1..15}; do
+          if curl -f http://localhost:8000/health >/dev/null 2>&1; then
+            echo "✅ Express proxy is ready!"
+            echo "Proxy health: $(curl -s http://localhost:8000/health)"
+            break
+          fi
+          echo "Attempt $i/15 - waiting for Express proxy..."
+          sleep 2
+        done
+        
+        if [ $i -eq 15 ]; then
+          echo "❌ Express proxy failed to start"
+          docker logs express-proxy
+          exit 1
+        fi
+
     - name: Pull godon_cli container for integration testing
       id: cli-image
       run: |
@@ -126,8 +170,8 @@ jobs:
         docker run -d --name godon-service-test \
           --network host \
           -e PORT=8080 \
-          -e WINDMILL_BASE_URL=http://localhost:8001 \
-          -e WINDMILL_API_BASE_URL=http://localhost:8001 \
+          -e WINDMILL_BASE_URL=http://localhost:8000 \
+          -e WINDMILL_API_BASE_URL=http://localhost:8000 \
           godon-api-test:test-${{ github.run_number }}
 
         # Wait for service to be ready
@@ -150,12 +194,15 @@ jobs:
         # Create a test breeder
         echo "Creating test breeder..."
 
-        # Create config file with echo
-        echo "setting: example" > breeder-config.yaml
-        echo "enabled: true" >> breeder-config.yaml
+        # Create config file using working example from godon-cli CI
+        echo 'name: "Test Breeder"' > breeder-config.yaml
+        echo 'config: >' >> breeder-config.yaml
+        echo '  {"setting1": "value1", "setting2": 42}' >> breeder-config.yaml
+        echo "Config file contents:"
+        cat breeder-config.yaml
 
         docker run --rm --network host -v "$(pwd)/breeder-config.yaml:/breeder-config.yaml:ro" \
-          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder create --file /breeder-config.yaml
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder create --file=/breeder-config.yaml
 
         # List breeders again to see if creation worked
         echo "Listing breeders after creation:"
@@ -167,11 +214,17 @@ jobs:
 
         # Test updating a breeder
         echo "Testing update breeder:"
-        echo "updated_setting: new_value" > update-config.yaml
-        echo "enabled: false" >> update-config.yaml
+        # Create update config file using working example from godon-cli CI
+        echo 'uuid: "550e8400-e29b-41d4-a716-446655440000"' > update-config.yaml
+        echo 'name: "Updated Test Breeder"' >> update-config.yaml
+        echo 'description: "Updated integration test breeder"' >> update-config.yaml
+        echo 'config: >' >> update-config.yaml
+        echo '  {"setting1": "updated_value1", "setting2": 100, "new_setting": "new_value"}' >> update-config.yaml
+        echo "Update config file contents:"
+        cat update-config.yaml
 
         docker run --rm --network host -v "$(pwd)/update-config.yaml:/update-config.yaml:ro" \
-          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder update --file /update-config.yaml
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder update --file=/update-config.yaml
 
         # Test deleting a breeder
         echo "Testing delete breeder:"
@@ -206,6 +259,8 @@ jobs:
         echo "Cleaning up test containers..."
         docker stop godon-service-test || true
         docker rm godon-service-test || true
+        docker stop express-proxy || true
+        docker rm express-proxy || true
         docker stop windmill-mock || true
         docker rm windmill-mock || true
         docker rmi godon-api-test:test-${{ github.run_number }} || true
