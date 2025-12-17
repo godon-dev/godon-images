@@ -60,13 +60,9 @@ proc handleBreedersPost*(request: Request): (HttpCode, string) =
     let cfg = loadConfig()
     var client = newWindmillClient(cfg)
     
-    let breederId = client.createBreeder(breederConfig)
-    let response = %*{
-      "message": "Created Breeder named " & breederId,
-      "id": breederId
-    }
+    let response = client.createBreederResponse(breederConfig)
     
-    info("Successfully created breeder with ID: " & breederId)
+    info("Successfully created breeder")
     result = (Http201, $response)
   except CatchableError:  # Jester uses CatchableError for JSON parsing
     error("Invalid JSON in POST /breeders: " & getCurrentExceptionMsg())

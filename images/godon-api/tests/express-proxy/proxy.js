@@ -36,9 +36,10 @@ const mockResponses = {
     ]
   },
   '/w/godon/jobs/run_wait_result/p/f/controller/breeder_create': {
-    message: "Created Breeder named 550e8400-e29b-41d4-a716-446655440000",
     id: "550e8400-e29b-41d4-a716-446655440000",
-    name: "test-breeder"
+    name: "test_breeder",
+    status: "active",
+    createdAt: "2024-01-15T10:30:00Z"
   },
   '/w/godon/jobs/run_wait_result/p/f/controller/breeder_delete': {
     success: true
