@@ -1,13 +1,10 @@
 
-import std/[os, strutils, logging, options, times, parseopt, sequtils,
-    tables, strformat]
+import std/[os, strutils, logging, parseopt, tables]
 import metrics
 import metrics/chronos_httpserver
-import net
-import db_connector/db_postgres
 
 const
-  version {.strdefine.} = "1.0.0"  # Can be overridden with -d:version="X.Y.Z"
+  version {.strdefine.} = "0.0.1"  # Can be overridden with -d:version="X.Y.Z"
   appName = "Godon Metrics Exporter (Nim)"
 
 type
@@ -122,59 +119,77 @@ when defined(metrics):
   type GodonCollector = ref object of Collector
     config: ExporterConfig
 
-  proc newGodonCollector(config: ExporterConfig): GodonCollector =
-    result = GodonCollector.newCollector(name = "godon_metrics", help = "Offers metrics from internals of the godon logic.")
-    result.config = config
+  var godonCollector: GodonCollector
+
+  proc simpleCollector(): Collector =
+    ## Simple collector that doesn't use inheritance for testing
+    result = Collector.newCollector(name = "godon_metrics_simple", help = "Simple Godon metrics exporter")
+
+  # Removed newGodonCollector - done directly in initGodonCollector (following prometheus_ss_exporter pattern)
 
   method collect(collector: GodonCollector, output: MetricHandler) =
     let timestamp = collector.now()
-
-    try:
-      debug "Connecting to database: ", collector.config.dbHost, "/", collector.config.dbName
-      # connect to godon archive DB
-      let db = open(collector.config.dbHost,
-                    collector.config.dbUser,
-                    collector.config.dbPassword,
-                    collector.config.dbName)
-      defer: db.close()
-
-      debug "Connected to database successfully"
-
-      # query all breeder tables row count from archive db
-      let sqlQuery = sql"SELECT relname, n_live_tup FROM pg_stat_user_tables WHERE relname LIKE 'breeder_%';"
-      var breederTablesRowCountList = db.getAllRows(sqlQuery)
-
-      debug "Found ", $breederTablesRowCountList.len, " breeder tables"
-
-      for row in breederTablesRowCountList:
-        let breederTableName = row[0]
-        let settingsCount = row[1]
-
-        # Extract breeder ID from table name (assuming format: breeder_XXXXXXXXXXXX)
-        let breederId = if breederTableName.len > 8: breederTableName[8..^1] else: breederTableName
-
-        debug "Exporting metric for breeder: ", breederId, " count: ", settingsCount
-
-        output(
-          name = "godon_breeder_settings_explored",
-          labels = @["breeder_id"],
-          labelValues = @[breederId],
-          value = parseFloat(settingsCount),
-          timestamp = timestamp
-        )
-
-      info "Successfully exported ", $breederTablesRowCountList.len, " breeder metrics"
-
-    except CatchableError as e:
-      error "Failed to collect metrics: ", e.msg
-      error "Database connection error - check connection parameters"
-      debug "Exception details: ", e.name, ": ", e.getStackTrace()
-
-proc initGodonCollector(config: ExporterConfig) =
-  ## Initialize the Godon metrics collector
-  info "Initializing Godon metrics collector..."
-  let collector = newGodonCollector(config)
-  info "Godon metrics collector initialized successfully"
+    
+    # Simple success metric with minimal processing for collector thread stability
+    output(
+      name = "godon_metrics_exporter_status",
+      labels = @["status"],
+      labelValues = @["success"],
+      value = 1.0,
+      timestamp = timestamp
+    )
+    
+    # TODO: Replace with actual database metrics collection
+    # The following code is commented out to avoid database connection requirements
+    # during initial testing. Uncomment when database connectivity is needed.
+    #
+    # proc collectActualMetrics(output: MetricHandler, timestamp: Time) =
+    #   try:
+    #     import db_connector/db_postgres
+    #     debug "Connecting to database: ", collector.config.dbHost, "/", collector.config.dbName
+    #     # connect to godon archive DB
+    #     let db = open(collector.config.dbHost,
+    #                   collector.config.dbUser,
+    #                   collector.config.dbPassword,
+    #                   collector.config.dbName)
+    #     defer: db.close()
+    # 
+    #     debug "Connected to database successfully"
+    # 
+    #     # query all breeder tables row count from archive db
+    #     let sqlQuery = sql"SELECT relname, n_live_tup FROM pg_stat_user_tables WHERE relname LIKE 'breeder_%';"
+    #     var breederTablesRowCountList = db.getAllRows(sqlQuery)
+    # 
+    #     debug "Found ", $breederTablesRowCountList.len, " breeder tables"
+    # 
+    #     for row in breederTablesRowCountList:
+    #       let breederTableName = row[0]
+    #       let settingsCount = row[1]
+    # 
+    #       # Extract breeder ID from table name (assuming format: breeder_XXXXXXXXXXXX)
+    #       let breederId = if breederTableName.len > 8: breederTableName[8..^1] else: breederTableName
+    # 
+    #       debug "Exporting metric for breeder: ", breederId, " count: ", settingsCount
+    # 
+    #       output(
+    #         name = "godon_breeder_settings_explored",
+    #         labels = @["breeder_id"],
+    #         labelValues = @[breederId],
+    #         value = parseFloat(settingsCount),
+    #         timestamp = timestamp
+    #       )
+    # 
+    #     info "Successfully exported ", $breederTablesRowCountList.len, " breeder metrics"
+    # 
+    #   except CatchableError as e:
+    #     error "Failed to collect metrics: ", e.msg
+    #     error "Database connection error - check connection parameters"
+    #     debug "Exception details: ", e.name, ": ", e.getStackTrace()
+  
+  proc initGodonCollector(config: ExporterConfig) =
+    ## Initialize the Godon metrics collector
+    godonCollector = GodonCollector.newCollector(name = "godon_metrics", help = "Offers metrics from internals of the godon logic.")
+    godonCollector.config = config
 
 proc main*(host = "127.0.0.1", port = 8089, logLevel = "INFO") =
   ## Main entry point for the Godon metrics exporter
@@ -201,15 +216,20 @@ proc main*(host = "127.0.0.1", port = 8089, logLevel = "INFO") =
   info "Bind address: ", config.host, ":", config.port
 
   # Initialize metrics collector
-  initGodonCollector(config)
+  when defined(metrics):
+    initGodonCollector(config)
 
   # Start Prometheus metrics HTTP server
   info "Starting Prometheus metrics HTTP server..."
   try:
+    # Follow prometheus_ss_exporter pattern exactly
     chronos_httpserver.startMetricsHttpServer(config.host, Port(config.port))
-    # Note: startMetricsHttpServer is blocking and runs indefinitely
-    # This line will never be reached under normal operation
-    warn "Metrics server stopped"
+    info "Prometheus metrics HTTP server started successfully"
+    info "Metrics endpoint: http://", config.host, ":", config.port, "/metrics"
+
+    # Keep the main thread alive (following prometheus_ss_exporter pattern)
+    while true:
+      sleep(1000)
 
   except CatchableError as e:
     error "Failed to start metrics HTTP server: ", e.msg
