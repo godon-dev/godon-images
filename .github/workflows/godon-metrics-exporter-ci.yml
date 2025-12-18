@@ -1,0 +1,87 @@
+name: Godon Metrics Exporter CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'images/godon-metrics-exporter/**'
+      - 'build/**'
+      - '.github/workflows/godon-metrics-exporter-ci.yml'
+  workflow_dispatch:
+
+env:
+  NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.05
+
+jobs:
+  build-and-test:
+    name: Build and Test Container
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Setup Nix
+      uses: cachix/install-nix-action@v22
+      with:
+        nix_path: nixpkgs=https://nixos.org/channels/nixos-25.05
+
+    - name: Build godon-metrics-exporter container with Nix
+      run: |
+        echo "Building godon-metrics-exporter container using established Nix build system..."
+        cd images/godon-metrics-exporter
+        VERSION="test-${{ github.run_number }}" \
+        IMAGE_NAME="godon-metrics-exporter-test" \
+        ../../build/build-container-nix.sh \
+          --version "test-${{ github.run_number }}" \
+          --name "godon-metrics-exporter-test" \
+          --builder-file ../../build/Dockerfile.nix-builder
+
+    - name: Test container basic functionality
+      run: |
+        echo "Testing container basic functionality..."
+        
+        # Test container help command
+        docker run --rm godon-metrics-exporter-test:test-${{ github.run_number }} --help
+
+    - name: Test container startup
+      run: |
+        echo "Testing container startup..."
+        
+        # Start container with minimal config for startup test
+        docker run -d --name exporter-test \
+          -p 8089:8089 \
+          -e PORT=8089 \
+          -e ARCHIVE_DB_HOST=localhost \
+          -e ARCHIVE_DB_PORT=5432 \
+          -e ARCHIVE_DB_DATABASE_NAME=test \
+          -e ARCHIVE_DB_USER=test \
+          -e ARCHIVE_DB_PW=test \
+          godon-metrics-exporter-test:test-${{ github.run_number }} --port=8089
+
+        # Wait a bit for startup
+        echo "Waiting for exporter to start..."
+        sleep 10
+
+        # Check if container started (it may fail due to missing DB but should start)
+        if docker ps | grep exporter-test; then
+          echo "✅ Exporter started successfully"
+        else
+          echo "❌ Exporter failed to start"
+          docker logs exporter-test
+          exit 1
+        fi
+
+        # Check container logs
+        echo "Container logs:"
+        docker logs exporter-test
+
+    - name: Container cleanup
+      if: always()
+      run: |
+        echo "Cleaning up test containers..."
+        docker stop exporter-test || true
+        docker rm exporter-test || true
+        docker rmi godon-metrics-exporter-test:test-${{ github.run_number }} || true
