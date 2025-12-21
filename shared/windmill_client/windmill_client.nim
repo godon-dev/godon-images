@@ -2,12 +2,12 @@ import std/[httpclient, json, strformat, tables, uri, logging]
 import config
 
 type
-  WindmillClient* = object
+  WindmillApiClient* = object
     config: WindmillConfig
     token: string
     http: HttpClient
 
-proc login*(client: var WindmillClient) =
+proc login*(client: var WindmillApiClient) =
   ## Authenticate with Windmill and obtain bearer token
   let url = &"{client.config.windmillBaseUrl}/api/auth/login"
   let payload = %* {
@@ -29,7 +29,7 @@ proc login*(client: var WindmillClient) =
     error("Windmill authentication error: " & e.msg)
     raise
 
-proc newWindmillClient*(config: WindmillConfig): WindmillClient =
+proc newWindmillApiClient*(config: WindmillConfig): WindmillApiClient =
   ## Create and authenticate a new Windmill client
   var http = newHttpClient()
   http.headers = newHttpHeaders({"Content-Type": "application/json"})
@@ -44,12 +44,12 @@ proc newWindmillClient*(config: WindmillConfig): WindmillClient =
     "Authorization": "Bearer " & result.token
   })
 
-proc close*(client: WindmillClient) =
+proc close*(client: WindmillApiClient) =
   ## Close the HTTP client
   client.http.close()
 
 # API Methods - Pure Windmill API operations
-proc runJob*(client: WindmillClient, jobPath: string, args: JsonNode = nil): JsonNode =
+proc runJob*(client: WindmillApiClient, jobPath: string, args: JsonNode = nil): JsonNode =
   ## Run a Windmill job (script or flow) by path and wait for result
   ## Uses the Windmill API URL pattern for job execution
   let fullPath = "f/" & jobPath
@@ -79,7 +79,7 @@ proc runJob*(client: WindmillClient, jobPath: string, args: JsonNode = nil): Jso
     raise
 
 # Seeder-specific API methods
-proc createWorkspace*(client: WindmillClient, workspace: string) =
+proc createWorkspace*(client: WindmillApiClient, workspace: string) =
   ## Create a new Windmill workspace using the API
   info("Creating workspace: " & workspace)
   
@@ -104,7 +104,7 @@ proc createWorkspace*(client: WindmillClient, workspace: string) =
     error("Error creating workspace: " & e.msg)
     raise
 
-proc deployScript*(client: WindmillClient, workspace: string, scriptPath: string, content: string, settings: JsonNode = nil) =
+proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: JsonNode = nil) =
   ## Deploy a script to Windmill using the API
   info("Deploying script: " & scriptPath)
   
@@ -130,7 +130,7 @@ proc deployScript*(client: WindmillClient, workspace: string, scriptPath: string
     error("Error deploying script: " & e.msg)
     raise
 
-proc deployFlow*(client: WindmillClient, workspace: string, flowPath: string, flowDef: JsonNode) =
+proc deployFlow*(client: WindmillApiClient, workspace: string, flowPath: string, flowDef: JsonNode) =
   ## Deploy a flow to Windmill using the API
   info("Deploying flow: " & flowPath)
   

@@ -1,45 +1,6 @@
 { pkgs ? import <nixpkgs> {}, version ? builtins.getEnv "VERSION", imageName ? builtins.getEnv "IMAGE_NAME", root ? builtins.getEnv "PROJECT_ROOT" }:
 
 let
-  # Copy shared windmill client to build context
-  windmill-client = pkgs.runCommand "windmill-client" {} ''
-    mkdir -p $out
-    
-    echo "🔍 Debug: Using mounted project-root directory"
-    echo "🔍 Debug: Current working directory: $(pwd)"
-    echo "🔍 Debug: Checking if /project-root is mounted:"
-    if [ -d "/project-root" ]; then
-      echo "✅ /project-root is mounted"
-      echo "📁 Contents of /project-root:"
-      ls -la /project-root | head -10
-    else
-      echo "❌ /project-root is not mounted"
-      echo "🔍 Available mount points:"
-      find / -maxdepth 1 -type d 2>/dev/null | head -10 || echo "Cannot check mount points"
-    fi
-    
-    echo "🔍 Debug: Listing current directory:"
-    ls -la . 2>/dev/null | head -5 || echo "Cannot list current directory"
-    
-    echo "🔍 Debug: Checking for shared windmill client:"
-    if [ -d "/project-root/shared/windmill_client" ]; then
-      echo "✅ Found shared windmill client at /project-root/shared/windmill_client"
-      echo "📁 Contents of windmill_client:"
-      ls -la "/project-root/shared/windmill_client" 2>/dev/null || echo "Cannot list windmill_client"
-      cp -r "/project-root/shared/windmill_client"/* $out/
-      echo "✅ Successfully copied shared windmill client"
-    else
-      echo "❌ Shared windmill client not found at /project-root/shared/windmill_client"
-      echo "🔍 Debug: Checking /project-root exists: $([ -d "/project-root" ] && echo "YES" || echo "NO")"
-      if [ -d "/project-root" ]; then
-        echo "🔍 Available directories in /project-root:"
-        find "/project-root" -maxdepth 2 -type d 2>/dev/null | head -10 || echo "Cannot search directories"
-      fi
-      echo "🔍 Debug: All available directories:"
-      find / -name "*windmill*" -type d 2>/dev/null | head -10 || echo "No windmill directories found anywhere"
-      exit 1
-    fi
-  '';
 
   # Build the application using the prometheus_ss_exporter pattern
   godon-api = pkgs.stdenv.mkDerivation {
@@ -77,17 +38,8 @@ let
         exit 1
       fi
       
-      # Copy shared windmill client to source directory (excluding .nimble to avoid conflicts)
-      echo "Copying shared windmill client..."
-      mkdir -p shared_windmill_client
-      for file in ${windmill-client}/*; do
-        if [[ "$(basename "$file")" != *.nimble ]]; then
-          cp -r "$file" ./
-        else
-          # Copy .nimble files to a subdirectory where they won't interfere
-          cp "$file" shared_windmill_client/
-        fi
-      done
+      # Direct mount approach - shared client available at /shared
+      echo "Shared client available at /shared/windmill_client"
     '';
     
     buildPhase = ''
@@ -99,8 +51,9 @@ let
       nimble refresh
       nimble install --depsOnly
       
-      # Build main application
-      nimble build --verbose -d:release -d:BUILD_VERSION="$BUILD_VERSION" --threads:on --gc:orc -d:useStdLib
+      # Build main application with shared client in Nim path
+      echo "Building godon-api with shared client path..."
+      nim c --path:"/shared" -d:release -d:BUILD_VERSION="$BUILD_VERSION" --threads:on --gc:orc -d:useStdLib godon_api.nim
     '';
     
     installPhase = ''

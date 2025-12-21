@@ -1,6 +1,6 @@
 import std/[json, strformat, strutils, re, logging]
 import jester
-import windmill_client, types, config
+import godon_windmill_adapter, types, config
 
 # Configure logging
 addHandler(newConsoleLogger())
