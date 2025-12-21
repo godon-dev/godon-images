@@ -1,92 +1,52 @@
-import std/[httpclient, json, strformat, tables, uri]
+import std/[json]
 import config, types
+import windmill_client
 
-type
-  WindmillClient* = object
-    config: Config
-    token: string
+# Godon-specific wrapper around the shared WindmillClient
+# This contains godon-specific business logic, keeping the shared client clean
 
-proc login*(client: var WindmillClient) =
-  let url = &"{client.config.windmillBaseUrl}/auth/login"
-  let payload = %* {
-    "email": "admin@windmill.dev",
-    "password": "changeme"
-  }
-  
-  var http = newHttpClient()
-  http.headers = newHttpHeaders({"Content-Type": "application/json"})
-  
-  try:
-    let response = http.post(url, $payload)
-    if response.code != Http200:
-      raise newException(ValueError, "Failed to login to Windmill: " & response.status)
-    
-    client.token = response.body
-  finally:
-    http.close()
-
-proc newWindmillClient*(config: Config): WindmillClient =
-  result.config = config
-  result.login()
-
-proc runFlow*(client: WindmillClient, flowPath: string, args: JsonNode = nil): JsonNode =
-  ## Run a Windmill flow by path and wait for result
-  ## This is the main method for executing custom controller scripts
-  ## Uses the exact same URL pattern as the original Python implementation
-  let fullPath = "f/" & client.config.windmillFolder & "/" & flowPath
-  let encodedPath = encodeUrl(fullPath)  # URL encode the path containing slashes
-  let url = &"{client.config.windmillApiBaseUrl}/{encodedPath}"
-  
-  var http = newHttpClient()
-  http.headers = newHttpHeaders({
-    "Content-Type": "application/json",
-    "Authorization": "Bearer " & client.token
-  })
-  
-  try:
-    var body = ""
-    if args != nil:
-      body = $args
-    else:
-      body = "{}"
-    
-    let response = http.post(url, body)
-    if response.code != Http200:
-      raise newException(ValueError, "Windmill flow execution failed: " & response.status)
-    
-    result = parseJson(response.body)
-  finally:
-    http.close()
-
+# Godon-specific methods that use the shared client
 proc getBreeders*(client: WindmillClient): seq[Breeder] =
-  ## Execute the custom 'breeders_get' controller flow
-  let response = client.runFlow("breeders_get")
+  ## Execute the custom 'breeders_get' controller job
+  let response = client.runJob("controller/breeders_get")
   if response.hasKey("breeders"):
     result = parseBreedersFromJson(response["breeders"])
   else:
     result = @[]
 
 proc createBreeder*(client: WindmillClient, config: JsonNode): string =
-  ## Execute the custom 'breeder_create' controller flow
+  ## Execute the custom 'breeder_create' controller job
   let args = %* {"breeder_config": config}
-  let response = client.runFlow("breeder_create", args)
+  let response = client.runJob("controller/breeder_create", args)
   if response.hasKey("id"):
     result = response["id"].getStr()
   else:
-    raise newException(ValueError, "No id returned from flow")
+    raise newException(ValueError, "No id returned from job")
 
 proc createBreederResponse*(client: WindmillClient, config: JsonNode): JsonNode =
-  ## Execute the custom 'breeder_create' controller flow and return raw response
+  ## Execute the custom 'breeder_create' controller job and return raw response
   let args = %* {"breeder_config": config}
-  result = client.runFlow("breeder_create", args)
+  result = client.runJob("controller/breeder_create", args)
 
 proc getBreeder*(client: WindmillClient, breederId: string): Breeder =
-  ## Execute the custom 'breeder_get' controller flow
+  ## Execute the custom 'breeder_get' controller job
   let args = %* {"breeder_id": breederId}
-  let response = client.runFlow("breeder_get", args)
+  let response = client.runJob("controller/breeder_get", args)
   result = parseBreederFromJson(response)
 
 proc deleteBreeder*(client: WindmillClient, breederId: string) =
-  ## Execute the custom 'breeder_delete' controller flow
+  ## Execute the custom 'breeder_delete' controller job
   let args = %* {"breeder_id": breederId}
-  discard client.runFlow("breeder_delete", args)
+  discard client.runJob("controller/breeder_delete", args)
+
+# Create adapter to bridge godon-api Config to shared WindmillConfig
+proc newWindmillClient*(config: Config): WindmillClient =
+  ## Create a WindmillClient using godon-api's Config
+  let windmillConfig = WindmillConfig(
+    windmillBaseUrl: config.windmillBaseUrl,
+    windmillApiBaseUrl: config.windmillApiBaseUrl,
+    windmillWorkspace: config.windmillWorkspace,
+    windmillEmail: "admin@windmill.dev",
+    windmillPassword: "changeme"
+  )
+  result = newWindmillClient(windmillConfig)
