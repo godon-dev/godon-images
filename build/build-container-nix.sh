@@ -74,7 +74,7 @@ parse_args() {
     PROJECT_ROOT="${PROJECT_ROOT:-}"
     BUILDER_TAG="${BUILDER_TAG:-}"
     NIX_FILE="${NIX_FILE:-$DEFAULT_NIX_FILE}"
-    BUILDER_FILE="${BUILDER_FILE:-Dockerfile.nix-builder}"
+    BUILDER_FILE="${BUILDER_FILE:-build/Dockerfile.nix-builder}"
     OUTPUT_FILE="${OUTPUT_FILE:-}"
     CORES="${CORES:-}"
     BUILD_TESTS="${BUILD_TESTS:-$DEFAULT_BUILD_TESTS}"
@@ -343,6 +343,7 @@ execute_build() {
     
     docker run --rm \
         -v "$PROJECT_ROOT:/project-root" \
+        -v "$PROJECT_ROOT/shared:/shared" \
         -v "$(pwd):/source" \
         -v "$(pwd):/output" \
         -e "VERSION=$VERSION" \
