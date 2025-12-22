@@ -23,7 +23,8 @@ proc login*(client: var WindmillApiClient) =
       error("Windmill login failed: " & response.status)
       raise newException(ValueError, "Failed to login to Windmill: " & response.status)
     
-    client.token = parseJson(response.body)["token"].getStr()
+    # Windmill returns the token as plaintext, not JSON
+    client.token = response.body
     info("Successfully authenticated with Windmill")
   except CatchableError as e:
     error("Windmill authentication error: " & e.msg)
