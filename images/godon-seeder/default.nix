@@ -2,12 +2,12 @@
 
 let
 
-  # Build the application using the prometheus_ss_exporter pattern
-  godon-api = pkgs.stdenv.mkDerivation {
-    pname = "godon-api";
+  # Build the application using the same pattern as godon-api
+  godon-seeder = pkgs.stdenv.mkDerivation {
+    pname = "godon-seeder";
     version = version;
     
-    src = ./src;
+    src = ./.;
     
     nativeBuildInputs = with pkgs; [
       cacert
@@ -47,13 +47,13 @@ let
       echo "SSL_CERT_FILE: $SSL_CERT_FILE"
       echo "Certificate exists: $([ -f "$SSL_CERT_FILE" ] && echo "YES" || echo "NO")"
       
-      # Following the exact prometheus_ss_exporter pattern
+      # Following the exact godon-api pattern
       nimble refresh
       nimble install --depsOnly
       
       # Build main application with shared client in Nim path
-      echo "Building godon-api with shared client path..."
-      nim c --path:"/shared" -d:release -d:BUILD_VERSION="$BUILD_VERSION" --threads:on --gc:orc -d:useStdLib godon_api.nim
+      echo "Building godon-seeder with shared client path..."
+      nim c --path:"/shared" -d:release -d:BUILD_VERSION="$BUILD_VERSION" --threads:on --gc:orc -d:useStdLib godon_seeder.nim
     '';
     
     installPhase = ''
@@ -62,23 +62,23 @@ let
       echo "Looking for compiled binary..."
       echo "Current directory: $(pwd)"
       echo "Directory contents:"
-      find . -name "godon_api*" -type f -executable 2>/dev/null || true
+      find . -name "godon_seeder*" -type f -executable 2>/dev/null || true
       echo "All files:"
       find . -type f -name "*godon*" || true
       
       # Install main binary - try multiple locations
-      if [ -f "bin/godon_api" ]; then
-        echo "Found binary in bin/godon_api"
-        cp bin/godon_api $out/bin/
-      elif [ -f "godon_api" ]; then
-        echo "Found binary in godon_api"
-        cp godon_api $out/bin/
-      elif [ -f "godon_api.out" ]; then
-        echo "Found binary in godon_api.out"
-        cp godon_api.out $out/bin/godon_api
-      elif [ -f "godon_api/godon_api" ]; then
-        echo "Found binary in godon_api/godon_api"
-        cp godon_api/godon_api $out/bin/
+      if [ -f "bin/godon_seeder" ]; then
+        echo "Found binary in bin/godon_seeder"
+        cp bin/godon_seeder $out/bin/
+      elif [ -f "godon_seeder" ]; then
+        echo "Found binary in godon_seeder"
+        cp godon_seeder $out/bin/
+      elif [ -f "godon_seeder.out" ]; then
+        echo "Found binary in godon_seeder.out"
+        cp godon_seeder.out $out/bin/godon_seeder
+      elif [ -f "godon_seeder/godon_seeder" ]; then
+        echo "Found binary in godon_seeder/godon_seeder"
+        cp godon_seeder/godon_seeder $out/bin/
       else
         echo "Binary not found in any expected location!"
         echo "Full directory listing:"
@@ -108,23 +108,24 @@ let
     
     # Include runtime dependencies
     contents = [
-      godon-api
+      godon-seeder
       pkgs.cacert
       pkgs.busybox  # Provides basic utilities and pseudo filesystem support
       pkgs.curl    # For testing Windmill connectivity
     ];
     
     config = {
-      Entrypoint = [ "${godon-api}/bin/godon_api" ];
+      Entrypoint = [ "${godon-seeder}/bin/godon_seeder" ];
       ExposedPorts = {
         "8080/tcp" = {};
       };
       Env = [
-        "PATH=/bin:${godon-api}/bin"
+        "PATH=/bin:${godon-seeder}/bin"
         "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-        "PORT=8080"
-        "WINDMILL_BASE_URL=http://localhost:8001"
-        "WINDMILL_API_BASE_URL=http://localhost:8001"
+        "WINDMILL_BASE_URL=http://localhost:8000"
+        "WINDMILL_WORKSPACE=godon"
+        "GODON_VERSION=main"
+        "GODON_DIR=/godon"
       ];
       WorkingDir = "/app";
       User = "1000:1000";
@@ -133,5 +134,5 @@ let
   };
   
 in {
-  inherit godon-api containerImage;
+  inherit godon-seeder containerImage;
 }
