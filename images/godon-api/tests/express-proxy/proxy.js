@@ -77,6 +77,12 @@ const windmillProxy = async (req, res, next) => {
     console.log(`🔍 Debug: decodedUrl = "${decodedUrl}"`);
     console.log(`🔍 Debug: available mocks = ${Object.keys(mockResponses).join(', ')}`);
 
+    // Special handling for auth endpoint - returns plaintext token
+    if (decodedUrl === '/api/auth/login' && req.method === 'POST') {
+      console.log(`🎯 Auth mock found - returning plaintext token`);
+      return res.type('text/plain').send('mock_bearer_token_for_testing');
+    }
+    
     // Check if we have a mock response for this decoded path
     if (mockResponses[decodedUrl]) {
       console.log(`🎯 Mock found for: ${req.originalUrl} - returning transformed response`);
