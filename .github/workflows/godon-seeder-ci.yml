@@ -1,0 +1,55 @@
+name: Godon Seeder CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'images/godon-seeder/**'
+      - 'shared/windmill_client/**'
+      - 'build/**'
+      - '.github/workflows/godon-seeder-ci.yml'
+  workflow_dispatch:
+
+env:
+  NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.05
+
+jobs:
+  build-and-test:
+    name: Build and Test Container
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Setup Nix
+      uses: cachix/install-nix-action@v22
+      with:
+        nix_path: nixpkgs=https://nixos.org/channels/nixos-25.05
+
+    - name: Build godon-seeder container with Nix
+      run: |
+        echo "Building godon-seeder container using established Nix build system..."
+        cd images/godon-seeder
+        VERSION="test-${{ github.run_number }}" \
+        IMAGE_NAME="godon-seeder-test" \
+        PROJECT_ROOT="$(git rev-parse --show-toplevel)" \
+        ../../build/build-container-nix.sh \
+          --version "test-${{ github.run_number }}" \
+          --name "godon-seeder-test" \
+          --builder-file ../../build/Dockerfile.nix-builder
+
+    - name: Test container basic functionality
+      run: |
+        echo "Testing container basic functionality..."
+        
+        # Test container help command
+        docker run --rm godon-seeder-test:test-${{ github.run_number }} --help
+
+    - name: Container cleanup
+      if: always()
+      run: |
+        echo "Cleaning up test containers..."
+        docker rmi godon-seeder-test:test-${{ github.run_number }} || true
