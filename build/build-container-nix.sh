@@ -71,9 +71,10 @@ parse_args() {
     VERSION="${VERSION:-}"
     TAG="${TAG:-}"
     IMAGE_NAME="${IMAGE_NAME:-}"
+    PROJECT_ROOT="${PROJECT_ROOT:-}"
     BUILDER_TAG="${BUILDER_TAG:-}"
     NIX_FILE="${NIX_FILE:-$DEFAULT_NIX_FILE}"
-    BUILDER_FILE="${BUILDER_FILE:-Dockerfile.nix-builder}"
+    BUILDER_FILE="${BUILDER_FILE:-build/Dockerfile.nix-builder}"
     OUTPUT_FILE="${OUTPUT_FILE:-}"
     CORES="${CORES:-}"
     BUILD_TESTS="${BUILD_TESTS:-$DEFAULT_BUILD_TESTS}"
@@ -341,10 +342,13 @@ execute_build() {
     log_step "Running Nix build with mounted source..."
     
     docker run --rm \
+        -v "$PROJECT_ROOT:/project-root" \
+        -v "$PROJECT_ROOT/shared:/shared" \
         -v "$(pwd):/source" \
         -v "$(pwd):/output" \
         -e "VERSION=$VERSION" \
         -e "IMAGE_NAME=$IMAGE_NAME" \
+        -e "PROJECT_ROOT=$PROJECT_ROOT" \
         -e "BUILD_CORES=$CORES" \
         -e "NIX_FILE=/source/$NIX_FILE" \
         -e "CI_ENV=false" \
@@ -357,6 +361,7 @@ execute_build() {
                 --cores \$BUILD_CORES \
                 --argstr version \"\$VERSION\" \
                 --argstr imageName \"\$IMAGE_NAME\" \
+                --argstr root \"\$PROJECT_ROOT\" \
                 --argstr buildTests \"\$BUILD_TESTS\" \
                 ${NO_CACHE:+--no-build-output} && \
             cp result /output/$OUTPUT_FILE

@@ -49,6 +49,7 @@ jobs:
       run: |
         export VERSION=${{ env.VERSION }}
         export IMAGE_NAME=${{ env.IMAGE_NAME }}
+        export PROJECT_ROOT="$(git rev-parse --show-toplevel)"
         cd images/godon-cli
         bash ../../build/build-container-nix.sh --builder-file ../../build/Dockerfile.nix-builder
 

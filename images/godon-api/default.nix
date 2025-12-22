@@ -1,6 +1,7 @@
-{ pkgs ? import <nixpkgs> {}, version ? builtins.getEnv "VERSION", imageName ? builtins.getEnv "IMAGE_NAME" }:
+{ pkgs ? import <nixpkgs> {}, version ? builtins.getEnv "VERSION", imageName ? builtins.getEnv "IMAGE_NAME", root ? builtins.getEnv "PROJECT_ROOT" }:
 
 let
+
   # Build the application using the prometheus_ss_exporter pattern
   godon-api = pkgs.stdenv.mkDerivation {
     pname = "godon-api";
@@ -36,6 +37,9 @@ let
         echo "❌ VERSION environment variable is required"
         exit 1
       fi
+      
+      # Direct mount approach - shared client available at /shared
+      echo "Shared client available at /shared/windmill_client"
     '';
     
     buildPhase = ''
@@ -47,8 +51,9 @@ let
       nimble refresh
       nimble install --depsOnly
       
-      # Build main application
-      nimble build --verbose -d:release -d:BUILD_VERSION="$BUILD_VERSION" --threads:on --gc:orc -d:useStdLib
+      # Build main application with shared client in Nim path
+      echo "Building godon-api with shared client path..."
+      nim c --path:"/shared" -d:release -d:BUILD_VERSION="$BUILD_VERSION" --threads:on --gc:orc -d:useStdLib godon_api.nim
     '';
     
     installPhase = ''
