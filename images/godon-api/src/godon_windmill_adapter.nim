@@ -12,7 +12,7 @@ import windmill_client.windmill_client
 
 # Godon-specific methods that use the shared client
 proc getBreeders*(client: WindmillApiClient): seq[Breeder] =
-  let response = client.runJob("controller/breeders_get")
+  let response = client.runJob("breeders_get")
   if response.hasKey("breeders"):
     result = parseBreedersFromJson(response["breeders"])
   else:
@@ -20,7 +20,7 @@ proc getBreeders*(client: WindmillApiClient): seq[Breeder] =
 
 proc createBreeder*(client: WindmillApiClient, breederConfig: JsonNode): string =
   let args = %* {"breeder_config": breederConfig}
-  let response = client.runJob("controller/breeder_create", args)
+  let response = client.runJob("breeder_create", args)
   if response.hasKey("id"):
     result = response["id"].getStr()
   else:
@@ -28,16 +28,16 @@ proc createBreeder*(client: WindmillApiClient, breederConfig: JsonNode): string 
 
 proc createBreederResponse*(client: WindmillApiClient, breederConfig: JsonNode): JsonNode =
   let args = %* {"breeder_config": breederConfig}
-  result = client.runJob("controller/breeder_create", args)
+  result = client.runJob("breeder_create", args)
 
 proc getBreeder*(client: WindmillApiClient, breederId: string): Breeder =
   let args = %* {"breeder_id": breederId}
-  let response = client.runJob("controller/breeder_get", args)
+  let response = client.runJob("breeder_get", args)
   result = parseBreederFromJson(response)
 
 proc deleteBreeder*(client: WindmillApiClient, breederId: string) =
   let args = %* {"breeder_id": breederId}
-  discard client.runJob("controller/breeder_delete", args)
+  discard client.runJob("breeder_delete", args)
 
 # Create adapter to bridge godon-api Config to shared WindmillConfig
 proc newWindmillClient*(godonCfg: Config): WindmillApiClient =
