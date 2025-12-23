@@ -1,0 +1,10 @@
+name: linux_network_stack
+target: f/breeder/linux_network_stack
+
+scripts:
+  - pattern: "*.py"
+    path: ""
+    settings:
+      summary: "Linux network stack optimization"
+      description: "Optimizes Linux network stack parameters"
+      timeout: 120

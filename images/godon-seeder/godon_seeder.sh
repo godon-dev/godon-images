@@ -1,116 +1,50 @@
 #!/usr/bin/env bash
 
 # Script that seeds the breeder flows and scripts into the windmill orchestration engine.
+# Now orchestrates the Nim godon-seeder instead of using wmill CLI directly.
 
 set -eEux
 set -o pipefail
 shopt -s inherit_errexit
 
+# Set default environment variables
+export WINDMILL_BASE_URL="${WINDMILL_BASE_URL:-windmill-app:8000}"
+export WINDMILL_WORKSPACE="${WINDMILL_WORKSPACE:-godon-test3}"
+export WINDMILL_EMAIL="${WINDMILL_EMAIL:-admin@windmill.dev}"
+export WINDMILL_PASSWORD="${WINDMILL_PASSWORD:-changeme}"
+export GODON_VERSION="${GODON_VERSION:-main}"
+export GODON_DIR="${GODON_DIR:-/godon}"
 
-## Set Windmill API Base URL
-export WMILL_BASE_URL="windmill-app:8000"
-
-## Logging in to Windmill to attain token
-export WMILL_TOKEN="$(curl ${WMILL_BASE_URL}/api/auth/login \
-                      --request POST \
-                      --header 'Content-Type: application/json' \
-                      --data '{
-                      "email": "admin@windmill.dev",
-                      "password": "changeme"
-                       }')"
-
-## Set Default Windmill Workspace
-export WMILL_WORKSPACE="godon-test3"
+# Path to the Nim godon-seeder binary (use PATH to find it)
+GODON_SEEDER_BIN="${GODON_SEEDER_BIN:-godon_seeder}"
 
 ## Clone and Checkout the Relevant Scripts and Flows Version
-echo "Seeding from ${GODON_VERSION}"
-pushd "${GODON_DIR}"
-git checkout -B "${GODON_VERSION}" "${GODON_VERSION}"
+echo "Updating godon repository to version ${GODON_VERSION}"
 
-echo "Creating godon logic workspace"
-wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" workspace add \
-      --create "${WMILL_WORKSPACE}" "${WMILL_WORKSPACE}" "http://${WMILL_BASE_URL}"
+# Check if GODON_DIR exists and is a git repository
+if [ -d "${GODON_DIR}/.git" ]; then
+  echo "Repository exists, pulling latest changes..."
+  pushd "${GODON_DIR}"
+  git fetch --all --tags
+  git checkout -B "${GODON_VERSION}" "origin/${GODON_VERSION}" 2>/dev/null || git checkout "${GODON_VERSION}"
+  git pull origin "${GODON_VERSION}" 2>/dev/null || true
+  popd
+else
+  echo "Repository not found, cloning..."
+  rm -rf "${GODON_DIR}" 2>/dev/null || true
+  git clone --depth 1 --branch "${GODON_VERSION}" https://github.com/godon-dev/godon.git "${GODON_DIR}" || echo "⚠️  Git clone failed, continuing anyway"
+fi
 
-### Seed Controller Logic ###
-pushd controller
-wmill init
+echo "✅ Godon repository updated successfully"
 
-# adjust scope of wmill
-sed -E 's:f/:f/controller/:g' -i wmill.yaml
+## Seed Controller and Breeder Logic using Nim seeder
+echo "Starting component deployment with godon-seeder"
 
-# create controller folder
-mkdir -p f/controller
+# Call the Nim seeder with the controller and breeder directories
+# The seeder will handle workspace creation and component deployment
+"${GODON_SEEDER_BIN}" \
+    --verbose \
+    "${GODON_DIR}/controller" \
+    "${GODON_DIR}/breeder/linux_network_stack"
 
-for script in $(ls -1 *.py)
-do
-    echo "## performing config seeding for controller logic"
-
-    mv "${script}" f/controller
-
-    wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
-          script generate-metadata f/controller/${script}
-
-    echo "## Controller ... DONE"
-done
-
-## push all scripts at once
-wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
-      sync push --yes --message "init"
-
-popd
-
-### Seed Breeder Logic ###
-
-local_breeder_folder="breeder/linux_network_stack"
-
-pushd "${local_breeder_folder}"
-wmill init
-
-# adjust scope of wmill
-sed -E 's:f/:f/'"${local_breeder_folder}"'/:g' -i wmill.yaml
-
-wmill_breeder_folder="f/${local_breeder_folder}"
-
-# create breeder folder
-mkdir -p "${wmill_breeder_folder}"
-
-
-
-echo "## performing config seeding for linux_network_stack breeder logic"
-
-for script in $(ls -1 *.py)
-do
-
-    mv "${script}" "${wmill_breeder_folder}"
-
-    wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
-          script generate-metadata "${wmill_breeder_folder}/${script}"
-
-done
-
-## Adjust flags for communication script - perpetual script
-echo 'restart_unless_cancelled: true' >> "${wmill_breeder_folder}/communication_perpetual.script.yaml"
-
-## push all scripts at once
-wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
-      sync push --yes --message "init"
-
-
-for flow in $(ls -1 *.yaml)
-do
-
-    if [[ "${flow}" =~ ^wmill.+yaml$ ]]
-    then
-      continue
-    fi
-
-    cp "$(pwd)/${flow}" "${wmill_breeder_folder}/flow.yaml"
-
-    flow_name="$(basename $(basename ${flow}) ".yaml" )"
-
-    wmill --base-url "http://${WMILL_BASE_URL}" --token "${WMILL_TOKEN}" --workspace "${WMILL_WORKSPACE}" \
-        flow push "${wmill_breeder_folder}" "${wmill_breeder_folder}/${flow_name}"
-
-done
-
-echo "## linux_network_stack breeder ... DONE"
+echo "✅ Godon seeding completed successfully!"
