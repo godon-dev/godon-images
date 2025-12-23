@@ -1,0 +1,11 @@
+name: controller
+target: f/controller
+workspace: test-workspace
+
+scripts:
+  - pattern: "*.py"
+    path: ""
+    settings:
+      summary: "Test controller scripts"
+      description: "Test controller scripts for godon"
+      timeout: 60

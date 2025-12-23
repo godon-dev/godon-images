@@ -45,8 +45,61 @@ jobs:
       run: |
         echo "Testing container basic functionality..."
         
-        # Test container help command
-        docker run --rm godon-seeder-test:test-${{ github.run_number }} --help
+        # Test container help command by overriding entrypoint
+        docker run --rm --entrypoint="/bin/sh" godon-seeder-test:test-${{ github.run_number }} -c "godon_seeder --help"
+
+    - name: Run Prism mock server and test seeder deployment
+      run: |
+        echo "🧪 Testing godon-seeder against Prism mock server..."
+        
+        # Start Prism mock server
+        echo "📡 Starting Prism mock server..."
+        docker run -d --name windmill-mock \
+          -p 8000:4010 \
+          -v "$(pwd)/images/godon-seeder/tests/windmill-openapi.yaml:/spec.yaml:ro" \
+          stoplight/prism:5 \
+          mock -h 0.0.0.0 -p 4010 /spec.yaml --dynamic --errors=false
+        
+        echo "⏳ Waiting for Prism to initialize..."
+        sleep 15
+        
+        # Verify Prism is running
+        echo "🔍 Verifying Prism mock server..."
+        if ! docker ps | grep windmill-mock > /dev/null; then
+          echo "❌ Prism mock container not running"
+          docker logs windmill-mock
+          exit 1
+        fi
+        echo "✅ Prism mock server is ready!"
+        
+        # Test script creation endpoint
+        echo "🧪 Testing script creation endpoint..."
+        curl -s -X POST http://localhost:8000/w/test/scripts/create \
+          -H "Authorization: Bearer test" \
+          -H "Content-Type: application/json" \
+          -d '{"path":"f/test.py","content":"def main(): pass","language":"python3","summary":"test","description":"test script"}' | head -5
+        
+        # Find the seeder binary path
+        echo "🔍 Finding seeder binary path..."
+        BINARY_PATH=$(docker run --rm --entrypoint=/bin/sh godon-seeder-test:test-${{ github.run_number }} -c "find /nix/store -name 'godon_seeder' -type f | head -1")
+        echo "Found binary at: $BINARY_PATH"
+        
+        # Run seeder test against mock server
+        echo "🚀 Running godon-seeder test..."
+        docker run --rm \
+          --network host \
+          -e WINDMILL_BASE_URL=http://localhost:8000 \
+          -e WINDMILL_WORKSPACE=test-workspace \
+          -e WINDMILL_EMAIL=admin@test.com \
+          -e WINDMILL_PASSWORD=test123 \
+          -e GODON_DIR=/app/tests \
+          -e VERBOSE=true \
+          -e GODON_SEEDER_BIN="$BINARY_PATH" \
+          -v "$(pwd)/images/godon-seeder/tests:/app/tests" \
+          godon-seeder-test:test-${{ github.run_number }} \
+          --verbose /app/tests/test_components/controller /app/tests/test_components/linux_network_stack
+        
+        echo "✅ Seeder test completed successfully!"
 
     - name: Container cleanup
       if: always()

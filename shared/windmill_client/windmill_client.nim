@@ -1,4 +1,4 @@
-import std/[httpclient, json, strformat, tables, uri, logging]
+import std/[httpclient, json, strformat, tables, uri, logging, strutils]
 import config
 
 type
@@ -9,7 +9,7 @@ type
 
 proc login*(client: var WindmillApiClient) =
   ## Authenticate with Windmill and obtain bearer token
-  let url = &"{client.config.windmillBaseUrl}/api/auth/login"
+  let url = &"{client.config.windmillBaseUrl}/auth/login"
   let payload = %* {
     "email": client.config.windmillEmail,
     "password": client.config.windmillPassword
@@ -90,7 +90,7 @@ proc createWorkspace*(client: WindmillApiClient, workspace: string) =
   ## Create a new Windmill workspace using the API
   info("Creating workspace: " & workspace)
   
-  let url = &"{client.config.windmillBaseUrl}/api/workspaces/create"
+  let url = &"{client.config.windmillBaseUrl}/workspaces/create"
   let payload = %*{
     "id": workspace,
     "name": workspace,
@@ -115,10 +115,26 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
   ## Deploy a script to Windmill using the API
   info("Deploying script: " & scriptPath)
   
-  let url = &"{client.config.windmillBaseUrl}/api/w/{workspace}/scripts/create"
+  # Detect language from file extension
+  let ext = if '.' in scriptPath:
+               let parts = scriptPath.split('.')
+               "." & parts[parts.len - 1]
+             else:
+               ""
+  let language = case ext
+    of ".py": "python3"
+    of ".js": "deno"
+    of ".go": "go"
+    of ".sh": "bash"
+    of ".sql": "postgresql"
+    of ".ts": "nativets"
+    else: "python3"  # Default fallback
+  
+  let url = &"{client.config.windmillBaseUrl}/w/{workspace}/scripts/create"
   var payload = %*{
     "path": scriptPath,
-    "content": content
+    "content": content,
+    "language": language
   }
   
   # Add script settings if provided
@@ -141,7 +157,7 @@ proc deployFlow*(client: WindmillApiClient, workspace: string, flowPath: string,
   ## Deploy a flow to Windmill using the API
   info("Deploying flow: " & flowPath)
   
-  let url = &"{client.config.windmillBaseUrl}/api/w/{workspace}/flows/create"
+  let url = &"{client.config.windmillBaseUrl}/w/{workspace}/flows/create"
   let payload = %*{
     "path": flowPath,
     "value": flowDef
