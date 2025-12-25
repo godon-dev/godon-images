@@ -1,9 +1,34 @@
-import std/[parseopt, strutils, os, logging]
+import std/[parseopt, strutils, os, logging, json, times, tables, sequtils]
+import yaml
+import windmill_client.config
+import windmill_client.windmill_client
 
 addHandler(newConsoleLogger())
 setLogFilter(lvlInfo)
 
 type
+  # Component configuration types
+  ScriptSettings* = object
+    summary*: string
+    description*: string
+    timeout*: Option[int]
+    
+  ScriptSpec* = object
+    pattern*: string
+    path*: string
+    settings*: ScriptSettings
+  
+  ComponentConfig* = object
+    name*: string
+    target*: string
+    workspace*: Option[string]
+    scripts*: seq[ScriptSpec]
+
+  ComponentInfo* = object
+    config*: ComponentConfig
+    directory*: string
+
+  # Main seeder configuration
   SeederConfig* = object
     windmillBaseUrl*: string
     windmillWorkspace*: string
@@ -11,7 +36,45 @@ type
     windmillPassword*: string
     godonVersion*: string
     godonDir*: string
+    sourceDirs*: seq[string]
     verbose*: bool
+
+proc parseScriptSettings(settingsJson: JsonNode): ScriptSettings =
+  ## Parse script settings from JSON node
+  result = ScriptSettings(
+    summary: settingsJson.getOrDefault("summary").getStr(""),
+    description: settingsJson.getOrDefault("description").getStr(""),
+    timeout: if settingsJson.hasKey("timeout"): some(settingsJson["timeout"].getInt()) else: none(int)
+  )
+
+proc parseScriptSpec(specJson: JsonNode): ScriptSpec =
+  ## Parse script specification from JSON node
+  let settingsJson = specJson.getOrDefault("settings")
+  result = ScriptSpec(
+    pattern: specJson.getOrDefault("pattern").getStr(""),
+    path: specJson.getOrDefault("path").getStr(""),
+    settings: if settingsJson != nil and settingsJson.kind == JObject: parseScriptSettings(settingsJson) else: ScriptSettings()
+  )
+
+proc parseComponentConfig(yamlPath: string): ComponentConfig =
+  ## Parse component.yaml file into ComponentConfig object
+  info("Parsing component config: " & yamlPath)
+  
+  let yamlContent = readFile(yamlPath)
+  
+  # Use yaml.load to directly parse into ComponentConfig
+  try:
+    load(yamlContent, result)
+    info("Parsed component '" & result.name & "' with " & $result.scripts.len & " scripts")
+  except CatchableError as e:
+    logging.error("Failed to parse YAML: " & e.msg)
+    # Return empty config as fallback
+    result = ComponentConfig(
+      name: yamlPath.splitPath().head,
+      target: "",
+      workspace: none(string),
+      scripts: @[]
+    )
 
 proc loadSeederConfig*: SeederConfig =
   ## Load configuration from environment variables
@@ -22,13 +85,177 @@ proc loadSeederConfig*: SeederConfig =
   result.godonVersion = getEnv("GODON_VERSION", "main")
   result.godonDir = getEnv("GODON_DIR", "/godon")
   result.verbose = getEnv("VERBOSE", "false") == "true"
+  result.sourceDirs = @[]
+
+proc discoverComponents*(config: SeederConfig): seq[ComponentInfo] =
+  ## Discover component configurations from source directories
+  result = @[]
+  
+  for sourceDir in config.sourceDirs:
+    if not dirExists(sourceDir):
+      warn("Source directory does not exist: " & sourceDir)
+      continue
+    
+    info("Scanning directory: " & sourceDir)
+    
+    # Look for component.yaml files
+    for kind, path in walkDir(sourceDir, relative=true):
+      if kind == pcFile and path.endsWith("component.yaml"):
+        let fullPath = sourceDir / path
+        info("Found component config: " & fullPath)
+        try:
+          let component = parseComponentConfig(fullPath)
+          # Create ComponentInfo with directory
+          let componentInfo = ComponentInfo(
+            config: component,
+            directory: sourceDir
+          )
+          result.add(componentInfo)
+        except CatchableError as e:
+          logging.error("Failed to parse component config " & fullPath & ": " & e.msg)
+
+proc findFilesByPattern(baseDir: string, pattern: string): seq[string] =
+  ## Find files matching a glob pattern relative to base directory
+  result = @[]
+  
+  let patternPath = baseDir / pattern
+  let (dir, filePattern) = patternPath.splitPath()
+  
+  if not dirExists(dir):
+    warn("Pattern directory does not exist: " & dir)
+    return result
+  
+  debug("Searching for files matching pattern: " & pattern & " in " & dir)
+  
+  for kind, path in walkDir(dir, relative=true):
+    if kind == pcFile:
+      # Simple glob matching - check if filename matches pattern
+      let filename = path.extractFilename()
+      let ext = "." & filename.split('.')[^1]
+      
+      # Match extension or exact pattern
+      if filePattern == "*" or 
+         filePattern == ext or 
+         filePattern == ("*" & ext) or
+         filename == filePattern:
+        let fullPath = dir / path
+        result.add(fullPath)
+        debug("  Found matching file: " & fullPath)
+
+proc readScriptContent(scriptPath: string): string =
+  ## Read script content and determine language from extension
+  if not fileExists(scriptPath):
+    raise newException(IOError, "Script file not found: " & scriptPath)
+  
+  result = readFile(scriptPath)
+  debug("Read script content from: " & scriptPath & " (" & $result.len & " bytes)")
+
+proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: ScriptSettings) =
+  ## Deploy a single script to Windmill
+  info("Deploying script: " & scriptPath)
+  
+  # Build script settings JSON
+  var scriptSettings = newJObject()
+  if settings.summary.len > 0:
+    scriptSettings["summary"] = %* settings.summary
+  if settings.description.len > 0:
+    scriptSettings["description"] = %* settings.description
+  if settings.timeout.isSome:
+    scriptSettings["timeout"] = %* settings.timeout.get()
+  
+  client.deployScript(workspace, scriptPath, content, scriptSettings)
+  info("✅ Successfully deployed script: " & scriptPath)
+
+proc deployComponentScripts*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string) =
+  ## Deploy all scripts for a component
+  info("Deploying scripts for component: " & component.name)
+  
+  for scriptSpec in component.scripts:
+    var scriptFiles: seq[string]
+    
+    if scriptSpec.path.len > 0:
+      # Direct path override
+      scriptFiles = @[baseDir / scriptSpec.path]
+    elif scriptSpec.pattern.len > 0:
+      # Pattern-based discovery
+      scriptFiles = findFilesByPattern(baseDir, scriptSpec.pattern)
+    
+    if scriptFiles.len == 0:
+      warn("No files found for script spec: " & scriptSpec.pattern)
+      continue
+    
+    for scriptFile in scriptFiles:
+      let relativePath = scriptFile.relativePath(baseDir)
+      let windmillPath = if component.target.len > 0:
+                          component.target / relativePath
+                        else:
+                          relativePath
+      
+      try:
+        let content = readScriptContent(scriptFile)
+        deployScript(client, workspace, windmillPath, content, scriptSpec.settings)
+      except CatchableError as e:
+        logging.error("Failed to deploy script " & scriptFile & ": " & e.msg)
+
+proc seedWorkspace*(config: SeederConfig) =
+  ## Main seeding function - discover and deploy all components
+  info("Starting component deployment")
+  
+  # Create Windmill client
+  let windmillConfig = WindmillConfig(
+    windmillBaseUrl: config.windmillBaseUrl,
+    windmillApiBaseUrl: "",
+    windmillWorkspace: config.windmillWorkspace,
+    windmillEmail: config.windmillEmail,
+    windmillPassword: config.windmillPassword
+  )
+  
+  info("Connecting to Windmill...")
+  var client = newWindmillApiClient(windmillConfig)
+  info("✅ Successfully authenticated with Windmill")
+  
+  # Create workspace
+  info("Creating workspace: " & config.windmillWorkspace)
+  client.createWorkspace(config.windmillWorkspace)
+  info("✅ Workspace created successfully")
+  
+  # Discover components
+  let components = discoverComponents(config)
+  info("Found " & $components.len & " components to deploy")
+  
+  # Deploy each component
+  for componentInfo in components:
+    let component = componentInfo.config
+    info("Deploying component: " & component.name)
+    
+    # Use the stored directory path from discovery
+    let componentDir = componentInfo.directory
+    
+    # Use component-specific workspace or default to global workspace
+    let targetWorkspace = if component.workspace.isSome:
+                            component.workspace.get()
+                          else:
+                            config.windmillWorkspace
+    
+    info("Deploying to workspace: " & targetWorkspace)
+    
+    # Create workspace if it doesn't exist
+    if component.workspace.isSome:
+      info("Creating component-specific workspace: " & targetWorkspace)
+      client.createWorkspace(targetWorkspace)
+    
+    # Deploy scripts
+    if component.scripts.len > 0:
+      deployComponentScripts(client, targetWorkspace, component, componentDir)
+  
+  info("✅ Component deployment completed successfully")
 
 proc printHelp* =
   echo """
 Godon Seeder - Deploy Godon optimization components to Windmill
 
 Usage:
-  godon_seeder [options]
+  godon_seeder [options] [directories...]
 
 Options:
   -h, --help              Show this help message
@@ -45,14 +272,17 @@ Environment Variables:
   VERBOSE                 Enable verbose logging (default: false)
 
 Examples:
-  # Deploy to local Windmill
-  godon_seeder
+  # Deploy components from directories
+  godon_seeder /godon/controller /godon/breeder
 
   # Deploy with custom workspace
-  WINDMILL_WORKSPACE=my-workspace godon_seeder
+  WINDMILL_WORKSPACE=my-workspace godon_seeder /godon/controller
 
-  # Deploy specific version
-  GODON_VERSION=v1.2.3 godon_seeder --verbose
+  # Deploy with verbose logging
+  godon_seeder --verbose /godon/controller
+
+  # Use default GODON_DIR
+  godon_seeder
 """
 
 proc printVersion* =
@@ -64,11 +294,6 @@ proc main* =
   
   if config.verbose:
     setLogFilter(lvlDebug)
-  
-  info("Starting Godon Seeder")
-  info("Windmill URL: " & config.windmillBaseUrl)
-  info("Workspace: " & config.windmillWorkspace)
-  info("Godon Version: " & config.godonVersion)
   
   var p = initOptParser()
   
@@ -92,22 +317,31 @@ proc main* =
         printHelp()
         quit(1)
     of cmdArgument:
-      echo "Unknown argument: " & p.key
-      printHelp()
-      quit(1)
+      # Treat remaining arguments as source directories
+      config.sourceDirs.add(p.key)
   
-  info("Godon Seeder configuration loaded")
-  info("This seeder will deploy components to Windmill workspace")
+  # If no source directories specified, use default godon dir
+  if config.sourceDirs.len == 0:
+    info("No source directories specified, using GODON_DIR: " & config.godonDir)
+    config.sourceDirs.add(config.godonDir)
+  
+  info("Starting Godon Seeder")
+  info("Source directories: " & config.sourceDirs.join(", "))
+  info("Windmill URL: " & config.windmillBaseUrl)
+  info("Workspace: " & config.windmillWorkspace)
   
   debug("Configuration:")
   debug("  Base URL: " & config.windmillBaseUrl)
   debug("  Workspace: " & config.windmillWorkspace)
   debug("  Email: " & config.windmillEmail)
   debug("  Godon Version: " & config.godonVersion)
-  debug("  Godon Dir: " & config.godonDir)
   
-  info("✅ Seeder configuration validated successfully")
-  info("Note: Full deployment functionality will be implemented in future versions")
+  # Perform the seeding
+  try:
+    config.seedWorkspace()
+  except CatchableError as e:
+    logging.error("Seeding failed: " & e.msg)
+    quit(1)
 
 when isMainModule:
   main()

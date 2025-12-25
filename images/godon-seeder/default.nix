@@ -23,6 +23,11 @@ let
       pcre
     ];
     
+    # Godon repository URL and version for build-time cloning
+    GODON_REPO_URL = "https://github.com/godon-dev/godon.git";
+    GODON_BUILD_VERSION = let envVar = builtins.getEnv "GODON_VERSION"; in
+                           if envVar != "" then envVar else "master";
+    
     env = {
       SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
       NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
@@ -46,6 +51,16 @@ let
       echo "Using documentation-based SSL setup in container..."
       echo "SSL_CERT_FILE: $SSL_CERT_FILE"
       echo "Certificate exists: $([ -f "$SSL_CERT_FILE" ] && echo "YES" || echo "NO")"
+      
+      # Clone godon repository at build time (only if not a test build)
+      if [ "$BUILD_VERSION" != "test-local" ]; then
+        echo "Cloning godon repository from $GODON_REPO_URL at version $GODON_BUILD_VERSION"
+        mkdir -p godon-repo
+        git clone --depth 1 --branch "$GODON_BUILD_VERSION" "$GODON_REPO_URL" godon-repo || echo "⚠️  Git clone failed, continuing anyway"
+        echo "✅ Godon repository cloned successfully"
+      else
+        echo "Test build detected, skipping git clone"
+      fi
       
       # Following the exact godon-api pattern
       nimble refresh
@@ -88,6 +103,12 @@ let
         exit 1
       fi
       
+      # Copy the orchestration shell script
+      if [ -f "godon_seeder.sh" ]; then
+        echo "Copying orchestration script"
+        cp godon_seeder.sh $out/bin/
+        chmod +x $out/bin/godon_seeder.sh
+      fi
         
       # Make all binaries executable
       chmod +x $out/bin/*
@@ -112,17 +133,19 @@ let
       pkgs.cacert
       pkgs.busybox  # Provides basic utilities and pseudo filesystem support
       pkgs.curl    # For testing Windmill connectivity
+      pkgs.git     # For git pull and checkout operations at runtime
+      pkgs.bash    # For running orchestration script
     ];
     
     config = {
-      Entrypoint = [ "${godon-seeder}/bin/godon_seeder" ];
+      Entrypoint = [ "${godon-seeder}/bin/godon_seeder.sh" ];
       ExposedPorts = {
         "8080/tcp" = {};
       };
       Env = [
         "PATH=/bin:${godon-seeder}/bin"
         "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-        "WINDMILL_BASE_URL=http://localhost:8000"
+        "WINDMILL_BASE_URL=http://windmill-app:8000"
         "WINDMILL_WORKSPACE=godon"
         "GODON_VERSION=main"
         "GODON_DIR=/godon"
