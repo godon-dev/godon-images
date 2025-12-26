@@ -10,10 +10,11 @@ godon-images/
 │   ├── Dockerfile.nix-builder       # Isolated Nix builder container
 │   └── build-container-nix.sh        # Build script (uses dockerTools.buildLayeredImage)
 ├── images/                          # Service images
-│   ├── godon-api/                   # Godon API service (Nim) - source files need to be restored
+│   ├── godon-api/                   # Godon API service (Nim) - REST API with Windmill integration
+│   ├── godon-cli/                   # Godon CLI tool
 │   ├── godon-metrics-exporter/      # Metrics exporter service (Nim)
-│   ├── godon-seeder/                # Seeder service
-│   └── godon-dask/                  # Dask service
+│   └── godon-seeder/                # Seeder service (Nim) - Component optimization testing
+├── shared/                          # Shared libraries and utilities
 ```
 
 ## Building Images
