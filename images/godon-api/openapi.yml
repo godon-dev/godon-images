@@ -306,14 +306,17 @@ paths:
         - credentials
       operationId: getCredential
       summary: Get credential by ID
-      description: Retrieves detailed information about a specific credential (excluding the actual content)
+      description: Retrieves detailed information about a specific credential including the actual content
       responses:
         '200':
-          description: Successfully returned credential information
+          description: Successfully returned credential information with content
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Credential'
+                type: object
+                properties:
+                  credential:
+                    $ref: '#/components/schemas/Credential'
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -492,38 +495,6 @@ components:
         $ref: '#/components/schemas/BreederSummary'
       description: Array of breeder summary objects (without configuration details)
 
-    Error:
-      type: object
-      required:
-        - message
-        - code
-      properties:
-        message:
-          type: string
-          description: Human-readable error message
-          example: "Invalid request parameters"
-        code:
-          type: string
-          description: Machine-readable error code
-          example: "INVALID_INPUT"
-        details:
-          type: object
-          description: Additional error details and context
-          additionalProperties: true
-          example:
-            field: "name"
-            reason: "Name must be between 1 and 255 characters"
-
-    SuccessMessage:
-      type: object
-      required:
-        - message
-      properties:
-        message:
-          type: string
-          description: Human-readable success message
-          example: "Operation completed successfully"
-
   responses:
     BadRequest:
       description: Invalid request parameters or malformed request body
@@ -679,6 +650,10 @@ components:
           description: Timestamp when the credential was last accessed
           readOnly: true
           example: "2024-01-16T14:20:00Z"
+        content:
+          type: string
+          description: The actual credential content (only included in GET /credentials/{id} responses)
+          example: "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA2Z2H7V..."
 
     CredentialCreate:
       type: object
