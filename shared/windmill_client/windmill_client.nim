@@ -173,3 +173,84 @@ proc deployFlow*(client: WindmillApiClient, workspace: string, flowPath: string,
   except CatchableError as e:
     error("Error deploying flow: " & e.msg)
     raise
+
+proc deleteVariable*(client: WindmillApiClient, variablePath: string) =
+  ## Delete a Windmill variable using the API
+  info("Deleting variable: " & variablePath)
+  
+  # Parse variable path to extract components
+  # Expected format: "f/vars/variable_name" or "vars/variable_name"
+  let cleanPath = variablePath.replace("f/", "").replace("vars/", "")
+  let encodedPath = encodeUrl(cleanPath)
+  
+  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/variables/{encodedPath}"
+  
+  try:
+    let response = client.http.request(url, HttpDelete, "")
+    if response.code == Http200:
+      info("Successfully deleted variable: " & variablePath)
+    elif response.code == Http404:
+      info("Variable not found (may have been already deleted): " & variablePath)
+    else:
+      error("Failed to delete variable: " & response.status)
+      error("Response: " & response.body)
+      raise newException(ValueError, "Failed to delete variable: " & variablePath)
+  except CatchableError as e:
+    error("Error deleting variable: " & e.msg)
+    raise
+
+proc createVariable*(client: WindmillApiClient, variablePath: string, content: string, isSecret: bool = true) =
+  ## Create a Windmill variable using the API
+  info("Creating variable: " & variablePath)
+  
+  # Parse variable path to extract components
+  # Expected format: "f/vars/variable_name" or "vars/variable_name"
+  let cleanPath = variablePath.replace("f/", "").replace("vars/", "")
+  
+  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/variables"
+  let payload = %*{
+    "path": cleanPath,
+    "value": content,
+    "isSecret": isSecret,
+    "isPath": false  # We're storing file content as string value
+  }
+  
+  try:
+    let response = client.http.post(url, $payload)
+    if response.code == Http201:
+      info("Successfully created variable: " & variablePath)
+    elif response.code == Http409:
+      info("Variable already exists: " & variablePath)
+    else:
+      error("Failed to create variable: " & response.status)
+      error("Response: " & response.body)
+      raise newException(ValueError, "Failed to create variable: " & variablePath)
+  except CatchableError as e:
+    error("Error creating variable: " & e.msg)
+    raise
+
+proc getVariable*(client: WindmillApiClient, variablePath: string): string =
+  ## Get a Windmill variable content by path
+  info("Getting variable: " & variablePath)
+  
+  # Parse variable path to extract components
+  let cleanPath = variablePath.replace("f/", "").replace("vars/", "")
+  let encodedPath = encodeUrl(cleanPath)
+  
+  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/variables/value/{encodedPath}"
+  
+  try:
+    let response = client.http.get(url)
+    if response.code == Http200:
+      info("Successfully retrieved variable: " & variablePath)
+      result = response.body
+    elif response.code == Http404:
+      error("Variable not found: " & variablePath)
+      raise newException(ValueError, "Variable not found: " & variablePath)
+    else:
+      error("Failed to get variable: " & response.status)
+      error("Response: " & response.body)
+      raise newException(ValueError, "Failed to get variable: " & variablePath)
+  except CatchableError as e:
+    error("Error getting variable: " & e.msg)
+    raise
