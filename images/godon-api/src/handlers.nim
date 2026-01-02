@@ -147,7 +147,7 @@ proc handleCredentialsGet*(request: Request): (HttpCode, string) =
     var client = newWindmillClient(cfg)
     
     let credentials = client.getCredentials()
-    let response = %*{"credentials": credentials}
+    let response = %*credentials
     
     info("Successfully retrieved " & $credentials.len & " credentials")
     result = (Http200, $response)
@@ -169,8 +169,8 @@ proc handleCredentialsPost*(request: Request): (HttpCode, string) =
     let credentialData = parseJson(requestBody)
     
     # Validate required fields
-    if not credentialData.hasKey("name") or not credentialData.hasKey("credential_type") or not credentialData.hasKey("content"):
-      let errorResponse = createErrorResponse("Missing required fields: name, credential_type, content", "BAD_REQUEST")
+    if not credentialData.hasKey("name") or not credentialData.hasKey("credentialType") or not credentialData.hasKey("content"):
+      let errorResponse = createErrorResponse("Missing required fields: name, credentialType, content", "BAD_REQUEST")
       result = (Http400, $errorResponse)
       return
     
@@ -180,6 +180,7 @@ proc handleCredentialsPost*(request: Request): (HttpCode, string) =
     # Step 1: Create Windmill variable with credential content
     let name = credentialData["name"].getStr()
     let content = credentialData["content"].getStr()
+    let credentialType = credentialData["credentialType"].getStr()
     let windmillVariablePath = "f/vars/" & name
     
     try:
@@ -194,7 +195,7 @@ proc handleCredentialsPost*(request: Request): (HttpCode, string) =
     # Step 2: Create catalog entry via controller script
     let catalogData = %*{
       "name": name,
-      "credential_type": credentialData["credential_type"].getStr(),
+      "credential_type": credentialType,
       "description": if credentialData.hasKey("description"): credentialData["description"].getStr() else: "",
       "content": ""  # Don't send content to catalog (already in Windmill)
     }
@@ -237,15 +238,15 @@ proc handleCredentialGet*(request: Request, credentialId: string): (HttpCode, st
     let credentialWithContent = %*{
       "id": credential.id,
       "name": credential.name,
-      "credential_type": credential.credentialType,
+      "credentialType": credential.credentialType,
       "description": credential.description,
-      "windmill_variable": credential.windmillVariable,
-      "created_at": credential.createdAt,
-      "last_used_at": credential.lastUsedAt,
+      "windmillVariable": credential.windmillVariable,
+      "createdAt": credential.createdAt,
+      "lastUsedAt": credential.lastUsedAt,
       "content": credentialContent
     }
     
-    let response = %*{"credential": credentialWithContent}
+    let response = credentialWithContent
     
     info("Successfully retrieved credential: " & credentialId)
     result = (Http200, $response)
