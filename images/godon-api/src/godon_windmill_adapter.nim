@@ -7,6 +7,9 @@ import config, types
 import windmill_client.config as sharedConfig
 import windmill_client.windmill_client
 
+# Export Windmill variable management methods from shared client
+export windmill_client.createVariable, windmill_client.getVariable, windmill_client.deleteVariable
+
 # Godon-specific wrapper around the shared WindmillApiClient
 # This contains godon-specific business logic, keeping the shared client clean
 
@@ -38,6 +41,40 @@ proc getBreeder*(client: WindmillApiClient, breederId: string): Breeder =
 proc deleteBreeder*(client: WindmillApiClient, breederId: string) =
   let args = %* {"breeder_id": breederId}
   discard client.runJob("breeder_delete", args)
+
+# Credential management methods
+
+proc getCredentials*(client: WindmillApiClient): seq[Credential] =
+  let response = client.runJob("credentials_get")
+  if response.hasKey("credentials"):
+    result = parseCredentialsFromJson(response["credentials"])
+  else:
+    result = @[]
+
+proc createCredential*(client: WindmillApiClient, credentialData: JsonNode): string =
+  let args = %* {"credential_data": credentialData}
+  let response = client.runJob("credential_create", args)
+  if response.hasKey("credential") and response["credential"].hasKey("id"):
+    result = response["credential"]["id"].getStr()
+  else:
+    raise newException(ValueError, "No credential id returned from job")
+
+proc createCredentialResponse*(client: WindmillApiClient, credentialData: JsonNode): JsonNode =
+  let args = %* {"credential_data": credentialData}
+  result = client.runJob("credential_create", args)
+
+proc getCredential*(client: WindmillApiClient, credentialId: string): Credential =
+  let args = %* {"credential_id": credentialId}
+  let response = client.runJob("credential_get", args)
+  result = parseCredentialFromJson(response["credential"])
+
+proc deleteCredential*(client: WindmillApiClient, credentialId: string) =
+  let args = %* {"credential_id": credentialId}
+  discard client.runJob("credential_delete", args)
+
+proc deleteCredentialResponse*(client: WindmillApiClient, credentialId: string): JsonNode =
+  let args = %* {"credential_id": credentialId}
+  result = client.runJob("credential_delete", args)
 
 # Create adapter to bridge godon-api Config to shared WindmillConfig
 proc newWindmillClient*(godonCfg: Config): WindmillApiClient =

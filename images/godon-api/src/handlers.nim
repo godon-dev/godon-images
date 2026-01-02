@@ -136,3 +136,164 @@ proc handleBreederPut*(request: Request, breederId: string): (HttpCode, string) 
   
   let errorResponse = createErrorResponse("Update breeder functionality not implemented", "NOT_IMPLEMENTED")
   result = (Http501, $errorResponse)
+
+# Credential endpoints
+
+proc handleCredentialsGet*(request: Request): (HttpCode, string) =
+  try:
+    info("GET /credentials request received")
+    
+    let cfg = loadConfig()
+    var client = newWindmillClient(cfg)
+    
+    let credentials = client.getCredentials()
+    let response = %*{"credentials": credentials}
+    
+    info("Successfully retrieved " & $credentials.len & " credentials")
+    result = (Http200, $response)
+  except Exception as e:
+    error("Internal error in GET /credentials: " & e.msg)
+    let errorResponse = createErrorResponse("Failed to retrieve credentials", "INTERNAL_SERVER_ERROR", %*{"error": e.msg})
+    result = (Http500, $errorResponse)
+
+proc handleCredentialsPost*(request: Request): (HttpCode, string) =
+  try:
+    info("POST /credentials request received")
+    
+    let requestBody = request.body
+    if requestBody.len == 0:
+      let errorResponse = createErrorResponse("Request body is required", "BAD_REQUEST")
+      result = (Http400, $errorResponse)
+      return
+    
+    let credentialData = parseJson(requestBody)
+    
+    # Validate required fields
+    if not credentialData.hasKey("name") or not credentialData.hasKey("credential_type") or not credentialData.hasKey("content"):
+      let errorResponse = createErrorResponse("Missing required fields: name, credential_type, content", "BAD_REQUEST")
+      result = (Http400, $errorResponse)
+      return
+    
+    let cfg = loadConfig()
+    var client = newWindmillClient(cfg)
+    
+    # Step 1: Create Windmill variable with credential content
+    let name = credentialData["name"].getStr()
+    let content = credentialData["content"].getStr()
+    let windmillVariablePath = "f/vars/" & name
+    
+    try:
+      client.createVariable(windmillVariablePath, content, isSecret=true)
+      info("Created Windmill variable: " & windmillVariablePath)
+    except Exception as e:
+      error("Failed to create Windmill variable: " & e.msg)
+      let errorResponse = createErrorResponse("Failed to create Windmill variable", "INTERNAL_SERVER_ERROR", %*{"error": e.msg})
+      result = (Http500, $errorResponse)
+      return
+    
+    # Step 2: Create catalog entry via controller script
+    let catalogData = %*{
+      "name": name,
+      "credential_type": credentialData["credential_type"].getStr(),
+      "description": if credentialData.hasKey("description"): credentialData["description"].getStr() else: "",
+      "content": ""  # Don't send content to catalog (already in Windmill)
+    }
+    
+    let response = client.createCredentialResponse(catalogData)
+    
+    info("Successfully created credential")
+    result = (Http201, $response)
+  except CatchableError:
+    error("Invalid JSON in POST /credentials: " & getCurrentExceptionMsg())
+    let errorResponse = createErrorResponse("Invalid JSON in request body", "BAD_REQUEST")
+    result = (Http400, $errorResponse)
+  except Exception as e:
+    error("Internal error in POST /credentials: " & e.msg)
+    let errorResponse = createErrorResponse("Failed to create credential", "INTERNAL_SERVER_ERROR", %*{"error": e.msg})
+    result = (Http500, $errorResponse)
+
+proc handleCredentialGet*(request: Request, credentialId: string): (HttpCode, string) =
+  try:
+    info("GET /credentials/" & credentialId & " request received")
+    
+    # Validate UUID format
+    if credentialId.isEmptyOrWhitespace() or not isValidUUID(credentialId):
+      error("Invalid UUID format: " & credentialId)
+      let errorResponse = createErrorResponse("Invalid UUID format", "BAD_REQUEST", %*{"credential_id": credentialId})
+      result = (Http400, $errorResponse)
+      return
+    
+    let cfg = loadConfig()
+    var client = newWindmillClient(cfg)
+    
+    # Step 1: Get catalog metadata from controller
+    let credential = client.getCredential(credentialId)
+    
+    # Step 2: Get actual credential content from Windmill
+    let windmillVariablePath = credential.windmillVariable
+    let credentialContent = client.getVariable(windmillVariablePath)
+    
+    # Combine metadata + content in response
+    let credentialWithContent = %*{
+      "id": credential.id,
+      "name": credential.name,
+      "credential_type": credential.credentialType,
+      "description": credential.description,
+      "windmill_variable": credential.windmillVariable,
+      "created_at": credential.createdAt,
+      "last_used_at": credential.lastUsedAt,
+      "content": credentialContent
+    }
+    
+    let response = %*{"credential": credentialWithContent}
+    
+    info("Successfully retrieved credential: " & credentialId)
+    result = (Http200, $response)
+  except ValueError as e:
+    error("Validation error in GET /credentials/" & credentialId & ": " & e.msg)
+    let errorResponse = createErrorResponse("Invalid request parameters", "BAD_REQUEST", %*{"error": e.msg})
+    result = (Http400, $errorResponse)
+  except Exception as e:
+    error("Internal error in GET /credentials/" & credentialId & ": " & e.msg)
+    let errorResponse = createErrorResponse("Failed to retrieve credential", "INTERNAL_SERVER_ERROR", %*{"error": e.msg})
+    result = (Http500, $errorResponse)
+
+proc handleCredentialDelete*(request: Request, credentialId: string): (HttpCode, string) =
+  try:
+    info("DELETE /credentials/" & credentialId & " request received")
+    
+    # Validate UUID format
+    if credentialId.isEmptyOrWhitespace() or not isValidUUID(credentialId):
+      error("Invalid UUID format: " & credentialId)
+      let errorResponse = createErrorResponse("Invalid UUID format", "BAD_REQUEST", %*{"credential_id": credentialId})
+      result = (Http400, $errorResponse)
+      return
+    
+    let cfg = loadConfig()
+    var client = newWindmillClient(cfg)
+    
+    # Step 1: Get credential info to find Windmill variable path
+    let credential = client.getCredential(credentialId)
+    let windmillVariablePath = credential.windmillVariable
+    
+    # Step 2: Delete from Windmill
+    try:
+      client.deleteVariable(windmillVariablePath)
+      info("Deleted Windmill variable: " & windmillVariablePath)
+    except Exception as e:
+      error("Failed to delete Windmill variable: " & e.msg)
+      # Continue anyway to clean up catalog
+    
+    # Step 3: Delete from catalog via controller script
+    let response = client.deleteCredentialResponse(credentialId)
+    
+    info("Successfully deleted credential: " & credentialId)
+    result = (Http200, $response)
+  except ValueError as e:
+    error("Validation error in DELETE /credentials/" & credentialId & ": " & e.msg)
+    let errorResponse = createErrorResponse("Invalid request parameters", "BAD_REQUEST", %*{"error": e.msg})
+    result = (Http400, $errorResponse)
+  except Exception as e:
+    error("Internal error in DELETE /credentials/" & credentialId & ": " & e.msg)
+    let errorResponse = createErrorResponse("Failed to delete credential", "INTERNAL_SERVER_ERROR", %*{"error": e.msg})
+    result = (Http500, $errorResponse)

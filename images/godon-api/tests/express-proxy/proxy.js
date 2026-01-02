@@ -63,6 +63,54 @@ const mockResponses = {
       step_size: 3,
       max_iterations: 100
     }
+  },
+  '/w/godon/jobs/run_wait_result/p/f/controller/credentials_get': {
+    credentials: [
+      {
+        id: "550e8400-e29b-41d4-a716-446655440001",
+        name: "production_ssh_key",
+        credential_type: "ssh_private_key",
+        description: "SSH key for production servers",
+        windmill_variable: "f/vars/prod_ssh_key",
+        created_at: "2024-01-15T10:30:00Z",
+        last_used_at: "2024-01-16T14:20:00Z"
+      },
+      {
+        id: "6ba7b810-9dad-11d1-80b4-00c04fd430c9",
+        name: "staging_ssh_key",
+        credential_type: "ssh_private_key",
+        description: "SSH key for staging environment",
+        windmill_variable: "f/vars/staging_ssh_key",
+        created_at: "2024-01-10T15:45:00Z",
+        last_used_at: null
+      }
+    ]
+  },
+  '/w/godon/jobs/run_wait_result/p/f/controller/credential_create': {
+    result: "SUCCESS",
+    credential: {
+      id: "550e8400-e29b-41d4-a716-446655440002",
+      name: "test_ssh_key",
+      credential_type: "ssh_private_key",
+      description: "Test SSH key",
+      windmill_variable: "f/vars/test_ssh_key",
+      created_at: "2024-01-17T12:00:00Z"
+    }
+  },
+  '/w/godon/jobs/run_wait_result/p/f/controller/credential_get': {
+    credential: {
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      name: "production_ssh_key",
+      credential_type: "ssh_private_key",
+      description: "SSH key for production servers",
+      windmill_variable: "f/vars/prod_ssh_key",
+      created_at: "2024-01-15T10:30:00Z",
+      last_used_at: "2024-01-16T14:20:00Z"
+    }
+  },
+  '/w/godon/jobs/run_wait_result/p/f/controller/credential_delete': {
+    result: "SUCCESS",
+    message: "Credential 'production_ssh_key' (ID: 550e8400-e29b-41d4-a716-446655440001) successfully deleted"
   }
 };
 
