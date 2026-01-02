@@ -54,7 +54,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/BreederList'
+                type: object
+                properties:
+                  breeders:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BreederSummary'
               examples:
                 breeders:
                   summary: Example list of breeders
@@ -94,7 +99,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/BreederSummary'
+                type: object
+                properties:
+                  breeder:
+                    $ref: '#/components/schemas/BreederSummary'
               examples:
                 created:
                   summary: Newly created breeder
@@ -126,7 +134,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Breeder'
+                type: object
+                properties:
+                  breeder:
+                    $ref: '#/components/schemas/Breeder'
               examples:
                 breeder:
                   summary: Example breeder details
@@ -172,7 +183,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Breeder'
+                type: object
+                properties:
+                  breeder:
+                    $ref: '#/components/schemas/Breeder'
               examples:
                 updated:
                   summary: Updated breeder
@@ -229,7 +243,12 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CredentialList'
+                type: object
+                properties:
+                  credentials:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Credential'
               examples:
                 credentials:
                   summary: Example credentials list
@@ -279,7 +298,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Credential'
+                type: object
+                properties:
+                  credential:
+                    $ref: '#/components/schemas/Credential'
               examples:
                 created:
                   summary: Newly created credential
