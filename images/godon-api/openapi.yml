@@ -517,81 +517,6 @@ components:
         $ref: '#/components/schemas/BreederSummary'
       description: Array of breeder summary objects (without configuration details)
 
-  responses:
-    BadRequest:
-      description: Invalid request parameters or malformed request body
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-          examples:
-            invalidInput:
-              summary: Invalid input validation
-              value:
-                message: "Invalid request parameters"
-                code: "INVALID_INPUT"
-                details:
-                  field: "name"
-                  reason: "Name is required and must contain only alphanumeric characters, hyphens, and underscores (no spaces)"
-
-    NotFound:
-      description: The requested resource was not found
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-          examples:
-            notFound:
-              summary: Breeder not found
-              value:
-                message: "Breeder not found"
-                code: "NOT_FOUND"
-                details:
-                  uuid: "550e8400-e29b-41d4-a716-446655440000"
-
-    Conflict:
-      description: Resource conflict (e.g., duplicate name)
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-          examples:
-            duplicate:
-              summary: Duplicate breeder name
-              value:
-                message: "A breeder with this name already exists"
-                code: "DUPLICATE_RESOURCE"
-                details:
-                  field: "name"
-                  value: "genetic-optimizer-1"
-
-    InternalServerError:
-      description: Internal server error
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-          examples:
-            serverError:
-              summary: Unexpected server error
-              value:
-                message: "An unexpected error occurred"
-                code: "INTERNAL_SERVER_ERROR"
-
-    NotImplementedServerError:
-      description: Not Implented
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-          examples:
-            serverError:
-              summary: Not implemented
-              value:
-                message: "Not implemented on server side"
-                code: "NOT_IMPLEMENTED_ERROR"
-
-  schemas:
     Error:
       type: object
       required:
@@ -712,4 +637,78 @@ components:
       items:
         $ref: '#/components/schemas/Credential'
       description: Array of credential objects (excluding the actual credential content)
+
+  responses:
+    BadRequest:
+      description: Invalid request parameters or malformed request body
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalidInput:
+              summary: Invalid input validation
+              value:
+                message: "Invalid request parameters"
+                code: "INVALID_INPUT"
+                details:
+                  field: "name"
+                  reason: "Name is required and must contain only alphanumeric characters, hyphens, and underscores (no spaces)"
+
+    NotFound:
+      description: The requested resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            notFound:
+              summary: Breeder not found
+              value:
+                message: "Breeder not found"
+                code: "NOT_FOUND"
+                details:
+                  uuid: "550e8400-e29b-41d4-a716-446655440000"
+
+    Conflict:
+      description: Resource conflict (e.g., duplicate name)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            duplicate:
+              summary: Duplicate breeder name
+              value:
+                message: "A breeder with this name already exists"
+                code: "DUPLICATE_RESOURCE"
+                details:
+                  field: "name"
+                  value: "genetic-optimizer-1"
+
+    InternalServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            serverError:
+              summary: Unexpected server error
+              value:
+                message: "An unexpected error occurred"
+                code: "INTERNAL_SERVER_ERROR"
+
+    NotImplementedServerError:
+      description: Not Implented
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            serverError:
+              summary: Not implemented
+              value:
+                message: "Not implemented on server side"
+                code: "NOT_IMPLEMENTED_ERROR"
 
