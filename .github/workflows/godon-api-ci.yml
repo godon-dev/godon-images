@@ -246,8 +246,47 @@ jobs:
         echo "Testing non-existent breeder (should fail):"
         docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder show --id=00000000-0000-0000-0000-000000000000 || echo "✅ Non-existent breeder properly handled"
 
+        # Test credential operations
+        echo "Testing credential operations via godon_cli container..."
+
+        # List credentials (should return empty or mock data)
+        echo "Listing credentials:"
+        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential list
+
+        # Create a test credential
+        echo "Creating test credential..."
+        echo 'name: "test-ssh-key"' > credential-config.yaml
+        echo 'credential_type: "ssh_private_key"' >> credential-config.yaml
+        echo 'description: "Test SSH key for CI"' >> credential-config.yaml
+        echo 'content: "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA2Z9Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2QwIDAQABAoIBAFQ==\n-----END RSA PRIVATE KEY-----"' >> credential-config.yaml
+
+        docker run --rm --network host -v "$(pwd)/credential-config.yaml:/credential-config.yaml:ro" \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential create --file=/credential-config.yaml
+
+        # List credentials again to see if creation worked
+        echo "Listing credentials after creation:"
+        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential list
+
+        # Test getting a specific credential (using a sample UUID)
+        echo "Testing get specific credential:"
+        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential show --id=550e8400-e29b-41d4-a716-446655440000
+
+        # Test deleting a credential
+        echo "Testing delete credential:"
+        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential purge --id=550e8400-e29b-41d4-a716-446655440000
+
+        # Test credential error scenarios
+        echo "Testing credential error scenarios..."
+
+        # Test with invalid UUID format
+        echo "Testing invalid UUID handling for credentials (should fail):"
+        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential show --id=invalid-uuid-format || echo "✅ Invalid UUID properly rejected"
+
+        # Test with non-existent credential
+        echo "Testing non-existent credential (should fail):"
+        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential show --id=00000000-0000-0000-0000-000000000000 || echo "✅ Non-existent credential properly handled"
+
         # Test with curl for fallback comparison
-        echo "Fallback testing with curl for comparison..."
         echo "Health endpoint:"
         curl -f http://localhost:8080/health | jq .
 
