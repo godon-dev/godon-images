@@ -108,10 +108,11 @@ paths:
                 created:
                   summary: Newly created breeder
                   value:
-                    id: "550e8400-e29b-41d4-a716-446655440000"
-                    name: "genetic-optimizer-1"
-                    status: "active"
-                    createdAt: "2024-01-15T10:30:00Z"
+                    breeder:
+                      id: "550e8400-e29b-41d4-a716-446655440000"
+                      name: "genetic-optimizer-1"
+                      status: "active"
+                      createdAt: "2024-01-15T10:30:00Z"
         '400':
           $ref: '#/components/responses/BadRequest'
         '409':
@@ -143,11 +144,12 @@ paths:
                 breeder:
                   summary: Example breeder details
                   value:
-                    id: "550e8400-e29b-41d4-a716-446655440000"
-                    name: "genetic-optimizer-1"
-                    status: "active"
-                    createdAt: "2024-01-15T10:30:00Z"
-                    config: "{}"
+                    breeder:
+                      id: "550e8400-e29b-41d4-a716-446655440000"
+                      name: "genetic-optimizer-1"
+                      status: "active"
+                      createdAt: "2024-01-15T10:30:00Z"
+                      config: "{}"
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -192,13 +194,14 @@ paths:
                 updated:
                   summary: Updated breeder
                   value:
-                    id: "550e8400-e29b-41d4-a716-446655440000"
-                    name: "updated-genetic-optimizer"
-                    status: "active"
-                    createdAt: "2024-01-15T10:30:00Z"
-                    config:
-                      setting1: "new_value1"
-                      setting2: 200
+                    breeder:
+                      id: "550e8400-e29b-41d4-a716-446655440000"
+                      name: "updated-genetic-optimizer"
+                      status: "active"
+                      createdAt: "2024-01-15T10:30:00Z"
+                      config:
+                        setting1: "new_value1"
+                        setting2: 200
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -308,12 +311,13 @@ paths:
                 created:
                   summary: Newly created credential
                   value:
-                    id: "550e8400-e29b-41d4-a716-446655440001"
-                    name: "production_ssh_key"
-                    credential_type: "ssh_private_key"
-                    description: "SSH key for production servers"
-                    windmill_variable: "f/vars/prod_ssh_key"
-                    created_at: "2024-01-15T10:30:00Z"
+                    credential:
+                      id: "550e8400-e29b-41d4-a716-446655440001"
+                      name: "production_ssh_key"
+                      credential_type: "ssh_private_key"
+                      description: "SSH key for production servers"
+                      windmill_variable: "f/vars/prod_ssh_key"
+                      created_at: "2024-01-15T10:30:00Z"
         '400':
           $ref: '#/components/responses/BadRequest'
         '409':
