@@ -76,6 +76,7 @@ jobs:
       run: |
         export VERSION=${{ env.VERSION }}
         export IMAGE_NAME=${{ env.IMAGE_NAME }}
+        export PROJECT_ROOT="$(git rev-parse --show-toplevel)"
         cd images/${{ env.IMAGE_NAME }}
         bash ../../build/build-container-nix.sh --builder-file ../../build/Dockerfile.nix-builder
 
