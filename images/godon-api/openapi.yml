@@ -598,6 +598,39 @@ components:
                 message: "Not implemented on server side"
                 code: "NOT_IMPLEMENTED_ERROR"
 
+  schemas:
+    Error:
+      type: object
+      required:
+        - message
+        - code
+      properties:
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Invalid request parameters"
+        code:
+          type: string
+          description: Machine-readable error code
+          example: "INVALID_INPUT"
+        details:
+          type: object
+          description: Additional error details and context
+          additionalProperties: true
+          example:
+            field: "name"
+            reason: "Name must be between 1 and 255 characters"
+
+    SuccessMessage:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+          description: Human-readable success message
+          example: "Operation completed successfully"
+
     Credential:
       type: object
       required:
