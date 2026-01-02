@@ -253,18 +253,19 @@ paths:
                 credentials:
                   summary: Example credentials list
                   value:
-                    - id: "550e8400-e29b-41d4-a716-446655440001"
-                      name: "production_ssh_key"
-                      credential_type: "ssh_private_key"
-                      description: "SSH key for production servers"
-                      windmill_variable: "f/vars/prod_ssh_key"
-                      created_at: "2024-01-15T10:30:00Z"
-                    - id: "6ba7b810-9dad-11d1-80b4-00c04fd430c9"
-                      name: "staging_ssh_key"
-                      credential_type: "ssh_private_key"
-                      description: "SSH key for staging environment"
-                      windmill_variable: "f/vars/staging_ssh_key"
-                      created_at: "2024-01-16T14:20:00Z"
+                    credentials:
+                      - id: "550e8400-e29b-41d4-a716-446655440001"
+                        name: "production_ssh_key"
+                        credential_type: "ssh_private_key"
+                        description: "SSH key for production servers"
+                        windmill_variable: "f/vars/prod_ssh_key"
+                        created_at: "2024-01-15T10:30:00Z"
+                      - id: "6ba7b810-9dad-11d1-80b4-00c04fd430c9"
+                        name: "staging_ssh_key"
+                        credential_type: "ssh_private_key"
+                        description: "SSH key for staging environment"
+                        windmill_variable: "f/vars/staging_ssh_key"
+                        created_at: "2024-01-16T14:20:00Z"
         '500':
           $ref: '#/components/responses/InternalServerError'
 
