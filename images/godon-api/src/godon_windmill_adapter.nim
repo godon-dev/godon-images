@@ -46,7 +46,9 @@ proc deleteBreeder*(client: WindmillApiClient, breederId: string) =
 
 proc getCredentials*(client: WindmillApiClient): seq[Credential] =
   let response = client.runJob("credentials_get")
-  if response.hasKey("credentials"):
+  if response.kind == JArray:
+    result = parseCredentialsFromJson(response)
+  elif response.hasKey("credentials"):
     result = parseCredentialsFromJson(response["credentials"])
   else:
     result = @[]
@@ -56,6 +58,8 @@ proc createCredential*(client: WindmillApiClient, credentialData: JsonNode): str
   let response = client.runJob("credential_create", args)
   if response.hasKey("credential") and response["credential"].hasKey("id"):
     result = response["credential"]["id"].getStr()
+  elif response.hasKey("id"):
+    result = response["id"].getStr()
   else:
     raise newException(ValueError, "No credential id returned from job")
 
@@ -66,7 +70,10 @@ proc createCredentialResponse*(client: WindmillApiClient, credentialData: JsonNo
 proc getCredential*(client: WindmillApiClient, credentialId: string): Credential =
   let args = %* {"credential_id": credentialId}
   let response = client.runJob("credential_get", args)
-  result = parseCredentialFromJson(response["credential"])
+  if response.hasKey("credential"):
+    result = parseCredentialFromJson(response["credential"])
+  else:
+    result = parseCredentialFromJson(response)
 
 proc deleteCredential*(client: WindmillApiClient, credentialId: string) =
   let args = %* {"credential_id": credentialId}

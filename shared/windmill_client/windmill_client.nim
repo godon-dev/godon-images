@@ -18,7 +18,11 @@ proc login*(client: var WindmillApiClient) =
   info("Logging into Windmill at: " & client.config.windmillBaseUrl)
   
   try:
+    let originalHeaders = client.http.headers
+    client.http.headers = newHttpHeaders({"Content-Type": "application/json"})
     let response = client.http.post(url, $payload)
+    # Clear headers completely after login, will be set properly below
+    client.http.headers = newHttpHeaders()
     if response.code != Http200:
       error("Windmill login failed: " & response.status)
       raise newException(ValueError, "Failed to login to Windmill: " & response.status)
@@ -26,6 +30,11 @@ proc login*(client: var WindmillApiClient) =
     # Windmill returns the token as plaintext, not JSON
     client.token = response.body
     info("Successfully authenticated with Windmill")
+    
+    # Set authorization header for future requests (not Content-Type - set per-request)
+    client.http.headers = newHttpHeaders({
+      "Authorization": "Bearer " & client.token
+    })
   except CatchableError as e:
     error("Windmill authentication error: " & e.msg)
     raise
@@ -33,17 +42,11 @@ proc login*(client: var WindmillApiClient) =
 proc newWindmillApiClient*(config: WindmillConfig): WindmillApiClient =
   ## Create and authenticate a new Windmill client
   var http = newHttpClient()
-  http.headers = newHttpHeaders({"Content-Type": "application/json"})
+  # Don't set Content-Type globally - only for POST/PUT requests
   
   result.config = config
   result.http = http
   result.login()
-  
-  # Set authorization header for future requests
-  result.http.headers = newHttpHeaders({
-    "Content-Type": "application/json",
-    "Authorization": "Bearer " & result.token
-  })
 
 proc close*(client: WindmillApiClient) =
   ## Close the HTTP client
@@ -73,7 +76,16 @@ proc runJob*(client: WindmillApiClient, jobPath: string, args: JsonNode = nil): 
     else:
       body = "{}"
     
+    let originalHeaders = client.http.headers
+    client.http.headers = newHttpHeaders({
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " & client.token
+    })
     let response = client.http.post(url, body)
+    # Reset headers to only Authorization after POST
+    client.http.headers = newHttpHeaders({
+      "Authorization": "Bearer " & client.token
+    })
     if response.code != Http200:
       error("Job execution failed: " & response.status)
       error("Response: " & response.body)
@@ -98,7 +110,16 @@ proc createWorkspace*(client: WindmillApiClient, workspace: string) =
   }
   
   try:
+    let originalHeaders = client.http.headers
+    client.http.headers = newHttpHeaders({
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " & client.token
+    })
     let response = client.http.post(url, $payload)
+    # Reset headers to only Authorization after POST
+    client.http.headers = newHttpHeaders({
+      "Authorization": "Bearer " & client.token
+    })
     if response.code == Http201:
       info("Successfully created workspace: " & workspace)
     elif response.code == Http409:
@@ -143,7 +164,16 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
       payload[key] = value
   
   try:
+    let originalHeaders = client.http.headers
+    client.http.headers = newHttpHeaders({
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " & client.token
+    })
     let response = client.http.post(url, $payload)
+    # Reset headers to only Authorization after POST
+    client.http.headers = newHttpHeaders({
+      "Authorization": "Bearer " & client.token
+    })
     if response.code != Http201:
       error("Failed to deploy script: " & response.status)
       error("Response: " & response.body)
@@ -164,7 +194,16 @@ proc deployFlow*(client: WindmillApiClient, workspace: string, flowPath: string,
   }
   
   try:
+    let originalHeaders = client.http.headers
+    client.http.headers = newHttpHeaders({
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " & client.token
+    })
     let response = client.http.post(url, $payload)
+    # Reset headers to only Authorization after POST
+    client.http.headers = newHttpHeaders({
+      "Authorization": "Bearer " & client.token
+    })
     if response.code != Http201:
       error("Failed to deploy flow: " & response.status)
       error("Response: " & response.body)
@@ -183,10 +222,15 @@ proc deleteVariable*(client: WindmillApiClient, variablePath: string) =
   let cleanPath = variablePath.replace("f/", "").replace("vars/", "")
   let encodedPath = encodeUrl(cleanPath)
   
-  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/variables/{encodedPath}"
+  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/variables/delete/{encodedPath}"
   
   try:
-    let response = client.http.request(url, HttpDelete, "")
+    # Create a fresh HTTP client to avoid any state pollution from POST operations
+    var freshClient = newHttpClient()
+    freshClient.headers = newHttpHeaders({
+      "Authorization": "Bearer " & client.token
+    })
+    let response = freshClient.request(url, HttpDelete, "")
     if response.code == Http200:
       info("Successfully deleted variable: " & variablePath)
     elif response.code == Http404:
@@ -207,16 +251,26 @@ proc createVariable*(client: WindmillApiClient, variablePath: string, content: s
   # Expected format: "f/vars/variable_name" or "vars/variable_name"
   let cleanPath = variablePath.replace("f/", "").replace("vars/", "")
   
-  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/variables"
+  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/variables/create"
   let payload = %*{
     "path": cleanPath,
     "value": content,
-    "isSecret": isSecret,
+    "is_secret": isSecret,
+    "description": "",  # Required by Windmill API
     "isPath": false  # We're storing file content as string value
   }
   
   try:
+    let originalHeaders = client.http.headers
+    client.http.headers = newHttpHeaders({
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " & client.token
+    })
     let response = client.http.post(url, $payload)
+    # Reset headers to only Authorization after POST
+    client.http.headers = newHttpHeaders({
+      "Authorization": "Bearer " & client.token
+    })
     if response.code == Http201:
       info("Successfully created variable: " & variablePath)
     elif response.code == Http409:
@@ -237,10 +291,15 @@ proc getVariable*(client: WindmillApiClient, variablePath: string): string =
   let cleanPath = variablePath.replace("f/", "").replace("vars/", "")
   let encodedPath = encodeUrl(cleanPath)
   
-  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/variables/value/{encodedPath}"
+  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/variables/get_value/{encodedPath}"
   
   try:
-    let response = client.http.get(url)
+    # Create a fresh HTTP client to avoid any state pollution from POST operations
+    var freshClient = newHttpClient()
+    freshClient.headers = newHttpHeaders({
+      "Authorization": "Bearer " & client.token
+    })
+    let response = freshClient.get(url)
     if response.code == Http200:
       info("Successfully retrieved variable: " & variablePath)
       result = response.body

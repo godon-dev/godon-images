@@ -1,20 +1,29 @@
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const axios = require('axios');
+const http = require('http');
 
 const app = express();
 const PORT = 8000;
-const PRISM_URL = 'http://172.17.0.8:4010'; // Prism container IP
+const PRISM_URL = 'http://172.17.0.4:4010'; // Prism container IP
 
-// Middleware to parse JSON bodies
-app.use(express.json());
+// NOTE: Minimal body parsing only for specific endpoints that need it
+// We use conditional parsing to avoid creating empty {} objects for GET requests
+app.use((req, res, next) => {
+  // Only parse JSON for POST/PUT/PATCH requests
+  if (['POST', 'PUT', 'PATCH'].includes(req.method)) {
+    express.json()(req, res, next);
+  } else {
+    next();
+  }
+});
 
 // Mock responses for specific flow paths (decoded URLs)
 const mockResponses = {
   '/w/godon/jobs/run_wait_result/p/f/controller/breeders_get': {
     breeders: [
       {
-        id: "550e8400-e29b-41d4-a716-446655440000",
+        id: "550e8400-e29b-41d4-a716-446655440010",
         name: "optimizer-test",
         status: "active",
         createdAt: "2024-01-15T10:30:00Z",
@@ -24,7 +33,7 @@ const mockResponses = {
         }
       },
       {
-        id: "550e8400-e29b-41d4-a716-446655440001",
+        id: "550e8400-e29b-41d4-a716-446655440011",
         name: "some-test",
         status: "inactive",
         createdAt: "2024-01-10T15:45:00Z",
@@ -36,7 +45,7 @@ const mockResponses = {
     ]
   },
   '/w/godon/jobs/run_wait_result/p/f/controller/breeder_create': {
-    id: "550e8400-e29b-41d4-a716-446655440000",
+    id: "550e8400-e29b-41d4-a716-446655440010",
     name: "test_breeder",
     status: "active",
     createdAt: "2024-01-15T10:30:00Z"
@@ -45,7 +54,7 @@ const mockResponses = {
     success: true
   },
   '/w/godon/jobs/run_wait_result/p/f/controller/breeder_update': {
-    id: "550e8400-e29b-41d4-a716-446655440000",
+    id: "550e8400-e29b-41d4-a716-446655440010",
     name: "updated-genetic-optimizer",
     status: "active",
     createdAt: "2024-01-15T10:30:00Z",
@@ -55,7 +64,7 @@ const mockResponses = {
     }
   },
   '/w/godon/jobs/run_wait_result/p/f/controller/breeder_get': {
-    id: "550e8400-e29b-41d4-a716-446655440000",
+    id: "550e8400-e29b-41d4-a716-446655440010",
     name: "genetic-optimizer-test",
     status: "active",
     createdAt: "2024-01-15T10:30:00Z",
@@ -64,53 +73,47 @@ const mockResponses = {
       max_iterations: 100
     }
   },
-  '/w/godon/jobs/run_wait_result/p/f/controller/credentials_get': {
-    credentials: [
-      {
-        id: "550e8400-e29b-41d4-a716-446655440001",
-        name: "production_ssh_key",
-        credential_type: "ssh_private_key",
-        description: "SSH key for production servers",
-        windmill_variable: "f/vars/prod_ssh_key",
-        created_at: "2024-01-15T10:30:00Z",
-        last_used_at: "2024-01-16T14:20:00Z"
-      },
-      {
-        id: "6ba7b810-9dad-11d1-80b4-00c04fd430c9",
-        name: "staging_ssh_key",
-        credential_type: "ssh_private_key",
-        description: "SSH key for staging environment",
-        windmill_variable: "f/vars/staging_ssh_key",
-        created_at: "2024-01-10T15:45:00Z",
-        last_used_at: null
-      }
-    ]
-  },
-  '/w/godon/jobs/run_wait_result/p/f/controller/credential_create': {
-    result: "SUCCESS",
-    credential: {
-      id: "550e8400-e29b-41d4-a716-446655440002",
-      name: "test_ssh_key",
-      credential_type: "ssh_private_key",
-      description: "Test SSH key",
-      windmill_variable: "f/vars/test_ssh_key",
-      created_at: "2024-01-17T12:00:00Z"
+  '/w/godon/jobs/run_wait_result/p/f/controller/credentials_get': [
+    {
+      id: "550e8400-e29b-41d4-a716-446655440011",
+      name: "production_ssh_key",
+      credentialType: "ssh_private_key",
+      description: "SSH key for production servers",
+        windmillVariable: "f/vars/prod_ssh_key",
+      createdAt: "2024-01-15T10:30:00Z",
+      lastUsedAt: "2024-01-16T14:20:00Z"
+    },
+    {
+      id: "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+      name: "staging_ssh_key",
+      credentialType: "ssh_private_key",
+      description: "SSH key for staging environment",
+      windmillVariable: "f/vars/staging_ssh_key",
+      createdAt: "2024-01-10T15:45:00Z",
+      lastUsedAt: null
     }
+  ],
+  '/w/godon/jobs/run_wait_result/p/f/controller/credential_create': {
+    id: "550e8400-e29b-41d4-a716-446655440002",
+    name: "test_ssh_key",
+    credentialType: "ssh_private_key",
+    description: "Test SSH key",
+    windmillVariable: "f/vars/test_ssh_key",
+    createdAt: "2024-01-17T12:00:00Z"
   },
   '/w/godon/jobs/run_wait_result/p/f/controller/credential_get': {
-    credential: {
-      id: "550e8400-e29b-41d4-a716-446655440001",
-      name: "production_ssh_key",
-      credential_type: "ssh_private_key",
-      description: "SSH key for production servers",
-      windmill_variable: "f/vars/prod_ssh_key",
-      created_at: "2024-01-15T10:30:00Z",
-      last_used_at: "2024-01-16T14:20:00Z"
-    }
+    id: "550e8400-e29b-41d4-a716-446655440011",
+    name: "production_ssh_key",
+    credentialType: "ssh_private_key",
+    description: "SSH key for production servers",
+    windmillVariable: "f/vars/prod_ssh_key",
+    createdAt: "2024-01-15T10:30:00Z",
+    lastUsedAt: "2024-01-16T14:20:00Z",
+    content: "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA2Z9Q...\n-----END RSA PRIVATE KEY-----"
   },
   '/w/godon/jobs/run_wait_result/p/f/controller/credential_delete': {
     result: "SUCCESS",
-    message: "Credential 'production_ssh_key' (ID: 550e8400-e29b-41d4-a716-446655440001) successfully deleted"
+    message: "Credential 'production_ssh_key' (ID: 550e8400-e29b-41d4-a716-446655440011) successfully deleted"
   }
 };
 
@@ -118,16 +121,22 @@ const mockResponses = {
 const windmillProxy = async (req, res, next) => {
   try {
     console.log(`${req.method} ${req.originalUrl}`);
+    
+    // Debug: Log request headers for Windmill variable endpoints
+    if (req.originalUrl.includes('/variables/')) {
+      console.log(`🔍 DEBUG Request headers:`, JSON.stringify(req.headers, null, 2));
+      console.log(`🔍 DEBUG Content-Type:`, req.headers['content-type']);
+    }
 
     // Special handling for auth endpoint - returns plaintext token
-    if (req.originalUrl === '/api/auth/login' && req.method === 'POST') {
+    if ((req.originalUrl === '/api/auth/login' || req.originalUrl === '/auth/login') && req.method === 'POST') {
       console.log(`🎯 Auth mock found - returning plaintext token`);
       return res.type('text/plain').send('mock_bearer_token_for_testing');
     }
     
     // Decode the URL for matching
     let decodedUrl = decodeURIComponent(req.originalUrl);
-    
+
     // Handle /api/w/ prefix - remove it for mock matching
     if (decodedUrl.startsWith('/api/w/')) {
       decodedUrl = decodedUrl.replace('/api/w/', '/w/');
@@ -144,15 +153,22 @@ const windmillProxy = async (req, res, next) => {
     }
     
     // For non-mocked paths, proxy to Prism normally
-    console.log(`❌ No mock found - forwarding to Prism: ${req.originalUrl}`);
+    console.log(`❌ No mock found - forwarding to Prism: ${decodedUrl}`);
     
-    const response = await axios({
+    // Prepare request config for axios - don't send body for GET/HEAD requests
+    let axiosConfig = {
       method: req.method,
-      url: `${PRISM_URL}${req.originalUrl}`,
+      url: `${PRISM_URL}${decodedUrl}`,
       headers: req.headers,
-      data: req.body,
       timeout: 5000
-    });
+    };
+    
+    // Only include body data for methods that commonly have bodies
+    if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
+      axiosConfig.data = req.body;
+    }
+    
+    const response = await axios(axiosConfig);
     
     // Forward Prism's response
     res.status(response.status).json(response.data);
