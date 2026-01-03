@@ -45,9 +45,9 @@ jobs:
       run: |
         echo "Starting Prism mock server with Windmill OpenAPI spec..."
 
-        # Start Prism container with working approach
+        # Start Prism container with working approach using host network
         docker run -d --name windmill-mock \
-          -p 8001:4010 \
+          --network host \
           -v ${{ github.workspace }}/images/godon-api/tests/windmill-openapi.yaml:/tmp/windmill-openapi.yaml:ro \
           stoplight/prism:5 \
           mock -h 0.0.0.0 -p 4010 /tmp/windmill-openapi.yaml --dynamic --errors=false
@@ -71,7 +71,7 @@ jobs:
 
         # Test the base endpoint first with mock auth header
         echo "Testing base endpoint..."
-        if curl -f -s -H "Authorization: Bearer fake-token" http://localhost:8001/version > /dev/null; then
+        if curl -f -s -H "Authorization: Bearer fake-token" http://localhost:4010/version > /dev/null; then
           echo "✅ Prism mock server base endpoint works!"
         else
           echo "❌ Prism mock server base endpoint failed"
@@ -82,7 +82,7 @@ jobs:
 
         # Test auth endpoint (this one doesn't require auth according to spec)
         echo "Testing auth endpoint..."
-        if curl -f -s -X POST http://localhost:8001/auth/login \
+        if curl -f -s -X POST http://localhost:4010/auth/login \
           -H "Content-Type: application/json" \
           -d '{"email":"test@example.com","password":"test"}' > /dev/null; then
           echo "✅ Prism mock server auth endpoint works!"
@@ -95,29 +95,24 @@ jobs:
     - name: Start Express proxy for response transformation
       run: |
         echo "Starting Express proxy for Windmill API with response transformation..."
-        
+
         # Stop existing container if running
         docker stop express-proxy 2>/dev/null || true
         docker rm express-proxy 2>/dev/null || true
-        
-        # Get Prism container IP dynamically
-        PRISM_IP=$(docker inspect windmill-mock --format='{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
-        echo "📡 Prism container IP: $PRISM_IP"
-        
-        # Update proxy.js with correct Prism IP
-        sed -i "s/const PRISM_URL = 'http:\/\/172.19.0.2:4010'/const PRISM_URL = 'http:\/\/$PRISM_IP:4010'/" ${{ github.workspace }}/images/godon-api/tests/express-proxy/proxy.js
-        
-        # Install dependencies and start Express proxy
+
+        # Update proxy.js with correct Prism URL (using localhost since both on host network)
+        sed -i "s|const PRISM_URL = 'http://.*:4010'|const PRISM_URL = 'http://localhost:4010'|" ${{ github.workspace }}/images/godon-api/tests/express-proxy/proxy.js
+
+        # Install dependencies and start Express proxy using host network
         docker run -d --name express-proxy \
-          -p 8000:8000 \
-          --add-host=host.docker.internal:host-gateway \
+          --network host \
           -v ${{ github.workspace }}/images/godon-api/tests/express-proxy:/app \
           -w /app \
           node:alpine \
           sh -c "npm install && node proxy.js"
-        
+
         echo "✅ Express proxy starting on port 8000..."
-        
+
         # Wait for proxy to be healthy
         for i in {1..15}; do
           if curl -f http://localhost:8000/health >/dev/null 2>&1; then
@@ -128,7 +123,7 @@ jobs:
           echo "Attempt $i/15 - waiting for Express proxy..."
           sleep 2
         done
-        
+
         if [ $i -eq 15 ]; then
           echo "❌ Express proxy failed to start"
           docker logs express-proxy
