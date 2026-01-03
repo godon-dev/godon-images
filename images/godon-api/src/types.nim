@@ -53,20 +53,20 @@ proc parseCredentialFromJson*(json: JsonNode): Credential =
     result.id = json["id"].getStr()
   if json.hasKey("name"):
     result.name = json["name"].getStr()
-  if json.hasKey("credential_type"):
-    result.credentialType = json["credential_type"].getStr()
+  if json.hasKey("credentialType"):
+    result.credentialType = json["credentialType"].getStr()
   if json.hasKey("description"):
     result.description = json["description"].getStr()
   else:
     result.description = ""
-  if json.hasKey("windmill_variable"):
-    result.windmillVariable = json["windmill_variable"].getStr()
-  if json.hasKey("created_at"):
-    result.createdAt = json["created_at"].getStr()
+  if json.hasKey("windmillVariable"):
+    result.windmillVariable = json["windmillVariable"].getStr()
+  if json.hasKey("createdAt"):
+    result.createdAt = json["createdAt"].getStr()
   else:
     result.createdAt = ""
-  if json.hasKey("last_used_at"):
-    result.lastUsedAt = json["last_used_at"].getStr()
+  if json.hasKey("lastUsedAt"):
+    result.lastUsedAt = json["lastUsedAt"].getStr()
   else:
     result.lastUsedAt = ""
 

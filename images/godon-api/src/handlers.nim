@@ -195,7 +195,7 @@ proc handleCredentialsPost*(request: Request): (HttpCode, string) =
     # Step 2: Create catalog entry via controller script
     let catalogData = %*{
       "name": name,
-      "credential_type": credentialType,
+      "credentialType": credentialType,
       "description": if credentialData.hasKey("description"): credentialData["description"].getStr() else: "",
       "content": ""  # Don't send content to catalog (already in Windmill)
     }
