@@ -2,9 +2,11 @@
 name: "release godon-api image"
 
 on:
-  release:
-    types: [created, published, edited]
+  push:
+    tags:
+      - 'godon-api-*'
 
 jobs:
   build-and-release-image:
     uses: ./.github/workflows/release-image.yml
+    secrets: inherit
