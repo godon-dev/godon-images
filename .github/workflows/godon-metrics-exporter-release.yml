@@ -1,0 +1,10 @@
+
+name: "release godon-metrics-exporter image"
+
+on:
+  release:
+    types: [published, edited]
+
+jobs:
+  build-and-release-image:
+    uses: ./.github/workflows/release-image.yml
