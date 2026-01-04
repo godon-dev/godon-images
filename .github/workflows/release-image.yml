@@ -1,0 +1,101 @@
+name: "Release Godon Image"
+
+on:
+  release:
+    types: [published, edited]
+  workflow_call:
+
+env:
+  REGISTRY: ghcr.io
+  ORG: godon-dev
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set tag from release
+        if: github.event_name == 'release'
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          echo "TAG=$TAG" >> $GITHUB_ENV
+
+      - name: Extract image name and version from tag
+        run: |
+          TAG="${{ env.TAG }}"
+          
+          # Extract image name and version from tag format: godon-seeder-0.0.8
+          IMAGE_NAME="${TAG%-*}"  # Remove version part (godon-seeder)
+          VERSION="${TAG##*-}"   # Remove image name part (0.0.8)
+          
+          echo "IMAGE_NAME=$IMAGE_NAME" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          
+          echo "🏷️  Tag: $TAG"
+          echo "📦 Image: $IMAGE_NAME" 
+          echo "🔖 Version: $VERSION"
+
+      - name: Verify version format
+        run: |
+          VERSION="${{ env.VERSION }}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ Invalid version format: $VERSION"
+            echo "Expected format: X.Y.Z (e.g., 0.0.8, 0.1.0)"
+            exit 1
+          fi
+          echo "✅ Version format validated: $VERSION"
+
+      - name: Verify image directory exists
+        run: |
+          IMAGE_DIR="images/${{ env.IMAGE_NAME }}"
+          if [ ! -d "$IMAGE_DIR" ]; then
+            echo "❌ Image directory not found: $IMAGE_DIR"
+            exit 1
+          fi
+          echo "✅ Image directory exists: $IMAGE_DIR"
+
+      - name: Setup Nix
+        uses: cachix/install-nix-action@v22
+        with:
+          nix_path: nixpkgs=https://nixos.org/channels/nixos-25.05
+
+      - name: Build container with Nix
+        run: |
+          export VERSION=${{ env.VERSION }}
+          export IMAGE_NAME=${{ env.IMAGE_NAME }}
+          export PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+          cd images/${{ env.IMAGE_NAME }}
+          bash ../../build/build-container-nix.sh --builder-file ../../build/Dockerfile.nix-builder
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag for GitHub Container Registry
+        run: |
+          # Tag for GHCR
+          docker tag ${{ env.IMAGE_NAME }}:${{ env.VERSION }} ${{ env.REGISTRY }}/${{ env.ORG }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+          docker tag ${{ env.IMAGE_NAME }}:${{ env.VERSION }} ${{ env.REGISTRY }}/${{ env.ORG }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Push to GitHub Container Registry
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.ORG }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}
+          docker push ${{ env.REGISTRY }}/${{ env.ORG }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Create release summary
+        run: |
+          echo "## 🚀 Release Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📦 Docker Image" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: \`${{ env.TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: \`${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: \`${{ env.VERSION }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Registry**: \`${{ env.REGISTRY }}/${{ env.ORG }}/${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 🎯 Usage" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`docker pull ${{ env.REGISTRY }}/${{ env.ORG }}/${{ env.IMAGE_NAME }}:${{ env.VERSION }}\`\`\`" >> $GITHUB_STEP_SUMMARY
