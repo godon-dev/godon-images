@@ -12,12 +12,12 @@ type
     summary*: string
     description*: string
     timeout*: Option[int]
-    
+
   ScriptSpec* = object
     pattern*: string
     path*: string
     settings*: ScriptSettings
-  
+
   ComponentConfig* = object
     name*: string
     target*: string
@@ -59,9 +59,9 @@ proc parseScriptSpec(specJson: JsonNode): ScriptSpec =
 proc parseComponentConfig(yamlPath: string): ComponentConfig =
   ## Parse component.yaml file into ComponentConfig object
   info("Parsing component config: " & yamlPath)
-  
+
   let yamlContent = readFile(yamlPath)
-  
+
   # Use yaml.load to directly parse into ComponentConfig
   try:
     load(yamlContent, result)
@@ -90,14 +90,14 @@ proc loadSeederConfig*: SeederConfig =
 proc discoverComponents*(config: SeederConfig): seq[ComponentInfo] =
   ## Discover component configurations from source directories
   result = @[]
-  
+
   for sourceDir in config.sourceDirs:
     if not dirExists(sourceDir):
       warn("Source directory does not exist: " & sourceDir)
       continue
-    
+
     info("Scanning directory: " & sourceDir)
-    
+
     # Look for component.yaml files
     for kind, path in walkDir(sourceDir, relative=true):
       if kind == pcFile and path.endsWith("component.yaml"):
@@ -117,25 +117,25 @@ proc discoverComponents*(config: SeederConfig): seq[ComponentInfo] =
 proc findFilesByPattern(baseDir: string, pattern: string): seq[string] =
   ## Find files matching a glob pattern relative to base directory
   result = @[]
-  
+
   let patternPath = baseDir / pattern
   let (dir, filePattern) = patternPath.splitPath()
-  
+
   if not dirExists(dir):
     warn("Pattern directory does not exist: " & dir)
     return result
-  
+
   debug("Searching for files matching pattern: " & pattern & " in " & dir)
-  
+
   for kind, path in walkDir(dir, relative=true):
     if kind == pcFile:
       # Simple glob matching - check if filename matches pattern
       let filename = path.extractFilename()
       let ext = "." & filename.split('.')[^1]
-      
+
       # Match extension or exact pattern
-      if filePattern == "*" or 
-         filePattern == ext or 
+      if filePattern == "*" or
+         filePattern == ext or
          filePattern == ("*" & ext) or
          filename == filePattern:
         let fullPath = dir / path
@@ -146,14 +146,14 @@ proc readScriptContent(scriptPath: string): string =
   ## Read script content and determine language from extension
   if not fileExists(scriptPath):
     raise newException(IOError, "Script file not found: " & scriptPath)
-  
+
   result = readFile(scriptPath)
   debug("Read script content from: " & scriptPath & " (" & $result.len & " bytes)")
 
 proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: ScriptSettings) =
   ## Deploy a single script to Windmill
   info("Deploying script: " & scriptPath)
-  
+
   # Build script settings JSON
   var scriptSettings = newJObject()
   if settings.summary.len > 0:
@@ -162,35 +162,35 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
     scriptSettings["description"] = %* settings.description
   if settings.timeout.isSome:
     scriptSettings["timeout"] = %* settings.timeout.get()
-  
+
   client.deployScript(workspace, scriptPath, content, scriptSettings)
   info("✅ Successfully deployed script: " & scriptPath)
 
 proc deployComponentScripts*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string) =
   ## Deploy all scripts for a component
   info("Deploying scripts for component: " & component.name)
-  
+
   for scriptSpec in component.scripts:
     var scriptFiles: seq[string]
-    
+
     if scriptSpec.path.len > 0:
       # Direct path override
       scriptFiles = @[baseDir / scriptSpec.path]
     elif scriptSpec.pattern.len > 0:
       # Pattern-based discovery
       scriptFiles = findFilesByPattern(baseDir, scriptSpec.pattern)
-    
+
     if scriptFiles.len == 0:
       warn("No files found for script spec: " & scriptSpec.pattern)
       continue
-    
+
     for scriptFile in scriptFiles:
       let relativePath = scriptFile.relativePath(baseDir)
       let windmillPath = if component.target.len > 0:
                           component.target / relativePath
                         else:
                           relativePath
-      
+
       try:
         let content = readScriptContent(scriptFile)
         deployScript(client, workspace, windmillPath, content, scriptSpec.settings)
@@ -200,7 +200,7 @@ proc deployComponentScripts*(client: WindmillApiClient, workspace: string, compo
 proc seedWorkspace*(config: SeederConfig) =
   ## Main seeding function - discover and deploy all components
   info("Starting component deployment")
-  
+
   # Create Windmill client
   let windmillConfig = WindmillConfig(
     windmillBaseUrl: config.windmillBaseUrl,
@@ -209,45 +209,45 @@ proc seedWorkspace*(config: SeederConfig) =
     windmillEmail: config.windmillEmail,
     windmillPassword: config.windmillPassword
   )
-  
+
   info("Connecting to Windmill...")
   var client = newWindmillApiClient(windmillConfig)
   info("✅ Successfully authenticated with Windmill")
-  
+
   # Create workspace
   info("Creating workspace: " & config.windmillWorkspace)
   client.createWorkspace(config.windmillWorkspace)
   info("✅ Workspace created successfully")
-  
+
   # Discover components
   let components = discoverComponents(config)
   info("Found " & $components.len & " components to deploy")
-  
+
   # Deploy each component
   for componentInfo in components:
     let component = componentInfo.config
     info("Deploying component: " & component.name)
-    
+
     # Use the stored directory path from discovery
     let componentDir = componentInfo.directory
-    
+
     # Use component-specific workspace or default to global workspace
     let targetWorkspace = if component.workspace.isSome:
                             component.workspace.get()
                           else:
                             config.windmillWorkspace
-    
+
     info("Deploying to workspace: " & targetWorkspace)
-    
+
     # Create workspace if it doesn't exist
     if component.workspace.isSome:
       info("Creating component-specific workspace: " & targetWorkspace)
       client.createWorkspace(targetWorkspace)
-    
+
     # Deploy scripts
     if component.scripts.len > 0:
       deployComponentScripts(client, targetWorkspace, component, componentDir)
-  
+
   info("✅ Component deployment completed successfully")
 
 proc printHelp* =
@@ -291,12 +291,12 @@ proc printVersion* =
 
 proc main* =
   var config = loadSeederConfig()
-  
+
   if config.verbose:
     setLogFilter(lvlDebug)
-  
+
   var p = initOptParser()
-  
+
   while true:
     p.next()
     case p.kind
@@ -319,23 +319,23 @@ proc main* =
     of cmdArgument:
       # Treat remaining arguments as source directories
       config.sourceDirs.add(p.key)
-  
+
   # If no source directories specified, use default godon dir
   if config.sourceDirs.len == 0:
     info("No source directories specified, using GODON_DIR: " & config.godonDir)
     config.sourceDirs.add(config.godonDir)
-  
+
   info("Starting Godon Seeder")
   info("Source directories: " & config.sourceDirs.join(", "))
   info("Windmill URL: " & config.windmillBaseUrl)
   info("Workspace: " & config.windmillWorkspace)
-  
+
   debug("Configuration:")
   debug("  Base URL: " & config.windmillBaseUrl)
   debug("  Workspace: " & config.windmillWorkspace)
   debug("  Email: " & config.windmillEmail)
   debug("  Godon Version: " & config.godonVersion)
-  
+
   # Perform the seeding
   try:
     config.seedWorkspace()
