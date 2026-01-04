@@ -10,3 +10,6 @@ jobs:
   build-and-release-image:
     uses: ./.github/workflows/release-image.yml
     secrets: inherit
+    permissions:
+      contents: read
+      packages: write
