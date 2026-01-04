@@ -3,7 +3,7 @@ name: "release godon-cli image"
 
 on:
   release:
-    types: [published, edited]
+    types: [created, published, edited]
 
 jobs:
   build-and-release-image:
