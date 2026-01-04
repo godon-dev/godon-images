@@ -114,6 +114,19 @@ jobs:
         run: |
           echo "📝 Creating GitHub release for tag: ${{ env.TAG }}"
           
+          # Check if release already exists
+          if gh release view "${{ env.TAG }}" > /dev/null 2>&1; then
+            echo "❌ Error: Release already exists for tag: ${{ env.TAG }}"
+            echo "Please delete the existing release first:"
+            echo "  gh release delete ${{ env.TAG }} -y"
+            echo "  git tag -d ${{ env.TAG }}"
+            echo "  git push origin :refs/tags/${{ env.TAG }}"
+            exit 1
+          fi
+          
+          # Create new release
+          echo "🚀 Creating new release..."
           gh release create "${{ env.TAG }}" \
             --title "${{ env.IMAGE_NAME }} ${{ env.VERSION }}" \
-            --generate-notes || echo "⚠️  Release already exists, skipping creation"
+            --generate-notes
+          echo "✅ Release created successfully!"
