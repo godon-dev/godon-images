@@ -135,22 +135,11 @@ jobs:
       run: |
         echo "Pulling godon_cli container for integration testing..."
 
-        # Fetch latest CLI version from godon-cli repo
-        echo "Fetching latest release tag from godon-cli repo..."
-        LATEST_TAG=$(curl -s https://api.github.com/repos/godon-dev/godon-cli/releases/latest | jq -r '.tag_name')
-        if [ "$LATEST_TAG" = "null" ] || [ -z "$LATEST_TAG" ]; then
-          echo "No release tags found, falling back to 0.2.0"
-          VERSION="0.2.0"
-        else
-          VERSION="$LATEST_TAG"
-          echo "Found latest tag: $VERSION"
-        fi
-        
-        CLI_CONTAINER_IMAGE="ghcr.io/godon-dev/godon-cli:$VERSION"
+        CLI_CONTAINER_IMAGE="ghcr.io/godon-dev/godon-cli:latest"
         echo "Using CLI container image: $CLI_CONTAINER_IMAGE"
 
         echo "CLI_CONTAINER_IMAGE=$CLI_CONTAINER_IMAGE" >> $GITHUB_OUTPUT
-        
+
         echo "Pulling godon_cli container $CLI_CONTAINER_IMAGE..."
         docker pull $CLI_CONTAINER_IMAGE
 

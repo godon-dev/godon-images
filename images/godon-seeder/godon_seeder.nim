@@ -38,6 +38,8 @@ type
     godonDir*: string
     sourceDirs*: seq[string]
     verbose*: bool
+    maxRetries*: int
+    retryDelay*: int
 
 proc parseScriptSettings(settingsJson: JsonNode): ScriptSettings =
   ## Parse script settings from JSON node
@@ -85,6 +87,8 @@ proc loadSeederConfig*: SeederConfig =
   result.godonVersion = getEnv("GODON_VERSION", "main")
   result.godonDir = getEnv("GODON_DIR", "/godon")
   result.verbose = getEnv("VERBOSE", "false") == "true"
+  result.maxRetries = parseInt(getEnv("SEEDER_MAX_RETRIES", "30"))
+  result.retryDelay = parseInt(getEnv("SEEDER_RETRY_DELAY", "2"))
   result.sourceDirs = @[]
 
 proc discoverComponents*(config: SeederConfig): seq[ComponentInfo] =
@@ -173,12 +177,20 @@ proc deployComponentScripts*(client: WindmillApiClient, workspace: string, compo
   for scriptSpec in component.scripts:
     var scriptFiles: seq[string]
 
-    if scriptSpec.path.len > 0:
-      # Direct path override
+    if scriptSpec.pattern.len > 0 and scriptSpec.path.len > 0:
+      # Pattern-based discovery within specified subdirectory
+      let searchDir = baseDir / scriptSpec.path
+      scriptFiles = findFilesByPattern(searchDir, scriptSpec.pattern)
+    elif scriptSpec.path.len > 0:
+      # Direct path override (single file)
       scriptFiles = @[baseDir / scriptSpec.path]
     elif scriptSpec.pattern.len > 0:
-      # Pattern-based discovery
+      # Pattern-based discovery in base directory
       scriptFiles = findFilesByPattern(baseDir, scriptSpec.pattern)
+    else:
+      # No pattern or path specified
+      warn("Script spec has neither pattern nor path, skipping")
+      continue
 
     if scriptFiles.len == 0:
       warn("No files found for script spec: " & scriptSpec.pattern)
@@ -207,7 +219,9 @@ proc seedWorkspace*(config: SeederConfig) =
     windmillApiBaseUrl: "",
     windmillWorkspace: config.windmillWorkspace,
     windmillEmail: config.windmillEmail,
-    windmillPassword: config.windmillPassword
+    windmillPassword: config.windmillPassword,
+    maxRetries: config.maxRetries,
+    retryDelay: config.retryDelay
   )
 
   info("Connecting to Windmill...")
@@ -261,12 +275,16 @@ Options:
   -h, --help              Show this help message
   -v, --version           Show version information
   --verbose               Enable verbose logging
+  --max-retries           Maximum connection retry attempts (default: 30)
+  --retry-delay           Delay between retries in seconds (default: 2)
 
 Environment Variables:
   WINDMILL_BASE_URL       Windmill server URL (default: http://localhost:8000)
   WINDMILL_WORKSPACE      Windmill workspace name (default: godon)
   WINDMILL_EMAIL          Windmill admin email (default: admin@windmill.dev)
   WINDMILL_PASSWORD       Windmill admin password (default: changeme)
+  SEEDER_MAX_RETRIES      Maximum connection retry attempts (default: 30)
+  SEEDER_RETRY_DELAY      Delay between retries in seconds (default: 2)
   GODON_VERSION           Godon version to deploy (default: main)
   GODON_DIR               Godon source directory (default: /godon)
   VERBOSE                 Enable verbose logging (default: false)
@@ -278,8 +296,8 @@ Examples:
   # Deploy with custom workspace
   WINDMILL_WORKSPACE=my-workspace godon_seeder /godon/controller
 
-  # Deploy with verbose logging
-  godon_seeder --verbose /godon/controller
+  # Deploy with verbose logging and custom retry settings
+  godon_seeder --verbose --max-retries=60 /godon/controller
 
   # Use default GODON_DIR
   godon_seeder
@@ -312,6 +330,18 @@ proc main* =
       of "verbose":
         config.verbose = true
         setLogFilter(lvlDebug)
+      of "max-retries":
+        if p.val != "":
+          config.maxRetries = parseInt(p.val)
+        else:
+          echo "Error: --max-retries requires a value"
+          quit(1)
+      of "retry-delay":
+        if p.val != "":
+          config.retryDelay = parseInt(p.val)
+        else:
+          echo "Error: --retry-delay requires a value"
+          quit(1)
       else:
         echo "Unknown option: " & p.key
         printHelp()

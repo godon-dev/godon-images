@@ -60,9 +60,20 @@ echo "✅ All repositories updated successfully"
 ## Seed Controller and Breeder Logic using Nim seeder
 echo "Starting component deployment with godon-seeder"
 
+# Build CLI args with optional retry settings from env vars
+CLI_ARGS="--verbose"
+
+if [ -n "${SEEDER_MAX_RETRIES:-}" ]; then
+    CLI_ARGS="$CLI_ARGS --max-retries=$SEEDER_MAX_RETRIES"
+fi
+
+if [ -n "${SEEDER_RETRY_DELAY:-}" ]; then
+    CLI_ARGS="$CLI_ARGS --retry-delay=$SEEDER_RETRY_DELAY"
+fi
+
 # Call the Nim seeder with the controller and breeder directories
 "${GODON_SEEDER_BIN}" \
-    --verbose \
+    $CLI_ARGS \
     "${GODON_DIR}/godon-controller" \
     "${GODON_DIR}/godon-breeders/breeder/linux_network_stack"
 
