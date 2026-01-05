@@ -111,8 +111,44 @@ proc runJob*(client: WindmillApiClient, jobPath: string, args: JsonNode = nil): 
     raise
 
 # Seeder-specific API methods
+proc workspaceExists*(client: WindmillApiClient, workspace: string): bool =
+  ## Check if a workspace exists using the API
+  debug("Checking if workspace exists: " & workspace)
+  
+  let url = &"{client.config.windmillBaseUrl}/workspaces/exists"
+  let payload = %*{
+    "id": workspace
+  }
+  
+  try:
+    let originalHeaders = client.http.headers
+    client.http.headers = newHttpHeaders({
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " & client.token
+    })
+    let response = client.http.post(url, $payload)
+    # Reset headers to only Authorization after POST
+    client.http.headers = newHttpHeaders({
+      "Authorization": "Bearer " & client.token
+    })
+    
+    # Response body should contain "true" or "false"
+    let exists = response.body.strip().toLower() == "true"
+    debug("Workspace " & workspace & " exists: " & $exists)
+    return exists
+  except CatchableError as e:
+    error("Error checking workspace existence: " & e.msg)
+    # Assume workspace doesn't exist if check fails
+    return false
+
 proc createWorkspace*(client: WindmillApiClient, workspace: string) =
-  ## Create a new Windmill workspace using the API
+  ## Create a new Windmill workspace using the API (idempotent - checks if exists first)
+  
+  # Check if workspace already exists
+  if client.workspaceExists(workspace):
+    info("Workspace already exists: " & workspace)
+    return
+  
   info("Creating workspace: " & workspace)
   
   let url = &"{client.config.windmillBaseUrl}/workspaces/create"

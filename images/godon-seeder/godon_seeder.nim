@@ -1,4 +1,4 @@
-import std/[parseopt, strutils, os, logging, json, times, tables, sequtils]
+import std/[parseopt, strutils, os, logging, json, times, tables, sequtils, sets]
 import yaml
 import windmill_client.config
 import windmill_client.windmill_client
@@ -228,14 +228,12 @@ proc seedWorkspace*(config: SeederConfig) =
   var client = newWindmillApiClient(windmillConfig)
   info("✅ Successfully authenticated with Windmill")
 
-  # Create workspace
-  info("Creating workspace: " & config.windmillWorkspace)
-  client.createWorkspace(config.windmillWorkspace)
-  info("✅ Workspace created successfully")
-
   # Discover components
   let components = discoverComponents(config)
   info("Found " & $components.len & " components to deploy")
+
+  # Track workspaces to avoid duplicate creation attempts
+  var createdWorkspaces = initHashSet[string]()
 
   # Deploy each component
   for componentInfo in components:
@@ -253,10 +251,11 @@ proc seedWorkspace*(config: SeederConfig) =
 
     info("Deploying to workspace: " & targetWorkspace)
 
-    # Create workspace if it doesn't exist
-    if component.workspace.isSome:
-      info("Creating component-specific workspace: " & targetWorkspace)
+    # Create workspace if not already created
+    if not createdWorkspaces.contains(targetWorkspace):
+      info("Ensuring workspace exists: " & targetWorkspace)
       client.createWorkspace(targetWorkspace)
+      createdWorkspaces.incl(targetWorkspace)
 
     # Deploy scripts
     if component.scripts.len > 0:
