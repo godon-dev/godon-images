@@ -66,7 +66,8 @@ let
 
         echo "✅ Pre-cloned repositories successfully in $out/var/lib/godon"
       else
-        echo "Test build detected, skipping git clone"
+        echo "Test build detected, creating directory structure..."
+        mkdir -p $out/var/lib/godon
       fi
 
       echo "Looking for compiled binary..."
@@ -125,6 +126,8 @@ let
       pkgs.busybox  # Provides basic utilities and pseudo filesystem support
       pkgs.git     # For git pull and checkout operations at runtime
       pkgs.bash    # For running orchestration script
+      (pkgs.writeTextDir "etc/passwd" "root:x:0:0:root:/root:/bin/sh\ngodon:x:1000:1000:godon:/var/lib/godon:/bin/sh\n")
+      (pkgs.writeTextDir "etc/group" "root:x:0:\ngodon:x:1000:\n")
     ];
     config = {
       Entrypoint = [ "${godon-seeder}/bin/godon_seeder.sh" ];
@@ -142,6 +145,11 @@ let
       User = "1000:1000";
       Cmd = [ "--help" ];  # Default command for container inspection
     };
+    # Use fakeRootCommands to set ownership of directories
+    fakeRootCommands = ''
+      mkdir -p var/lib/godon
+      chown -R 1000:1000 var/lib/godon
+    '';
   };
 
 in {
