@@ -90,6 +90,8 @@ proc newWindmillClient*(godonCfg: Config): WindmillApiClient =
     windmillApiBaseUrl: godonCfg.windmillApiBaseUrl,
     windmillWorkspace: godonCfg.windmillWorkspace,
     windmillEmail: "admin@windmill.dev",
-    windmillPassword: "changeme"
+    windmillPassword: "changeme",
+    maxRetries: 3,  # API should fail fast rather than retry for extended periods
+    retryDelay: 1    # Short delays for interactive API calls
   )
   result = newWindmillApiClient(windmillConfig)
