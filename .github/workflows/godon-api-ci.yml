@@ -48,7 +48,7 @@ jobs:
         # Start Prism container with working approach using host network
         docker run -d --name windmill-mock \
           --network host \
-          -v ${{ github.workspace }}/images/godon-api/tests/windmill-openapi.yaml:/tmp/windmill-openapi.yaml:ro \
+          -v ${{ github.workspace }}/shared/windmill-openapi.yaml:/tmp/windmill-openapi.yaml:ro \
           stoplight/prism:5 \
           mock -h 0.0.0.0 -p 4010 /tmp/windmill-openapi.yaml --dynamic --errors=false
 
