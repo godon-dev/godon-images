@@ -1,4 +1,4 @@
-import std/[httpclient, json, strformat, tables, uri, logging, strutils]
+import std/[httpclient, json, strformat, tables, uri, logging, strutils, os]
 import config
 
 type
@@ -9,35 +9,48 @@ type
 
 proc login*(client: var WindmillApiClient) =
   ## Authenticate with Windmill and obtain bearer token
+  ## Includes configurable retry logic for connection failures
   let url = &"{client.config.windmillBaseUrl}/auth/login"
   let payload = %* {
     "email": client.config.windmillEmail,
     "password": client.config.windmillPassword
   }
-  
+
   info("Logging into Windmill at: " & client.config.windmillBaseUrl)
-  
-  try:
-    let originalHeaders = client.http.headers
-    client.http.headers = newHttpHeaders({"Content-Type": "application/json"})
-    let response = client.http.post(url, $payload)
-    # Clear headers completely after login, will be set properly below
-    client.http.headers = newHttpHeaders()
-    if response.code != Http200:
-      error("Windmill login failed: " & response.status)
-      raise newException(ValueError, "Failed to login to Windmill: " & response.status)
-    
-    # Windmill returns the token as plaintext, not JSON
-    client.token = response.body
-    info("Successfully authenticated with Windmill")
-    
-    # Set authorization header for future requests (not Content-Type - set per-request)
-    client.http.headers = newHttpHeaders({
-      "Authorization": "Bearer " & client.token
-    })
-  except CatchableError as e:
-    error("Windmill authentication error: " & e.msg)
-    raise
+
+  # Use retry configuration from WindmillConfig
+  let maxRetries = client.config.maxRetries
+  let retryDelay = client.config.retryDelay
+
+  var retries = 0
+  while retries < maxRetries:
+    try:
+      let originalHeaders = client.http.headers
+      client.http.headers = newHttpHeaders({"Content-Type": "application/json"})
+      let response = client.http.post(url, $payload)
+      # Clear headers completely after login, will be set properly below
+      client.http.headers = newHttpHeaders()
+      if response.code != Http200:
+        error("Windmill login failed: " & response.status)
+        raise newException(ValueError, "Failed to login to Windmill: " & response.status)
+
+      # Windmill returns the token as plaintext, not JSON
+      client.token = response.body
+      info("Successfully authenticated with Windmill")
+
+      # Set authorization header for future requests (not Content-Type - set per-request)
+      client.http.headers = newHttpHeaders({
+        "Authorization": "Bearer " & client.token
+      })
+      return  # Success, exit retry loop
+    except Exception as e:
+      inc retries
+      if retries >= maxRetries:
+        error("Windmill authentication error after $1 attempts: $2" % [$maxRetries, e.msg])
+        raise
+      else:
+        warn("Connection attempt $1 failed: $2. Retrying in $3 seconds..." % [$retries, e.msg, $retryDelay])
+        sleep(retryDelay * 1000)
 
 proc newWindmillApiClient*(config: WindmillConfig): WindmillApiClient =
   ## Create and authenticate a new Windmill client

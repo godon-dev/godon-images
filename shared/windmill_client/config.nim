@@ -9,6 +9,8 @@ type
     windmillWorkspace*: string
     windmillEmail*: string
     windmillPassword*: string
+    maxRetries*: int
+    retryDelay*: int
 
 proc loadWindmillConfig*(): WindmillConfig =
   ## Load Windmill configuration from environment variables
@@ -36,6 +38,8 @@ proc loadWindmillConfig*(): WindmillConfig =
   result.windmillWorkspace = getEnv("WINDMILL_WORKSPACE", "godon")
   result.windmillEmail = getEnv("WINDMILL_EMAIL", "admin@windmill.dev")
   result.windmillPassword = getEnv("WINDMILL_PASSWORD", "changeme")
-  
+  result.maxRetries = parseInt(getEnv("WINDMILL_MAX_RETRIES", "30"))
+  result.retryDelay = parseInt(getEnv("WINDMILL_RETRY_DELAY", "2"))
+
   # Windmill API URL pattern for script execution
   result.windmillApiBaseUrl = result.windmillBaseUrl & "/api/w/" & result.windmillWorkspace & "/jobs/run_wait_result/p"
