@@ -58,11 +58,11 @@ let
         echo "Pre-cloning repositories for faster startup..."
         mkdir -p $out/var/lib/godon
 
-        echo "Cloning controller repository from $CONTROLLER_REPO_URL"
-        git clone --depth 1 --branch "$GODON_BUILD_VERSION" "$CONTROLLER_REPO_URL" $out/var/lib/godon/controller || echo "⚠️  Controller clone failed"
+        echo "Cloning godon-controller repository from $CONTROLLER_REPO_URL"
+        git clone --depth 1 --branch "$GODON_BUILD_VERSION" "$CONTROLLER_REPO_URL" $out/var/lib/godon/godon-controller || echo "⚠️  godon-controller clone failed"
 
-        echo "Cloning breeder repository from $BREEDER_REPO_URL"
-        git clone --depth 1 --branch "$GODON_BUILD_VERSION" "$BREEDER_REPO_URL" $out/var/lib/godon/linux_network_stack_breeder || echo "⚠️  Breeder clone failed"
+        echo "Cloning godon-breeders repository from $BREEDER_REPO_URL"
+        git clone --depth 1 --branch "$GODON_BUILD_VERSION" "$BREEDER_REPO_URL" $out/var/lib/godon/godon-breeders || echo "⚠️  godon-breeders clone failed"
 
         echo "✅ Pre-cloned repositories successfully in $out/var/lib/godon"
       else
