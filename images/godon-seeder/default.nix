@@ -19,11 +19,6 @@ let
       openssl
       pcre
     ];
-    # Repository URLs and versions for build-time cloning
-    CONTROLLER_REPO_URL = "https://github.com/godon-dev/godon-controller.git";
-    BREEDER_REPO_URL = "https://github.com/godon-dev/godon-breeders.git";
-    GODON_BUILD_VERSION = let envVar = builtins.getEnv "VERSION"; in
-                           if envVar != "" then envVar else "main";
     env = {
       SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
       NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
@@ -52,23 +47,6 @@ let
     '';
     installPhase = ''
       mkdir -p $out/bin
-
-      # Pre-clone repositories for faster container startup
-      if [ "$BUILD_VERSION" != "test-local" ]; then
-        echo "Pre-cloning repositories for faster startup..."
-        mkdir -p $out/var/lib/godon
-
-        echo "Cloning godon-controller repository from $CONTROLLER_REPO_URL"
-        git clone --depth 1 --branch "$GODON_BUILD_VERSION" "$CONTROLLER_REPO_URL" $out/var/lib/godon/godon-controller || echo "⚠️  godon-controller clone failed"
-
-        echo "Cloning godon-breeders repository from $BREEDER_REPO_URL"
-        git clone --depth 1 --branch "$GODON_BUILD_VERSION" "$BREEDER_REPO_URL" $out/var/lib/godon/godon-breeders || echo "⚠️  godon-breeders clone failed"
-
-        echo "✅ Pre-cloned repositories successfully in $out/var/lib/godon"
-      else
-        echo "Test build detected, creating directory structure..."
-        mkdir -p $out/var/lib/godon
-      fi
 
       echo "Looking for compiled binary..."
       echo "Current directory: $(pwd)"

@@ -34,13 +34,16 @@ setup_repo() {
         echo "✅ ${repo_name} repo exists, updating..."
         pushd "${target_dir}"
         git fetch --all --tags
-        git checkout -B "${repo_version}" "origin/${repo_version}" 2>/dev/null || git checkout "${repo_version}"
-        git pull origin "${repo_version}" 2>/dev/null || true
+        git checkout "${repo_version}" || git checkout -B "${repo_version}" "origin/${repo_version}"
         popd
     else
         echo "📥 Cloning ${repo_name} repo..."
         mkdir -p "${GODON_DIR}"
-        git clone --depth 1 --branch "${repo_version}" "${repo_url}" "${target_dir}" || echo "⚠️  ${repo_name} clone failed"
+        git clone "${repo_url}" "${target_dir}" || echo "⚠️  ${repo_name} clone failed"
+        pushd "${target_dir}"
+        git fetch -a
+        git checkout -B "${repo_version}" "${repo_version}"
+        popd
     fi
 }
 

@@ -56,7 +56,7 @@ jobs:
         echo "📡 Starting Prism mock server..."
         docker run -d --name windmill-mock \
           -p 8000:4010 \
-          -v "$(pwd)/images/godon-seeder/tests/windmill-openapi.yaml:/spec.yaml:ro" \
+          -v "$(pwd)/shared/windmill-openapi.yaml:/spec.yaml:ro" \
           stoplight/prism:5 \
           mock -h 0.0.0.0 -p 4010 /spec.yaml --dynamic --errors=false
         
@@ -84,20 +84,21 @@ jobs:
         BINARY_PATH=$(docker run --rm --entrypoint=/bin/sh godon-seeder-test:test-${{ github.run_number }} -c "find /nix/store -name 'godon_seeder' -type f | head -1")
         echo "Found binary at: $BINARY_PATH"
         
-        # Run seeder test against mock server
-        echo "🚀 Running godon-seeder test..."
+        # Run seeder test against mock server using actual repositories
+        echo "🚀 Running godon-seeder test with actual repositories..."
         docker run --rm \
           --network host \
           -e WINDMILL_BASE_URL=http://localhost:8000 \
           -e WINDMILL_WORKSPACE=test-workspace \
           -e WINDMILL_EMAIL=admin@test.com \
           -e WINDMILL_PASSWORD=test123 \
-          -e GODON_DIR=/app/tests \
+          -e CONTROLLER_REPO=https://github.com/godon-dev/godon-controller.git \
+          -e CONTROLLER_VERSION=0.1.0 \
+          -e BREEDER_REPO=https://github.com/godon-dev/godon-breeders.git \
+          -e BREEDER_VERSION=0.1.0 \
+          -e GODON_DIR=/var/lib/godon \
           -e VERBOSE=true \
-          -e GODON_SEEDER_BIN="$BINARY_PATH" \
-          -v "$(pwd)/images/godon-seeder/tests:/app/tests" \
-          godon-seeder-test:test-${{ github.run_number }} \
-          --verbose /app/tests/test_components/controller /app/tests/test_components/linux_network_stack
+          godon-seeder-test:test-${{ github.run_number }}
         
         echo "✅ Seeder test completed successfully!"
 
