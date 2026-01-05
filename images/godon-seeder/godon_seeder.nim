@@ -177,12 +177,20 @@ proc deployComponentScripts*(client: WindmillApiClient, workspace: string, compo
   for scriptSpec in component.scripts:
     var scriptFiles: seq[string]
 
-    if scriptSpec.path.len > 0:
-      # Direct path override
+    if scriptSpec.pattern.len > 0 and scriptSpec.path.len > 0:
+      # Pattern-based discovery within specified subdirectory
+      let searchDir = baseDir / scriptSpec.path
+      scriptFiles = findFilesByPattern(searchDir, scriptSpec.pattern)
+    elif scriptSpec.path.len > 0:
+      # Direct path override (single file)
       scriptFiles = @[baseDir / scriptSpec.path]
     elif scriptSpec.pattern.len > 0:
-      # Pattern-based discovery
+      # Pattern-based discovery in base directory
       scriptFiles = findFilesByPattern(baseDir, scriptSpec.pattern)
+    else:
+      # No pattern or path specified
+      warn("Script spec has neither pattern nor path, skipping")
+      continue
 
     if scriptFiles.len == 0:
       warn("No files found for script spec: " & scriptSpec.pattern)
