@@ -45,12 +45,12 @@ setup_repo() {
 }
 
 ## Setup Controller Repository
-echo "Setting up controller repository..."
-setup_repo "controller" "${CONTROLLER_REPO}" "${CONTROLLER_VERSION}"
+echo "Setting up godon-controller repository..."
+setup_repo "godon-controller" "${CONTROLLER_REPO}" "${CONTROLLER_VERSION}"
 
 ## Setup Breeder Repository
-echo "Setting up breeder repository..."
-setup_repo "linux_network_stack_breeder" "${BREEDER_REPO}" "${BREEDER_VERSION}"
+echo "Setting up godon-breeders repository..."
+setup_repo "godon-breeders" "${BREEDER_REPO}" "${BREEDER_VERSION}"
 
 echo "✅ All repositories updated successfully"
 
@@ -60,7 +60,7 @@ echo "Starting component deployment with godon-seeder"
 # Call the Nim seeder with the controller and breeder directories
 "${GODON_SEEDER_BIN}" \
     --verbose \
-    "${GODON_DIR}/controller" \
-    "${GODON_DIR}/linux_network_stack_breeder/breeder/linux_network_stack"
+    "${GODON_DIR}/godon-controller" \
+    "${GODON_DIR}/godon-breeders/breeder/linux_network_stack"
 
 echo "✅ Godon seeding completed successfully!"
