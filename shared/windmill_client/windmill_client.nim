@@ -43,7 +43,7 @@ proc login*(client: var WindmillApiClient) =
         "Authorization": "Bearer " & client.token
       })
       return  # Success, exit retry loop
-    except CatchableError as e:
+    except Exception as e:
       inc retries
       if retries >= maxRetries:
         error("Windmill authentication error after $1 attempts: $2" % [$maxRetries, e.msg])
