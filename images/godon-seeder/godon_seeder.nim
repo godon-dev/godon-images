@@ -1,5 +1,6 @@
-import std/[parseopt, strutils, os, logging, json, times, tables, sequtils, sets]
+import std/[parseopt, strutils, os, logging, json, times, tables, sequtils, sets, options, streams]
 import yaml
+import yaml/tojson
 import windmill_client.config
 import windmill_client.windmill_client
 
@@ -13,16 +14,27 @@ type
     description*: string
     timeout*: Option[int]
 
-  ScriptSpec* = object
+  FlowSettings* {.sparse.} = object
+    summary*: string
+    description*: string
+    deployment_message*: Option[string]
+
+  ScriptSpec* {.sparse.} = object
     pattern*: string
-    path*: string
+    path*: Option[string]    # Optional: for subdirectory specification
     settings*: ScriptSettings
+
+  FlowSpec* {.sparse.} = object
+    pattern*: string
+    path*: Option[string]    # Optional: for subdirectory specification
+    settings*: FlowSettings
 
   ComponentConfig* = object
     name*: string
     target*: string
     workspace*: Option[string]
     scripts*: seq[ScriptSpec]
+    flows*: Option[seq[FlowSpec]]   # Optional: defaults to empty seq if not specified
 
   ComponentInfo* = object
     config*: ComponentConfig
@@ -52,9 +64,10 @@ proc parseScriptSettings(settingsJson: JsonNode): ScriptSettings =
 proc parseScriptSpec(specJson: JsonNode): ScriptSpec =
   ## Parse script specification from JSON node
   let settingsJson = specJson.getOrDefault("settings")
+  let pathValue = specJson.getOrDefault("path")
   result = ScriptSpec(
     pattern: specJson.getOrDefault("pattern").getStr(""),
-    path: specJson.getOrDefault("path").getStr(""),
+    path: if pathValue.kind != JNull and pathValue.len > 0: some(pathValue.getStr()) else: none(string),
     settings: if settingsJson != nil and settingsJson.kind == JObject: parseScriptSettings(settingsJson) else: ScriptSettings()
   )
 
@@ -64,9 +77,11 @@ proc parseComponentConfig(yamlPath: string): ComponentConfig =
 
   let yamlContent = readFile(yamlPath)
 
-  # Use yaml.load to directly parse into ComponentConfig
+  # Use YAML library to parse into ComponentConfig using streams
   try:
-    load(yamlContent, result)
+    var s = newStringStream(yamlContent)
+    load(s, result)
+    s.close()
     info("Parsed component '" & result.name & "' with " & $result.scripts.len & " scripts")
   except CatchableError as e:
     logging.error("Failed to parse YAML: " & e.msg)
@@ -102,21 +117,23 @@ proc discoverComponents*(config: SeederConfig): seq[ComponentInfo] =
 
     info("Scanning directory: " & sourceDir)
 
-    # Look for component.yaml files
-    for kind, path in walkDir(sourceDir, relative=true):
-      if kind == pcFile and path.endsWith("component.yaml"):
-        let fullPath = sourceDir / path
-        info("Found component config: " & fullPath)
+    # Look for component.yaml files recursively
+    for componentPath in walkDirRec(sourceDir):
+      if componentPath.endsWith("component.yaml"):
+        # walkDirRec returns absolute paths, use directly
+        info("Found component config: " & componentPath)
         try:
-          let component = parseComponentConfig(fullPath)
-          # Create ComponentInfo with directory
+          let component = parseComponentConfig(componentPath)
+          # Extract the actual component directory (where component.yaml is located)
+          let componentDir = componentPath.splitPath().head
+          # Create ComponentInfo with the correct component directory
           let componentInfo = ComponentInfo(
             config: component,
-            directory: sourceDir
+            directory: componentDir
           )
           result.add(componentInfo)
         except CatchableError as e:
-          logging.error("Failed to parse component config " & fullPath & ": " & e.msg)
+          logging.error("Failed to parse component config " & componentPath & ": " & e.msg)
 
 proc findFilesByPattern(baseDir: string, pattern: string): seq[string] =
   ## Find files matching a glob pattern relative to base directory
@@ -146,6 +163,14 @@ proc findFilesByPattern(baseDir: string, pattern: string): seq[string] =
         result.add(fullPath)
         debug("  Found matching file: " & fullPath)
 
+proc readFlowContent(flowPath: string): string =
+  ## Read flow YAML content as raw string
+  if not fileExists(flowPath):
+    raise newException(IOError, "Flow file not found: " & flowPath)
+
+  result = readFile(flowPath)
+  debug("Read flow content from: " & flowPath & " (" & $result.len & " bytes)")
+
 proc readScriptContent(scriptPath: string): string =
   ## Read script content and determine language from extension
   if not fileExists(scriptPath):
@@ -153,6 +178,46 @@ proc readScriptContent(scriptPath: string): string =
 
   result = readFile(scriptPath)
   debug("Read script content from: " & scriptPath & " (" & $result.len & " bytes)")
+
+proc deployFlow*(client: WindmillApiClient, workspace: string, flowPath: string, flowYaml: string, settings: FlowSettings) =
+  ## Deploy a single flow to Windmill using YAML content (following Windmill CLI pattern)
+  info("Deploying flow: " & flowPath)
+
+  # Parse YAML into JsonNode using NimYAML's loadToJson function
+  var flowJson: JsonNode
+  try:
+    # loadToJson returns a sequence of documents, take the first one
+    let docs = loadToJson(flowYaml)
+    if docs.len > 0:
+      flowJson = docs[0]
+    else:
+      raise newException(IOError, "No YAML documents found")
+  except CatchableError as e:
+    raise newException(IOError, "Failed to parse flow YAML: " & e.msg)
+  
+  # Override summary and description from settings (if provided)
+  if settings.summary.len > 0:
+    flowJson["summary"] = %* settings.summary
+  if settings.description.len > 0:
+    flowJson["description"] = %* settings.description
+  
+  # Build the complete API request by adding API-specific fields
+  var requestPayload = newJObject()
+  requestPayload["path"] = %* flowPath
+  
+  # Spread the flow definition (like Windmill CLI does with ...localFlow)
+  for key, value in pairs(flowJson):
+    requestPayload[key] = value
+  
+  # Add deployment message if provided
+  if settings.deployment_message.isSome:
+    requestPayload["deployment_message"] = %* settings.deployment_message.get()
+
+  debug("Flow request payload: " & $requestPayload)
+  debug("Flow JSON structure: " & requestPayload.pretty)
+  # Pass the complete flow JSON directly (the flow YAML already has the correct structure)
+  client.deployFlow(workspace, flowPath, requestPayload)
+  info("✅ Successfully deployed flow: " & flowPath)
 
 proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: ScriptSettings) =
   ## Deploy a single script to Windmill
@@ -170,23 +235,49 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
   client.deployScript(workspace, scriptPath, content, scriptSettings)
   info("✅ Successfully deployed script: " & scriptPath)
 
+proc createNestedFolders*(client: WindmillApiClient, workspace: string, folderPath: string) =
+  ## Create only the top-level folder (Windmill doesn't support nested folders)
+  ## Windmill uses virtual folder structure - only top-level folders need to be created
+  ## Nested paths in script/flow names work automatically without folder creation
+  if folderPath.len == 0:
+    return
+
+  # Extract only the first level folder name (Windmill only creates top-level folders)
+  let topLevelFolder = folderPath.split("/")[0]
+
+  try:
+    client.createFolder(workspace, topLevelFolder)
+  except CatchableError as e:
+    # If folder creation fails, log but continue - it might already exist
+    debug("Folder creation attempt for " & topLevelFolder & " failed: " & e.msg)
+
 proc deployComponentScripts*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string) =
   ## Deploy all scripts for a component
   info("Deploying scripts for component: " & component.name)
+  
+  # Create nested folders if component target is specified
+  if component.target.len > 0:
+    createNestedFolders(client, workspace, component.target)
 
   for scriptSpec in component.scripts:
     var scriptFiles: seq[string]
 
-    if scriptSpec.pattern.len > 0 and scriptSpec.path.len > 0:
-      # Pattern-based discovery within specified subdirectory
-      let searchDir = baseDir / scriptSpec.path
-      scriptFiles = findFilesByPattern(searchDir, scriptSpec.pattern)
-    elif scriptSpec.path.len > 0:
+    if scriptSpec.pattern.len > 0:
+      # Pattern-based file discovery - treat pattern as relative path from baseDir
+      let patternPath = baseDir / scriptSpec.pattern
+      if fileExists(patternPath):
+        # Pattern is actually a specific file path (e.g., "reconnaissance/prometheus.py")
+        scriptFiles = @[patternPath]
+      elif scriptSpec.path.isSome and scriptSpec.path.get().len > 0:
+        # Both pattern and path specified - path indicates subdirectory to search (e.g., controller case)
+        let searchDir = baseDir / scriptSpec.path.get()
+        scriptFiles = findFilesByPattern(searchDir, scriptSpec.pattern)
+      else:
+        # Pattern is a glob pattern - search in base directory
+        scriptFiles = findFilesByPattern(baseDir, scriptSpec.pattern)
+    elif scriptSpec.path.isSome and scriptSpec.path.get().len > 0:
       # Direct path override (single file)
-      scriptFiles = @[baseDir / scriptSpec.path]
-    elif scriptSpec.pattern.len > 0:
-      # Pattern-based discovery in base directory
-      scriptFiles = findFilesByPattern(baseDir, scriptSpec.pattern)
+      scriptFiles = @[baseDir / scriptSpec.path.get()]
     else:
       # No pattern or path specified
       warn("Script spec has neither pattern nor path, skipping")
@@ -197,17 +288,67 @@ proc deployComponentScripts*(client: WindmillApiClient, workspace: string, compo
       continue
 
     for scriptFile in scriptFiles:
-      let relativePath = scriptFile.relativePath(baseDir)
-      let windmillPath = if component.target.len > 0:
-                          component.target / relativePath
-                        else:
-                          relativePath
+      # Use component target folder + filename without extension
+      let filename = scriptFile.extractFilename()
+      let scriptName = filename.changeFileExt("")
+      # Build path: f/target_folder/script_name (Windmill requires f/ prefix)
+      let windmillPath = "f/" & component.target & "/" & scriptName
 
       try:
         let content = readScriptContent(scriptFile)
         deployScript(client, workspace, windmillPath, content, scriptSpec.settings)
       except CatchableError as e:
         logging.error("Failed to deploy script " & scriptFile & ": " & e.msg)
+
+proc deployComponentFlows*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string) =
+  ## Deploy all flows for a component
+  info("Deploying flows for component: " & component.name)
+
+  # Create nested folders if component target is specified
+  if component.target.len > 0:
+    createNestedFolders(client, workspace, component.target)
+
+  let flows = component.flows.get()
+  for flowSpec in flows:
+    var flowFiles: seq[string]
+
+    if flowSpec.pattern.len > 0:
+      # Pattern-based flow discovery - treat pattern as relative path from baseDir
+      let patternPath = baseDir / flowSpec.pattern
+      if fileExists(patternPath):
+        # Pattern is actually a specific file path
+        flowFiles = @[patternPath]
+      elif flowSpec.path.isSome and flowSpec.path.get().len > 0:
+        # Both pattern and path specified - path indicates subdirectory to search
+        let searchDir = baseDir / flowSpec.path.get()
+        flowFiles = findFilesByPattern(searchDir, flowSpec.pattern)
+      else:
+        # Pattern is a glob pattern - search in base directory
+        flowFiles = findFilesByPattern(baseDir, flowSpec.pattern)
+    elif flowSpec.path.isSome and flowSpec.path.get().len > 0:
+      # Direct path override (single file)
+      flowFiles = @[baseDir / flowSpec.path.get()]
+    else:
+      # No pattern or path specified
+      warn("Flow spec has neither pattern nor path, skipping")
+      continue
+
+    if flowFiles.len == 0:
+      warn("No files found for flow spec: " & flowSpec.pattern)
+      continue
+
+    for flowFile in flowFiles:
+      # Use component target folder + filename without extension
+      let filename = flowFile.extractFilename()
+      let flowName = filename.changeFileExt("")
+      # Build path: f/target_folder/flow_name (Windmill requires f/ prefix)
+      let windmillPath = "f/" & component.target & "/" & flowName
+
+      try:
+        let flowYaml = readFlowContent(flowFile)
+        deployFlow(client, workspace, windmillPath, flowYaml, flowSpec.settings)
+      except CatchableError as e:
+        logging.error("Failed to deploy flow " & flowFile & ": " & e.msg)
 
 proc seedWorkspace*(config: SeederConfig) =
   ## Main seeding function - discover and deploy all components
@@ -260,6 +401,10 @@ proc seedWorkspace*(config: SeederConfig) =
     # Deploy scripts
     if component.scripts.len > 0:
       deployComponentScripts(client, targetWorkspace, component, componentDir)
+
+    # Deploy flows
+    if component.flows.isSome and component.flows.get().len > 0:
+      deployComponentFlows(client, targetWorkspace, component, componentDir)
 
   info("✅ Component deployment completed successfully")
 

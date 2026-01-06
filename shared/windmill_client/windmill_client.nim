@@ -32,9 +32,12 @@ proc login*(client: var WindmillApiClient) =
       client.http.headers = newHttpHeaders()
       if response.code != Http200:
         error("Windmill login failed: " & response.status)
+        error("Response body: " & response.body)
         raise newException(ValueError, "Failed to login to Windmill: " & response.status)
 
       # Windmill returns the token as plaintext, not JSON
+      debug("Login response code: " & $response.code)
+      debug("Login response body (first 50 chars): " & response.body[0..min(49, response.body.len-1)])
       client.token = response.body
       info("Successfully authenticated with Windmill")
 
@@ -154,9 +157,11 @@ proc createWorkspace*(client: WindmillApiClient, workspace: string) =
   let url = &"{client.config.windmillBaseUrl}/workspaces/create"
   let payload = %*{
     "id": workspace,
-    "name": workspace,
-    "username": client.config.windmillEmail
+    "name": workspace
   }
+  
+  debug("Creating workspace at URL: " & url)
+  debug("Payload: " & $payload)
   
   try:
     let originalHeaders = client.http.headers
@@ -164,12 +169,15 @@ proc createWorkspace*(client: WindmillApiClient, workspace: string) =
       "Content-Type": "application/json",
       "Authorization": "Bearer " & client.token
     })
+    debug("Sending request with token: " & client.token[0..10] & "...")
     let response = client.http.post(url, $payload)
+    debug("Response code: " & $response.code & " - " & response.status)
+    debug("Response body: " & response.body)
     # Reset headers to only Authorization after POST
     client.http.headers = newHttpHeaders({
       "Authorization": "Bearer " & client.token
     })
-    if response.code == Http201:
+    if response.code == Http201 or response.code == Http200:
       info("Successfully created workspace: " & workspace)
     elif response.code == Http409:
       info("Workspace already exists: " & workspace)
@@ -179,6 +187,51 @@ proc createWorkspace*(client: WindmillApiClient, workspace: string) =
       raise newException(ValueError, "Failed to create workspace")
   except CatchableError as e:
     error("Error creating workspace: " & e.msg)
+    raise
+
+proc createFolder*(client: WindmillApiClient, workspace: string, folderPath: string) =
+  ## Create a folder in Windmill using the API
+  info("Creating folder: " & folderPath)
+  
+  # Extract folder name from path (remove f/ prefix if present)
+  let folderName = if folderPath.startsWith("f/"):
+                     folderPath[2..folderPath.len-1]  # Remove "f/" prefix
+                   else:
+                     folderPath
+  
+  let url = &"{client.config.windmillBaseUrl}/w/{workspace}/folders/create"
+  let payload = %*{
+    "name": folderName
+  }
+  
+  debug("Creating folder at URL: " & url)
+  debug("Payload: " & $payload)
+  
+  try:
+    let originalHeaders = client.http.headers
+    client.http.headers = newHttpHeaders({
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " & client.token
+    })
+    debug("Sending folder creation request with token: " & client.token[0..10] & "...")
+    let response = client.http.post(url, $payload)
+    debug("Folder creation response code: " & $response.code & " - " & response.status)
+    debug("Folder creation response body: " & response.body)
+    # Reset headers to only Authorization after POST
+    client.http.headers = newHttpHeaders({
+      "Authorization": "Bearer " & client.token
+    })
+    
+    if response.code == Http200:
+      info("Successfully created folder: " & folderPath)
+    elif response.code == Http409 or response.code == Http400:
+      info("Folder already exists: " & folderPath)
+    else:
+      error("Failed to create folder: " & response.status)
+      error("Response: " & response.body)
+      raise newException(ValueError, "Failed to create folder")
+  except CatchableError as e:
+    error("Error creating folder: " & e.msg)
     raise
 
 proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: JsonNode = nil) =
@@ -235,12 +288,9 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
 proc deployFlow*(client: WindmillApiClient, workspace: string, flowPath: string, flowDef: JsonNode) =
   ## Deploy a flow to Windmill using the API
   info("Deploying flow: " & flowPath)
-  
+
   let url = &"{client.config.windmillBaseUrl}/w/{workspace}/flows/create"
-  let payload = %*{
-    "path": flowPath,
-    "value": flowDef
-  }
+  let payload = flowDef
   
   try:
     let originalHeaders = client.http.headers
