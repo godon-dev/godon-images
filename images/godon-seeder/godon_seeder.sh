@@ -75,6 +75,6 @@ fi
 "${GODON_SEEDER_BIN}" \
     $CLI_ARGS \
     "${GODON_DIR}/godon-controller" \
-    "${GODON_DIR}/godon-breeders/breeder/linux_network_stack"
+    "${GODON_DIR}/godon-breeders"
 
 echo "✅ Godon seeding completed successfully!"
