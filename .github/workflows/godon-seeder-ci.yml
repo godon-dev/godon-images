@@ -93,9 +93,9 @@ jobs:
           -e WINDMILL_EMAIL=admin@test.com \
           -e WINDMILL_PASSWORD=test123 \
           -e CONTROLLER_REPO=https://github.com/godon-dev/godon-controller.git \
-          -e CONTROLLER_VERSION=0.1.0 \
+          -e CONTROLLER_VERSION=0.3.0 \
           -e BREEDER_REPO=https://github.com/godon-dev/godon-breeders.git \
-          -e BREEDER_VERSION=0.1.0 \
+          -e BREEDER_VERSION=0.7.0 \
           -e GODON_DIR=/var/lib/godon \
           -e VERBOSE=true \
           godon-seeder-test:test-${{ github.run_number }}
