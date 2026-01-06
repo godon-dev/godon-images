@@ -8,7 +8,7 @@ installExt    = @["nim"]
 
 # Dependencies
 requires "nim >= 2.0.0"
-requires "yaml >= 1.1.0"
+requires "yaml == 2.1.1"
 
 skipFiles = @[]
 bin           = @["godon_seeder"]
