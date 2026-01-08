@@ -153,9 +153,9 @@ proc createWorkspace*(client: WindmillApiClient, workspace: string) =
     return
   
   info("Creating workspace: " & workspace)
-  
+
   let url = &"{client.config.windmillBaseUrl}/workspaces/create"
-  let payload = %*{
+  let payload = %* {
     "id": workspace,
     "name": workspace
   }
