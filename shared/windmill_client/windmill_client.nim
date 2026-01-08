@@ -153,9 +153,9 @@ proc createWorkspace*(client: WindmillApiClient, workspace: string) =
     return
   
   info("Creating workspace: " & workspace)
-  
+
   let url = &"{client.config.windmillBaseUrl}/workspaces/create"
-  let payload = %*{
+  let payload = %* {
     "id": workspace,
     "name": workspace
   }
@@ -257,9 +257,11 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
   var payload = %*{
     "path": scriptPath,
     "content": content,
-    "language": language
+    "language": language,
+    "summary": "",
+    "description": ""
   }
-  
+
   # Add script settings if provided
   if settings != nil:
     for key, value in settings.pairs:

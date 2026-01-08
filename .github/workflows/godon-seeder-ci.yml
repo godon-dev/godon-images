@@ -48,115 +48,148 @@ jobs:
         # Test container help command by overriding entrypoint
         docker run --rm --entrypoint="/bin/sh" godon-seeder-test:test-${{ github.run_number }} -c "godon_seeder --help"
 
-    - name: Run Prism mock server and test seeder deployment
+    - name: Start Windmill docker-compose stack
       run: |
-        echo "🧪 Testing godon-seeder against Prism mock server..."
-        
-        # Start Prism mock server
-        echo "📡 Starting Prism mock server on port 8000..."
-        docker run -d --name windmill-mock \
-          -p 8000:4010 \
-          -v "$(pwd)/shared/windmill-openapi.yaml:/spec.yaml:ro" \
-          stoplight/prism:5 \
-          mock -h 0.0.0.0 -p 4010 /spec.yaml --dynamic --errors=false
-        
-        echo "⏳ Waiting for Prism to initialize..."
-        sleep 15
-        
-        # Verify Prism is running
-        echo "🔍 Verifying Prism mock server..."
-        if ! docker ps | grep windmill-mock > /dev/null; then
-          echo "❌ Prism mock container not running"
-          docker logs windmill-mock
+        echo "🚀 Starting Windmill 1.601.1 with docker compose..."
+        cd images/godon-seeder
+        docker compose -f tests/docker-compose.test.yml -p godon-seeder-test up -d
+
+        echo "⏳ Waiting for Windmill to be ready..."
+        # Windmill takes about 45-60 seconds to fully start
+        sleep 60
+
+        # Verify containers are running
+        if ! docker ps | grep -q "godon-seeder-test-windmill_server-1"; then
+          echo "❌ Windmill server not running"
+          docker ps
+          docker logs godon-seeder-test-windmill_server-1
           exit 1
         fi
-        echo "✅ Prism mock server is ready!"
-        
-        # Test script creation endpoint
-        echo "🧪 Testing script creation endpoint..."
-        curl -s -X POST http://localhost:8000/w/test/scripts/create \
-          -H "Authorization: Bearer test" \
-          -H "Content-Type: application/json" \
-          -d '{"path":"f/test.py","content":"def main(): pass","language":"python3","summary":"test","description":"test script"}' | head -5
-        
-        # Find the seeder binary path
-        echo "🔍 Finding seeder binary path..."
-        BINARY_PATH=$(docker run --rm --entrypoint=/bin/sh godon-seeder-test:test-${{ github.run_number }} -c "find /nix/store -name 'godon_seeder' -type f | head -1")
-        echo "Found binary at: $BINARY_PATH"
+        echo "✅ Windmill is running!"
 
-        # Run seeder test against mock server using actual repositories
-        echo "🚀 Running godon-seeder test with actual repositories..."
-        docker run --rm \
-          --network host \
-          -e WINDMILL_BASE_URL=http://localhost:8000 \
-          -e WINDMILL_WORKSPACE=test-workspace \
-          -e WINDMILL_EMAIL=admin@test.com \
-          -e WINDMILL_PASSWORD=test123 \
-          -e CONTROLLER_REPO=https://github.com/godon-dev/godon-controller.git \
+    - name: Verify Windmill is running
+      run: |
+        echo "🧪 Verifying Windmill is running with retry..."
+
+        # Retry with fixed intervals
+        MAX_RETRIES=10
+        RETRY_DELAY=3
+
+        for i in $(seq 1 $MAX_RETRIES); do
+          echo "Attempt $i/$MAX_RETRIES..."
+
+          if curl -s -f http://localhost:9101/ > /dev/null 2>&1; then
+            echo "✅ Windmill server is running and responding"
+            exit 0
+          fi
+
+          if [ $i -lt $MAX_RETRIES ]; then
+            echo "⏳ Windmill not ready, waiting ${RETRY_DELAY}s before retry..."
+            sleep $RETRY_DELAY
+          fi
+        done
+
+        echo "❌ Windmill server failed to respond after $MAX_RETRIES attempts"
+        docker ps
+        docker logs godon-seeder-test-windmill_server-1
+        exit 1
+
+    - name: Run godon-seeder deployment test
+      run: |
+        echo "🚀 Testing godon-seeder against real Windmill..."
+        cd images/godon-seeder
+
+        docker run --rm --network godon-seeder-test_default \
+          -e WINDMILL_BASE_URL=http://windmill_server:8000/api \
+          -e WINDMILL_WORKSPACE=seeder-test \
+          -e WINDMILL_EMAIL=admin@windmill.dev \
+          -e WINDMILL_PASSWORD=changeme \
           -e CONTROLLER_VERSION=0.3.0 \
-          -e BREEDER_REPO=https://github.com/godon-dev/godon-breeders.git \
           -e BREEDER_VERSION=0.7.0 \
           -e GODON_DIR=/var/lib/godon \
           -e VERBOSE=true \
-          godon-seeder-test:test-${{ github.run_number }}
+          godon-seeder-test:test-${{ github.run_number }} \
+          2>&1 | tee /tmp/seeder-output.log
 
-        echo "✅ Seeder test completed successfully!"
+        # Verify deployment succeeded
+        if grep -q "✅ Component deployment completed successfully" /tmp/seeder-output.log; then
+          echo "✅ Seeder deployment completed successfully"
+        else
+          echo "❌ Seeder deployment failed"
+          grep -E "(ERROR|error|Error)" /tmp/seeder-output.log || true
+          exit 1
+        fi
 
-    - name: Test retry mechanism with delayed Prism start
+        # Verify scripts were created
+        echo "🧪 Verifying deployed scripts..."
+        TOKEN=$(curl -s -X POST http://localhost:9101/api/auth/login \
+          -H "Content-Type: application/json" \
+          -d '{"email":"admin@windmill.dev","password":"changeme"}' | tr -d '"')
+
+        SCRIPT_LIST=$(curl -s http://localhost:9101/api/w/godon/scripts/list \
+          -H "Authorization: Bearer $TOKEN")
+
+        if echo "$SCRIPT_LIST" | grep -q -E 'breeder|controller|effect|recon'; then
+          echo "✅ Deployed scripts found in workspace"
+          echo "Found scripts: $SCRIPT_LIST"
+        else
+          echo "❌ No deployed scripts found"
+          echo "Script list: $SCRIPT_LIST"
+          exit 1
+        fi
+
+    - name: Test retry mechanism with delayed Windmill start
       run: |
-        echo "🧪 Testing retry mechanism with delayed Windmill availability..."
+        echo "🧪 Testing retry mechanism..."
 
-        # Start seeder before Prism is ready to test retry logic
-        echo "Starting seeder with 5 retries, 2s delay..."
-        docker run -d --name seeder-retry-test \
-          --network host \
-          -e WINDMILL_BASE_URL=http://localhost:8100 \
-          -e WINDMILL_WORKSPACE=test-workspace \
-          -e WINDMILL_EMAIL=admin@test.com \
-          -e WINDMILL_PASSWORD=test123 \
-          -e CONTROLLER_REPO=https://github.com/godon-dev/godon-controller.git \
-          -e CONTROLLER_VERSION=0.1.0 \
-          -e BREEDER_REPO=https://github.com/godon-dev/godon-breeders.git \
-          -e BREEDER_VERSION=0.1.0 \
+        # Stop Windmill to simulate it being unavailable
+        cd images/godon-seeder
+        docker compose -f tests/docker-compose.test.yml -p godon-seeder-test stop windmill_server
+
+        # Start seeder before Windmill is ready
+        docker run -d --name seeder-retry-test --network godon-seeder-test_default \
+          -e WINDMILL_BASE_URL=http://windmill_server:8000/api \
+          -e WINDMILL_WORKSPACE=retry-test \
+          -e WINDMILL_EMAIL=admin@windmill.dev \
+          -e WINDMILL_PASSWORD=changeme \
+          -e CONTROLLER_VERSION=0.3.0 \
+          -e BREEDER_VERSION=0.7.0 \
           -e GODON_DIR=/var/lib/godon \
-          -e SEEDER_MAX_RETRIES=5 \
+          -e SEEDER_MAX_RETRIES=10 \
           -e SEEDER_RETRY_DELAY=2 \
           -e VERBOSE=true \
           godon-seeder-test:test-${{ github.run_number }}
 
-        echo "⏳ Seeder started, waiting 2s before starting Prism..."
-        sleep 2
+        # Wait a bit then restart Windmill
+        sleep 5
+        echo "📡 Restarting Windmill..."
+        docker compose -f tests/docker-compose.test.yml -p godon-seeder-test start windmill_server
 
-        echo "📡 Now starting Prism mock server on port 8100 for retry test..."
-        docker run -d --name windmill-mock-retry \
-          -p 8100:4010 \
-          -v "$(pwd)/shared/windmill-openapi.yaml:/spec.yaml:ro" \
-          stoplight/prism:5 \
-          mock -h 0.0.0.0 -p 4010 /spec.yaml --dynamic --errors=false
+        # Wait for Windmill to be healthy again
+        sleep 15
 
-        echo "⏳ Waiting for Prism to initialize and seeder to complete..."
-        sleep 10
+        # Check seeder result
+        docker logs seeder-retry-test 2>&1 | tee /tmp/retry-test.log
 
-        echo "📊 Seeder logs (should show retry attempts):"
-        docker logs seeder-retry-test
-
-        # Check if seeder succeeded
         if docker inspect seeder-retry-test --format='{{.State.Status}}' | grep -q "exited"; then
-          exit_code=$(docker inspect seeder-retry-test --format='{{.State.ExitCode}}')
-          if [ "$exit_code" = "0" ]; then
+          EXIT_CODE=$(docker inspect seeder-retry-test --format='{{.State.ExitCode}}')
+          if [ "$EXIT_CODE" = "0" ]; then
             echo "✅ Retry mechanism test passed!"
           else
-            echo "❌ Retry mechanism test failed with exit code: $exit_code"
+            echo "❌ Retry test failed with exit code: $EXIT_CODE"
             exit 1
           fi
         else
-          echo "⚠️  Seeder still running, checking logs..."
+          echo "⚠️  Seeder still running after retry test"
           docker logs seeder-retry-test
           exit 1
         fi
 
-    - name: Container cleanup
+    - name: Cleanup
       if: always()
       run: |
-        echo "Cleaning up test containers..."
+        echo "🧹 Cleaning up..."
+        cd images/godon-seeder
+        docker compose -f tests/docker-compose.test.yml -p godon-seeder-test down -v
+        docker rm -f seeder-retry-test 2>/dev/null || true
         docker rmi godon-seeder-test:test-${{ github.run_number }} || true
