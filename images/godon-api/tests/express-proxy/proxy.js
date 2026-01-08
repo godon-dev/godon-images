@@ -20,7 +20,117 @@ app.use((req, res, next) => {
 
 // Mock responses for specific flow paths (decoded URLs)
 const mockResponses = {
-  '/w/godon/jobs/run_wait_result/p/f/controller/breeders_get': {
+  // Script GET endpoints - return hash for hash-based execution
+  '/w/godon/scripts/get/p/f/controller/breeders_get': {
+    workspace_id: "godon",
+    hash: "7060bc7c7f578a1a",
+    path: "f/controller/breeders_get",
+    summary: "Godon Controller API",
+    description: "Controller logic for managing Godon breeder lifecycles",
+    created_by: "admin",
+    created_at: "2024-01-15T10:30:00Z",
+    archived: false,
+    language: "python3",
+    kind: "script"
+  },
+  '/w/godon/scripts/get/p/f/controller/breeder_create': {
+    workspace_id: "godon",
+    hash: "abc123def456",
+    path: "f/controller/breeder_create",
+    summary: "Create Breeder",
+    description: "Create a new breeder",
+    created_by: "admin",
+    created_at: "2024-01-15T10:30:00Z",
+    archived: false,
+    language: "python3",
+    kind: "script"
+  },
+  '/w/godon/scripts/get/p/f/controller/breeder_delete': {
+    workspace_id: "godon",
+    hash: "def789ghi012",
+    path: "f/controller/breeder_delete",
+    summary: "Delete Breeder",
+    description: "Delete a breeder",
+    created_by: "admin",
+    created_at: "2024-01-15T10:30:00Z",
+    archived: false,
+    language: "python3",
+    kind: "script"
+  },
+  '/w/godon/scripts/get/p/f/controller/breeder_update': {
+    workspace_id: "godon",
+    hash: "ghi345jkl345",
+    path: "f/controller/breeder_update",
+    summary: "Update Breeder",
+    description: "Update a breeder",
+    created_by: "admin",
+    created_at: "2024-01-15T10:30:00Z",
+    archived: false,
+    language: "python3",
+    kind: "script"
+  },
+  '/w/godon/scripts/get/p/f/controller/breeder_get': {
+    workspace_id: "godon",
+    hash: "jkl567mno678",
+    path: "f/controller/breeder_get",
+    summary: "Get Breeder",
+    description: "Get a specific breeder",
+    created_by: "admin",
+    created_at: "2024-01-15T10:30:00Z",
+    archived: false,
+    language: "python3",
+    kind: "script"
+  },
+  '/w/godon/scripts/get/p/f/controller/credentials_get': {
+    workspace_id: "godon",
+    hash: "pqr890stu789",
+    path: "f/controller/credentials_get",
+    summary: "List Credentials",
+    description: "List all credentials",
+    created_by: "admin",
+    created_at: "2024-01-15T10:30:00Z",
+    archived: false,
+    language: "python3",
+    kind: "script"
+  },
+  '/w/godon/scripts/get/p/f/controller/credential_create': {
+    workspace_id: "godon",
+    hash: "stu901vwx890",
+    path: "f/controller/credential_create",
+    summary: "Create Credential",
+    description: "Create a new credential",
+    created_by: "admin",
+    created_at: "2024-01-15T10:30:00Z",
+    archived: false,
+    language: "python3",
+    kind: "script"
+  },
+  '/w/godon/scripts/get/p/f/controller/credential_get': {
+    workspace_id: "godon",
+    hash: "vwx012yzab12",
+    path: "f/controller/credential_get",
+    summary: "Get Credential",
+    description: "Get a specific credential",
+    created_by: "admin",
+    created_at: "2024-01-15T10:30:00Z",
+    archived: false,
+    language: "python3",
+    kind: "script"
+  },
+  '/w/godon/scripts/get/p/f/controller/credential_delete': {
+    workspace_id: "godon",
+    hash: "zab345cde34",
+    path: "f/controller/credential_delete",
+    summary: "Delete Credential",
+    description: "Delete a credential",
+    created_by: "admin",
+    created_at: "2024-01-15T10:30:00Z",
+    archived: false,
+    language: "python3",
+    kind: "script"
+  },
+  // Hash-based execution endpoints (new flow - same responses as old path-based)
+  '/w/godon/jobs/run_wait_result/h/7060bc7c7f578a1a': {
     breeders: [
       {
         id: "550e8400-e29b-41d4-a716-446655440010",
@@ -44,16 +154,16 @@ const mockResponses = {
       }
     ]
   },
-  '/w/godon/jobs/run_wait_result/p/f/controller/breeder_create': {
+  '/w/godon/jobs/run_wait_result/h/abc123def456': {
     id: "550e8400-e29b-41d4-a716-446655440010",
     name: "test_breeder",
     status: "active",
     createdAt: "2024-01-15T10:30:00Z"
   },
-  '/w/godon/jobs/run_wait_result/p/f/controller/breeder_delete': {
+  '/w/godon/jobs/run_wait_result/h/def789ghi012': {
     success: true
   },
-  '/w/godon/jobs/run_wait_result/p/f/controller/breeder_update': {
+  '/w/godon/jobs/run_wait_result/h/ghi345jkl345': {
     id: "550e8400-e29b-41d4-a716-446655440010",
     name: "updated-genetic-optimizer",
     status: "active",
@@ -63,7 +173,7 @@ const mockResponses = {
       setting2: 200
     }
   },
-  '/w/godon/jobs/run_wait_result/p/f/controller/breeder_get': {
+  '/w/godon/jobs/run_wait_result/h/jkl567mno678': {
     id: "550e8400-e29b-41d4-a716-446655440010",
     name: "genetic-optimizer-test",
     status: "active",
@@ -73,13 +183,13 @@ const mockResponses = {
       max_iterations: 100
     }
   },
-  '/w/godon/jobs/run_wait_result/p/f/controller/credentials_get': [
+  '/w/godon/jobs/run_wait_result/h/pqr890stu789': [
     {
       id: "550e8400-e29b-41d4-a716-446655440011",
       name: "production_ssh_key",
       credentialType: "ssh_private_key",
       description: "SSH key for production servers",
-        windmillVariable: "f/vars/prod_ssh_key",
+      windmillVariable: "f/vars/prod_ssh_key",
       createdAt: "2024-01-15T10:30:00Z",
       lastUsedAt: "2024-01-16T14:20:00Z"
     },
@@ -93,7 +203,7 @@ const mockResponses = {
       lastUsedAt: null
     }
   ],
-  '/w/godon/jobs/run_wait_result/p/f/controller/credential_create': {
+  '/w/godon/jobs/run_wait_result/h/stu901vwx890': {
     id: "550e8400-e29b-41d4-a716-446655440002",
     name: "test_ssh_key",
     credentialType: "ssh_private_key",
@@ -101,7 +211,7 @@ const mockResponses = {
     windmillVariable: "f/vars/test_ssh_key",
     createdAt: "2024-01-17T12:00:00Z"
   },
-  '/w/godon/jobs/run_wait_result/p/f/controller/credential_get': {
+  '/w/godon/jobs/run_wait_result/h/vwx012yzab12': {
     id: "550e8400-e29b-41d4-a716-446655440011",
     name: "production_ssh_key",
     credentialType: "ssh_private_key",
@@ -111,7 +221,7 @@ const mockResponses = {
     lastUsedAt: "2024-01-16T14:20:00Z",
     content: "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA2Z9Q...\n-----END RSA PRIVATE KEY-----"
   },
-  '/w/godon/jobs/run_wait_result/p/f/controller/credential_delete': {
+  '/w/godon/jobs/run_wait_result/h/zab345cde34': {
     result: "SUCCESS",
     message: "Credential 'production_ssh_key' (ID: 550e8400-e29b-41d4-a716-446655440011) successfully deleted"
   }

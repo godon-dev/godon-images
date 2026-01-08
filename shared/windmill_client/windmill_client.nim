@@ -69,36 +69,61 @@ proc close*(client: WindmillApiClient) =
   client.http.close()
 
 # API Methods - Pure Windmill API operations
-proc runJob*(client: WindmillApiClient, jobPath: string, args: JsonNode = nil): JsonNode =
-  ## Run a Windmill job (script or flow) by path and wait for result
-  ## Uses the Windmill API URL pattern for job execution
-  
-  # If windmillApiBaseUrl is already constructed, use it directly
-  # Otherwise construct the full URL from components
-  let url = if client.config.windmillApiBaseUrl != "":
-              &"{client.config.windmillApiBaseUrl}/{jobPath}"
-            else:
-              let fullPath = "f/" & jobPath  
-              let encodedPath = encodeUrl(fullPath)
-              &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/jobs/run_wait_result/p/{encodedPath}"
-  
-  debug("Running job: " & jobPath)
-  debug("URL: " & url)
-  
+proc getScriptByPath*(client: WindmillApiClient, scriptPath: string): JsonNode =
+  ## Get a script by path to retrieve its hash and metadata
+  ## This works regardless of deployment status
+
+  let fullPath = "f/" & client.config.windmillFolder & "/" & scriptPath
+  let encodedPath = encodeUrl(fullPath)
+  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/scripts/get/p/{encodedPath}"
+
+  debug("Getting script metadata for: " & fullPath)
+
+  try:
+    let originalHeaders = client.http.headers
+    client.http.headers = newHttpHeaders({
+      "Authorization": "Bearer " & client.token
+    })
+    let response = client.http.get(url)
+    client.http.headers = newHttpHeaders({
+      "Authorization": "Bearer " & client.token
+    })
+
+    if response.code != Http200:
+      error("Failed to get script: " & response.status)
+      error("Response: " & response.body)
+      raise newException(ValueError, "Failed to get script: " & fullPath)
+
+    result = parseJson(response.body)
+    debug("Retrieved script hash: " & result["hash"].getStr())
+  except CatchableError as e:
+    error("Error getting script " & fullPath & ": " & e.msg)
+    raise
+
+proc runJobByHash*(client: WindmillApiClient, jobPath: string, scriptHash: string, args: JsonNode = nil): JsonNode =
+  ## Run a Windmill job by hash directly
+  ## Falls back to hash-based execution when path-based execution fails due to undeployed scripts
+  ##
+  ## Includes X-Godon-Script-Path header for tracing (ignored by Windmill but visible in logs)
+
+  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/jobs/run_wait_result/h/{scriptHash}"
+
+  debug(&"Running job by hash: {jobPath} (hash: {scriptHash})")
+
   try:
     var body = ""
     if args != nil:
       body = $args
     else:
       body = "{}"
-    
+
     let originalHeaders = client.http.headers
     client.http.headers = newHttpHeaders({
       "Content-Type": "application/json",
-      "Authorization": "Bearer " & client.token
+      "Authorization": "Bearer " & client.token,
+      "X-Godon-Script-Path": jobPath
     })
     let response = client.http.post(url, body)
-    # Reset headers to only Authorization after POST
     client.http.headers = newHttpHeaders({
       "Authorization": "Bearer " & client.token
     })
@@ -106,11 +131,29 @@ proc runJob*(client: WindmillApiClient, jobPath: string, args: JsonNode = nil): 
       error("Job execution failed: " & response.status)
       error("Response: " & response.body)
       raise newException(ValueError, "Windmill job execution failed: " & response.status)
-    
+
     result = parseJson(response.body)
     debug("Job completed successfully")
   except CatchableError as e:
     error("Error running job " & jobPath & ": " & e.msg)
+    raise
+
+proc runJob*(client: WindmillApiClient, jobPath: string, args: JsonNode = nil): JsonNode =
+  ## Run a Windmill job (script or flow) by path
+  ##
+  ## Uses hash-based execution as fallback to handle scripts that haven't been
+  ## fully deployed yet (e.g., waiting for lock generation completion).
+  ##
+  ## This hybrid approach ensures reliable execution regardless of deployment status.
+
+  debug("Running job: " & jobPath)
+
+  try:
+    let scriptInfo = client.getScriptByPath(jobPath)
+    let scriptHash = scriptInfo["hash"].getStr()
+    return client.runJobByHash(jobPath, scriptHash, args)
+  except CatchableError as e:
+    error(&"Failed to execute job '{jobPath}': {e.msg}")
     raise
 
 # Seeder-specific API methods
@@ -237,7 +280,7 @@ proc createFolder*(client: WindmillApiClient, workspace: string, folderPath: str
 proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: JsonNode = nil) =
   ## Deploy a script to Windmill using the API
   info("Deploying script: " & scriptPath)
-  
+
   # Detect language from file extension
   let ext = if '.' in scriptPath:
                let parts = scriptPath.split('.')
@@ -252,19 +295,19 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
     of ".sql": "postgresql"
     of ".ts": "nativets"
     else: "python3"  # Default fallback
-  
+
   let url = &"{client.config.windmillBaseUrl}/w/{workspace}/scripts/create"
   var payload = %*{
     "path": scriptPath,
     "content": content,
     "language": language
   }
-  
+
   # Add script settings if provided
   if settings != nil:
     for key, value in settings.pairs:
       payload[key] = value
-  
+
   try:
     let originalHeaders = client.http.headers
     client.http.headers = newHttpHeaders({

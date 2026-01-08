@@ -7,6 +7,7 @@ type
     windmillBaseUrl*: string
     windmillApiBaseUrl*: string
     windmillWorkspace*: string
+    windmillFolder*: string
     windmillEmail*: string
     windmillPassword*: string
     maxRetries*: int
@@ -36,6 +37,7 @@ proc loadWindmillConfig*(): WindmillConfig =
     result.windmillBaseUrl = "http://" & host & ":" & port
   
   result.windmillWorkspace = getEnv("WINDMILL_WORKSPACE", "godon")
+  result.windmillFolder = getEnv("WINDMILL_FOLDER", "controller")
   result.windmillEmail = getEnv("WINDMILL_EMAIL", "admin@windmill.dev")
   result.windmillPassword = getEnv("WINDMILL_PASSWORD", "changeme")
   result.maxRetries = parseInt(getEnv("WINDMILL_MAX_RETRIES", "30"))
