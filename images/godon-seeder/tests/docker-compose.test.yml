@@ -1,0 +1,42 @@
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+    compress: "true"
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: windmill
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    logging: *default-logging
+
+  windmill_server:
+    image: ghcr.io/windmill-labs/windmill:1.601.1
+    environment:
+      - DATABASE_URL=postgres://postgres:changeme@db:5432/windmill
+      - MODE=server
+    ports:
+      - "9101:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *default-logging
+
+  windmill_worker:
+    image: ghcr.io/windmill-labs/windmill:1.601.1
+    environment:
+      - DATABASE_URL=postgres://postgres:changeme@db:5432/windmill
+      - MODE=worker
+      - WORKER_GROUP=default
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *default-logging
