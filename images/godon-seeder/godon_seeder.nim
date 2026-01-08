@@ -196,10 +196,16 @@ proc deployFlow*(client: WindmillApiClient, workspace: string, flowPath: string,
     raise newException(IOError, "Failed to parse flow YAML: " & e.msg)
   
   # Override summary and description from settings (if provided)
+  # Windmill 1.601.1+ requires these fields to be present
   if settings.summary.len > 0:
     flowJson["summary"] = %* settings.summary
+  else:
+    flowJson["summary"] = %* ""
+
   if settings.description.len > 0:
     flowJson["description"] = %* settings.description
+  else:
+    flowJson["description"] = %* ""
   
   # Build the complete API request by adding API-specific fields
   var requestPayload = newJObject()
