@@ -359,6 +359,7 @@ proc seedWorkspace*(config: SeederConfig) =
     windmillBaseUrl: config.windmillBaseUrl,
     windmillApiBaseUrl: "",
     windmillWorkspace: config.windmillWorkspace,
+    windmillFolder: "",  # Not needed for seeder - only deploys, doesn't execute
     windmillEmail: config.windmillEmail,
     windmillPassword: config.windmillPassword,
     maxRetries: config.maxRetries,

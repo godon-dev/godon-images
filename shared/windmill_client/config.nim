@@ -7,7 +7,7 @@ type
     windmillBaseUrl*: string
     windmillApiBaseUrl*: string
     windmillWorkspace*: string
-    windmillFolder*: string
+    windmillFolder*: string  # Optional: only needed for hash-based execution
     windmillEmail*: string
     windmillPassword*: string
     maxRetries*: int
