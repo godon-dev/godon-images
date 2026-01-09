@@ -51,8 +51,8 @@ jobs:
     - name: Start Windmill docker-compose stack
       run: |
         echo "🚀 Starting Windmill 1.601.1 with docker compose..."
-        cd images/godon-seeder
-        docker compose -f tests/docker-compose.test.yml -p godon-seeder-test up -d
+        cd shared/tests
+        docker compose -f docker-compose.windmill.yml -p godon-seeder-test up -d
 
         echo "⏳ Waiting for Windmill to be ready..."
         # Windmill takes about 45-60 seconds to fully start
@@ -189,7 +189,7 @@ jobs:
       if: always()
       run: |
         echo "🧹 Cleaning up..."
-        cd images/godon-seeder
-        docker compose -f tests/docker-compose.test.yml -p godon-seeder-test down -v
+        cd shared/tests
+        docker compose -f docker-compose.windmill.yml -p godon-seeder-test down -v
         docker rm -f seeder-retry-test 2>/dev/null || true
         docker rmi godon-seeder-test:test-${{ github.run_number }} || true
