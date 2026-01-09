@@ -75,12 +75,14 @@ proc runJob*(client: WindmillApiClient, jobPath: string, args: JsonNode = nil): 
 
   # If windmillApiBaseUrl is already constructed, use it directly
   # Otherwise construct the full URL from components
+  # Note: windmillBaseUrl may include /api - don't duplicate it
   let url = if client.config.windmillApiBaseUrl != "":
               &"{client.config.windmillApiBaseUrl}/{jobPath}"
             else:
               let fullPath = "f/" & jobPath
               let encodedPath = encodeUrl(fullPath)
-              &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/jobs/run_wait_result/p/{encodedPath}"
+              # Use baseUrl directly (may or may not include /api)
+              &"{client.config.windmillBaseUrl}/w/{client.config.windmillWorkspace}/jobs/run_wait_result/p/{encodedPath}"
   
   debug("Running job: " & jobPath)
   debug("URL: " & url)
@@ -317,13 +319,16 @@ proc deployFlow*(client: WindmillApiClient, workspace: string, flowPath: string,
 proc deleteVariable*(client: WindmillApiClient, variablePath: string) =
   ## Delete a Windmill variable using the API
   info("Deleting variable: " & variablePath)
-  
-  # Parse variable path to extract components
-  # Expected format: "f/vars/variable_name" or "vars/variable_name"
-  let cleanPath = variablePath.replace("f/", "").replace("vars/", "")
-  let encodedPath = encodeUrl(cleanPath)
-  
-  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/variables/delete/{encodedPath}"
+
+  # Ensure path starts with f/ if it doesn't have a prefix
+  let fullPath = if variablePath.startsWith("f/") or variablePath.startsWith("u/") or variablePath.startsWith("g/"):
+    variablePath
+  else:
+    "f/" & variablePath
+
+  let encodedPath = encodeUrl(fullPath)
+
+  let url = &"{client.config.windmillBaseUrl}/w/{client.config.windmillWorkspace}/variables/delete/{encodedPath}"
   
   try:
     # Create a fresh HTTP client to avoid any state pollution from POST operations
@@ -347,14 +352,16 @@ proc deleteVariable*(client: WindmillApiClient, variablePath: string) =
 proc createVariable*(client: WindmillApiClient, variablePath: string, content: string, isSecret: bool = true) =
   ## Create a Windmill variable using the API
   info("Creating variable: " & variablePath)
-  
-  # Parse variable path to extract components
-  # Expected format: "f/vars/variable_name" or "vars/variable_name"
-  let cleanPath = variablePath.replace("f/", "").replace("vars/", "")
-  
-  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/variables/create"
+
+  # Ensure path starts with f/ if it doesn't have a prefix
+  let fullPath = if variablePath.startsWith("f/") or variablePath.startsWith("u/") or variablePath.startsWith("g/"):
+    variablePath
+  else:
+    "f/" & variablePath
+
+  let url = &"{client.config.windmillBaseUrl}/w/{client.config.windmillWorkspace}/variables/create"
   let payload = %*{
-    "path": cleanPath,
+    "path": fullPath,
     "value": content,
     "is_secret": isSecret,
     "description": "",  # Required by Windmill API
@@ -387,12 +394,16 @@ proc createVariable*(client: WindmillApiClient, variablePath: string, content: s
 proc getVariable*(client: WindmillApiClient, variablePath: string): string =
   ## Get a Windmill variable content by path
   info("Getting variable: " & variablePath)
-  
-  # Parse variable path to extract components
-  let cleanPath = variablePath.replace("f/", "").replace("vars/", "")
-  let encodedPath = encodeUrl(cleanPath)
-  
-  let url = &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/variables/get_value/{encodedPath}"
+
+  # Ensure path starts with f/ if it doesn't have a prefix
+  let fullPath = if variablePath.startsWith("f/") or variablePath.startsWith("u/") or variablePath.startsWith("g/"):
+    variablePath
+  else:
+    "f/" & variablePath
+
+  let encodedPath = encodeUrl(fullPath)
+
+  let url = &"{client.config.windmillBaseUrl}/w/{client.config.windmillWorkspace}/variables/get_value/{encodedPath}"
   
   try:
     # Create a fresh HTTP client to avoid any state pollution from POST operations

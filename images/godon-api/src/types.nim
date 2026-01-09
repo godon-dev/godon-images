@@ -2,6 +2,12 @@ import std/[json, times]
 import jsony
 
 type
+  BreederSummary* = object
+    id*: string
+    name*: string
+    status*: string
+    createdAt*: string
+
   Breeder* = object
     id*: string
     name*: string
@@ -28,6 +34,23 @@ type
     lastUsedAt*: string
 
 # Custom JSON parsing functions
+proc parseBreederSummaryFromJson*(json: JsonNode): BreederSummary =
+  result = BreederSummary()
+  if json.hasKey("id"):
+    result.id = json["id"].getStr()
+  if json.hasKey("name"):
+    result.name = json["name"].getStr()
+  if json.hasKey("status"):
+    result.status = json["status"].getStr()
+  if json.hasKey("createdAt"):
+    result.createdAt = json["createdAt"].getStr()
+
+proc parseBreederSummariesFromJson*(json: JsonNode): seq[BreederSummary] =
+  result = @[]
+  if json.kind == JArray:
+    for item in json.items:
+      result.add(parseBreederSummaryFromJson(item))
+
 proc parseBreederFromJson*(json: JsonNode): Breeder =
   result = Breeder()
   if json.hasKey("id"):

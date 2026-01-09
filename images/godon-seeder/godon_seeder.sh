@@ -8,7 +8,7 @@ set -o pipefail
 shopt -s inherit_errexit
 
 # Set default environment variables
-export WINDMILL_BASE_URL="${WINDMILL_BASE_URL:-windmill-app:8000}"
+export WINDMILL_BASE_URL="${WINDMILL_BASE_URL:-http://windmill-app:8000/api}"
 export WINDMILL_WORKSPACE="${WINDMILL_WORKSPACE:-godon}"
 export WINDMILL_EMAIL="${WINDMILL_EMAIL:-admin@windmill.dev}"
 export WINDMILL_PASSWORD="${WINDMILL_PASSWORD:-changeme}"

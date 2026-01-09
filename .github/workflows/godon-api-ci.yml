@@ -98,7 +98,7 @@ jobs:
         docker run -d --name godon-api-test \
           --network godon-api-test_default \
           -p 9090:9090 \
-          -e WINDMILL_BASE_URL="http://windmill_server:8000" \
+          -e WINDMILL_BASE_URL="http://windmill_server:8000/api" \
           -e WINDMILL_WORKSPACE="test" \
           -e WINDMILL_FOLDER="controller" \
           -e PORT="9090" \
