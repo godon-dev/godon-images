@@ -143,10 +143,11 @@ jobs:
         echo "🧪 Testing retry mechanism..."
 
         # Stop Windmill to simulate it being unavailable
-        cd images/godon-seeder
-        docker compose -f tests/docker-compose.test.yml -p godon-seeder-test stop windmill_server
+        cd shared/tests
+        docker compose -f docker-compose.windmill.yml -p godon-seeder-test stop windmill_server
 
         # Start seeder before Windmill is ready
+        cd ../../images/godon-seeder
         docker run -d --name seeder-retry-test --network godon-seeder-test_default \
           -e WINDMILL_BASE_URL=http://windmill_server:8000/api \
           -e WINDMILL_WORKSPACE=retry-test \
@@ -163,7 +164,8 @@ jobs:
         # Wait a bit then restart Windmill
         sleep 5
         echo "📡 Restarting Windmill..."
-        docker compose -f tests/docker-compose.test.yml -p godon-seeder-test start windmill_server
+        cd ../../shared/tests
+        docker compose -f docker-compose.windmill.yml -p godon-seeder-test start windmill_server
 
         # Wait for Windmill to be healthy again
         sleep 15

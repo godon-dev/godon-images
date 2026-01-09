@@ -6,7 +6,7 @@ def main():
                 "id": "test-breeder-1",
                 "name": "test-breeder",
                 "status": "active",
-                "created_at": "2024-01-01T00:00:00Z"
+                "createdAt": "2024-01-01T00:00:00Z"
             }
         ]
     }
