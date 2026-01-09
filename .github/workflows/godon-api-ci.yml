@@ -6,6 +6,7 @@ on:
     paths:
       - 'images/godon-api/**'
       - 'shared/windmill_client/**'
+      - 'shared/tests/**'
       - 'build/**'
       - '.github/workflows/godon-api-ci.yml'
   workflow_dispatch:
@@ -41,92 +42,88 @@ jobs:
           --name "godon-api-test" \
           --builder-file ../../build/Dockerfile.nix-builder
 
-    - name: Start Prism mock server
+    - name: Start Windmill test stack
       run: |
-        echo "Starting Prism mock server with Windmill OpenAPI spec..."
+        echo "🚀 Starting Windmill 1.601.1 test stack..."
+        cd shared/tests
+        docker compose -f docker-compose.windmill.yml -p godon-api-test up -d
 
-        # Start Prism container with working approach using host network
-        docker run -d --name windmill-mock \
-          --network host \
-          -v ${{ github.workspace }}/shared/windmill-openapi.yaml:/tmp/windmill-openapi.yaml:ro \
-          stoplight/prism:5 \
-          mock -h 0.0.0.0 -p 4010 /tmp/windmill-openapi.yaml --dynamic --errors=false
+        echo "⏳ Waiting for Windmill to be ready (this takes ~60 seconds)..."
+        sleep 60
 
-        echo "Prism mock server started, waiting 15 seconds for initialization..."
-        sleep 15
-
-    - name: Verify Prism mock server
-      run: |
-        echo "Verifying Prism mock server..."
-
-        # Check container status
-        docker ps | grep windmill-mock || echo "❌ Windmill mock container not found"
-
-        # Wait a bit more for full initialization
-        echo "Waiting additional 10 seconds for Prism to be fully ready..."
-        sleep 10
-
-        # Test basic connectivity to a specific endpoint that should exist
-        echo "Testing connectivity to Prism mock server..."
-
-        # Test the base endpoint first with mock auth header
-        echo "Testing base endpoint..."
-        if curl -f -s -H "Authorization: Bearer fake-token" http://localhost:4010/version > /dev/null; then
-          echo "✅ Prism mock server base endpoint works!"
-        else
-          echo "❌ Prism mock server base endpoint failed"
-          echo "Container logs:"
-          docker logs windmill-mock || true
+        # Verify containers are running
+        if ! docker ps | grep -q "godon-api-test-windmill_server-1"; then
+          echo "❌ Windmill server not running"
+          docker ps
+          docker logs godon-api-test-windmill_server-1
           exit 1
         fi
+        echo "✅ Windmill is running!"
 
-        # Test auth endpoint (this one doesn't require auth according to spec)
-        echo "Testing auth endpoint..."
-        if curl -f -s -X POST http://localhost:4010/auth/login \
-          -H "Content-Type: application/json" \
-          -d '{"email":"test@example.com","password":"test"}' > /dev/null; then
-          echo "✅ Prism mock server auth endpoint works!"
-        else
-          echo "⚠️ Auth endpoint failed but base works - continuing"
-        fi
-
-        echo "✅ Prism mock server is ready!"
-
-    - name: Start Express proxy for response transformation
+    - name: Verify Windmill is ready
       run: |
-        echo "Starting Express proxy for Windmill API with response transformation..."
+        echo "🧪 Verifying Windmill is ready with retry..."
 
-        # Stop existing container if running
-        docker stop express-proxy 2>/dev/null || true
-        docker rm express-proxy 2>/dev/null || true
+        MAX_RETRIES=20
+        RETRY_DELAY=3
 
-        # Update proxy.js with correct Prism URL (using localhost since both on host network)
-        sed -i "s|const PRISM_URL = 'http://.*:4010'|const PRISM_URL = 'http://localhost:4010'|" ${{ github.workspace }}/images/godon-api/tests/express-proxy/proxy.js
+        for i in $(seq 1 $MAX_RETRIES); do
+          echo "Attempt $i/$MAX_RETRIES..."
 
-        # Install dependencies and start Express proxy using host network
-        docker run -d --name express-proxy \
-          --network host \
-          -v ${{ github.workspace }}/images/godon-api/tests/express-proxy:/app \
-          -w /app \
-          node:alpine \
-          sh -c "npm install && node proxy.js"
-
-        echo "✅ Express proxy starting on port 8000..."
-
-        # Wait for proxy to be healthy
-        for i in {1..15}; do
-          if curl -f http://localhost:8000/health >/dev/null 2>&1; then
-            echo "✅ Express proxy is ready!"
-            echo "Proxy health: $(curl -s http://localhost:8000/health)"
-            break
+          if curl -s -f http://localhost:9101/ > /dev/null 2>&1; then
+            echo "✅ Windmill server is ready!"
+            exit 0
           fi
-          echo "Attempt $i/15 - waiting for Express proxy..."
-          sleep 2
+
+          if [ $i -lt $MAX_RETRIES ]; then
+            echo "⏳ Windmill not ready, waiting ${RETRY_DELAY}s..."
+            sleep $RETRY_DELAY
+          fi
         done
 
-        if [ $i -eq 15 ]; then
-          echo "❌ Express proxy failed to start"
-          docker logs express-proxy
+        echo "❌ Windmill server failed to respond after $MAX_RETRIES attempts"
+        docker logs godon-api-test-windmill_server-1
+        exit 1
+
+    - name: Deploy stub scripts
+      run: |
+        echo "📝 Deploying stub controller scripts..."
+        cd shared/tests
+        ./deploy-stubs.sh
+
+    - name: Start godon-api container
+      run: |
+        echo "🚀 Starting godon-api container..."
+
+        docker run -d --name godon-api-test \
+          --network godon-api-test_default \
+          -p 9090:9090 \
+          -e WINDMILL_BASE_URL="http://windmill_server:8000" \
+          -e WINDMILL_WORKSPACE="test" \
+          -e WINDMILL_FOLDER="controller" \
+          -e PORT="9090" \
+          godon-api-test:test-${{ github.run_number }}
+
+        echo "⏳ Waiting for godon-api to start..."
+        sleep 10
+
+        # Verify godon-api is running
+        if ! docker ps | grep -q "godon-api-test"; then
+          echo "❌ godon-api container not running"
+          docker logs godon-api-test
+          exit 1
+        fi
+        echo "✅ godon-api is running!"
+
+    - name: Test API health endpoint
+      run: |
+        echo "🏥 Testing health endpoint..."
+
+        if curl -s -f http://localhost:9090/health > /dev/null; then
+          echo "✅ Health endpoint responding"
+        else
+          echo "❌ Health endpoint not responding"
+          docker logs godon-api-test
           exit 1
         fi
 
@@ -148,34 +145,18 @@ jobs:
         docker run --rm $CLI_CONTAINER_IMAGE --help
         echo "✅ godon_cli container ready for CLI mode"
 
-    - name: Test container with godon_cli client
+    - name: Test breeder operations with godon_cli container
       run: |
-        echo "Testing container as running service with godon_cli..."
-
-        # Start container as service
-        docker run -d --name godon-service-test \
-          --network host \
-          -e PORT=8080 \
-          -e WINDMILL_BASE_URL=http://localhost:8000 \
-          -e WINDMILL_API_BASE_URL=http://localhost:8000 \
-          godon-api-test:test-${{ github.run_number }}
-
-        # Wait for service to be ready
-        for i in {1..30}; do
-          if curl -f http://localhost:8080/health > /dev/null 2>&1; then
-            echo "✅ Godon API service is ready!"
-            break
-          fi
-          echo "Attempt $i/30 - waiting for service..."
-          sleep 2
-        done
-
-        # Test breeder operations with godon_cli container using explicit host/port
         echo "Testing breeder operations via godon_cli container..."
 
-        # List breeders (should return empty or mock data)
+        # Test breeder operations with godon_cli container
+        echo "Testing breeder operations via godon_cli container..."
+
+        # List breeders (should return stub data)
         echo "Listing breeders:"
-        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder list
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure breeder list
 
         # Create a test breeder
         echo "Creating test breeder..."
@@ -187,16 +168,24 @@ jobs:
         echo "Config file contents:"
         cat breeder-config.yaml
 
-        docker run --rm --network host -v "$(pwd)/breeder-config.yaml:/breeder-config.yaml:ro" \
-          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder create --file=/breeder-config.yaml
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/breeder-config.yaml:/breeder-config.yaml:ro" \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          breeder create --file=/breeder-config.yaml
 
         # List breeders again to see if creation worked
         echo "Listing breeders after creation:"
-        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder list
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure breeder list
 
         # Test getting a specific breeder (using a sample UUID)
         echo "Testing get specific breeder:"
-        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder show --id=550e8400-e29b-41d4-a716-446655440000
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          breeder show --id=550e8400-e29b-41d4-a716-446655440000
 
         # Test updating a breeder
         echo "Testing update breeder:"
@@ -211,84 +200,122 @@ jobs:
 
         # Test breeder update - should return NOT_IMPLEMENTED
         echo "Testing update breeder (should return NOT_IMPLEMENTED):"
-        docker run --rm --network host -v "$(pwd)/update-config.yaml:/update-config.yaml:ro" \
-          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder update --file=/update-config.yaml \
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/update-config.yaml:/update-config.yaml:ro" \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          breeder update --file=/update-config.yaml \
           || echo "✅ Update correctly returned NOT_IMPLEMENTED as expected"
 
         # Test deleting a breeder
         echo "Testing delete breeder:"
-        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder purge --id=550e8400-e29b-41d4-a716-446655440000
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          breeder purge --id=550e8400-e29b-41d4-a716-446655440000
 
         # Test error scenarios
         echo "Testing error scenarios..."
 
         # Test with invalid UUID (using show command) - this should fail
         echo "Testing invalid UUID handling (should fail):"
-        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder show --id=invalid-uuid-format || echo "✅ Invalid UUID properly rejected"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          breeder show --id=invalid-uuid-format || echo "✅ Invalid UUID properly rejected"
 
         # Test with non-existent breeder (should fail)
         echo "Testing non-existent breeder (should fail):"
-        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure breeder show --id=00000000-0000-0000-0000-000000000000 || echo "✅ Non-existent breeder properly handled"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          breeder show --id=00000000-0000-0000-0000-000000000000 || echo "✅ Non-existent breeder properly handled"
 
-        # Test credential operations
-        echo "Testing credential operations via godon_cli container ..."
+    - name: Test credential operations with godon_cli container
+      run: |
+        echo "Testing credential operations via godon_cli container..."
 
-        # List credentials (should return empty or mock data)
+        # List credentials (should return stub data)
         echo "Listing credentials:"
-        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential list
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure credential list
 
         # Create a test credential
         echo "Creating test credential..."
         echo 'name: "test-ssh-key"' > credential-config.yaml
         echo 'credentialType: "ssh_private_key"' >> credential-config.yaml
         echo 'description: "Test SSH key for CI"' >> credential-config.yaml
-        echo 'content: "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA2Z9Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2QwIDAQABAoIBAFQ==\n-----END RSA PRIVATE KEY-----"' >> credential-config.yaml
+        echo 'content: "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA2Z9Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2Q2\n2Q2Q2QwIDAQABAoIBAFQ==\n-----END RSA PRIVATE KEY-----"' >> credential-config.yaml
 
-        docker run --rm --network host -v "$(pwd)/credential-config.yaml:/credential-config.yaml:ro" \
-          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential create --file=/credential-config.yaml
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/credential-config.yaml:/credential-config.yaml:ro" \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          credential create --file=/credential-config.yaml
 
         # List credentials again to see if creation worked
         echo "Listing credentials after creation:"
-        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential list
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure credential list
 
-        # Test getting a specific credential (using a sample UUID)
+        # Test getting a specific credential (using UUID of created credential)
         echo "Testing get specific credential:"
-        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential show --id=550e8400-e29b-41d4-a716-446655440010
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          credential show --id=550e8400-e29b-41d4-a716-446655440011
 
         # Test deleting a credential
         echo "Testing delete credential:"
-        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential delete --id=550e8400-e29b-41d4-a716-446655440010
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          credential delete --id=550e8400-e29b-41d4-a716-446655440011
 
         # Test credential error scenarios
         echo "Testing credential error scenarios..."
 
         # Test with invalid UUID format
         echo "Testing invalid UUID handling for credentials (should fail):"
-        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential show --id=invalid-uuid-format || echo "✅ Invalid UUID properly rejected"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          credential show --id=invalid-uuid-format || echo "✅ Invalid UUID properly rejected"
 
         # Test with non-existent credential
         echo "Testing non-existent credential (should fail):"
-        docker run --rm --network host ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} --hostname=localhost --port=8080 --insecure credential show --id=00000000-0000-0000-0000-000000000000 || echo "✅ Non-existent credential properly handled"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          credential show --id=00000000-0000-0000-0000-000000000000 || echo "✅ Non-existent credential properly handled"
 
-        # Test with curl for fallback comparison
+    - name: Test API endpoints with curl
+      run: |
+        echo "Testing API endpoints with curl for fallback comparison..."
+
         echo "Health endpoint:"
-        curl -f http://localhost:8080/health | jq .
+        curl -s http://localhost:9090/health | jq .
 
         echo "Root endpoint:"
-        curl -f http://localhost:8080/ | jq .
+        curl -s http://localhost:9090/ | jq .
 
-        # Clean up service
-        docker stop godon-service-test || true
-        docker rm godon-service-test || true
+    - name: Show container logs on failure
+      if: failure()
+      run: |
+        echo "📋 Showing godon-api logs..."
+        docker logs godon-api-test
 
-    - name: Container cleanup
+        echo ""
+        echo "📋 Showing Windmill server logs..."
+        docker logs godon-api-test-windmill_server-1
+
+    - name: Cleanup
       if: always()
       run: |
-        echo "Cleaning up test containers..."
-        docker stop godon-service-test || true
-        docker rm godon-service-test || true
-        docker stop express-proxy || true
-        docker rm express-proxy || true
-        docker stop windmill-mock || true
-        docker rm windmill-mock || true
-        docker rmi godon-api-test:test-${{ github.run_number }} || true
+        echo "🧹 Cleaning up..."
+        docker stop godon-api-test 2>/dev/null || true
+        docker rm godon-api-test 2>/dev/null || true
+        cd shared/tests
+        docker compose -f docker-compose.windmill.yml -p godon-api-test down -v

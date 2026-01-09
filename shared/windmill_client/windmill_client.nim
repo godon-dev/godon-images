@@ -72,13 +72,13 @@ proc close*(client: WindmillApiClient) =
 proc runJob*(client: WindmillApiClient, jobPath: string, args: JsonNode = nil): JsonNode =
   ## Run a Windmill job (script or flow) by path and wait for result
   ## Uses the Windmill API URL pattern for job execution
-  
+
   # If windmillApiBaseUrl is already constructed, use it directly
   # Otherwise construct the full URL from components
   let url = if client.config.windmillApiBaseUrl != "":
               &"{client.config.windmillApiBaseUrl}/{jobPath}"
             else:
-              let fullPath = "f/" & jobPath  
+              let fullPath = "f/" & jobPath
               let encodedPath = encodeUrl(fullPath)
               &"{client.config.windmillBaseUrl}/api/w/{client.config.windmillWorkspace}/jobs/run_wait_result/p/{encodedPath}"
   
