@@ -115,7 +115,7 @@ let
       Env = [
         "PATH=/bin:${godon-seeder}/bin"
         "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-        "WINDMILL_BASE_URL=http://windmill-app:8000"
+        "WINDMILL_BASE_URL=http://windmill-app:8000/api"
         "WINDMILL_WORKSPACE=godon"
         "GODON_DIR=/var/lib/godon"
       ];

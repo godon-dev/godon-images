@@ -1,0 +1,11 @@
+# Test configuration for deploying stub scripts
+name: godon-test-stubs
+target: test
+workspace: test
+
+scripts:
+  - pattern: "*.py"
+    path: "stubs/controller"
+    settings:
+      summary: "Test stub scripts"
+      description: "Stub scripts for API testing"
