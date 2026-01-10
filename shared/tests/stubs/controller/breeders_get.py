@@ -1,4 +1,4 @@
-def main():
+def main(request_data=None):
     """Stub for breeders_get - returns list of breeders"""
     return {
         "breeders": [

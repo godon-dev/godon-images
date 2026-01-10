@@ -1,5 +1,7 @@
-def main(credential_id):
+def main(request_data=None):
     """Stub for credential_get - gets a specific credential"""
+    credential_id = request_data.get("credentialId") if request_data else None
+
     # Map credential IDs to their data
     credentials = {
         "550e8400-e29b-41d4-a716-446655440010": {
