@@ -2,6 +2,13 @@ def main(request_data=None):
     """Stub for credential_get - gets a specific credential"""
     credential_id = request_data.get("credentialId") if request_data else None
 
+    # Special UUIDs for testing non-existent credentials
+    if credential_id in ["00000000-0000-4000-8000-000000000000", "99999999-9999-4999-9999-999999999999"]:
+        return {
+            "result": "FAILURE",
+            "error": f"Credential with ID '{credential_id}' not found"
+        }
+
     # Map credential IDs to their data
     credentials = {
         "550e8400-e29b-41d4-a716-446655440010": {
@@ -24,18 +31,11 @@ def main(request_data=None):
         }
     }
 
-    credential_data = credentials.get(credential_id, {
-        "id": credential_id,
-        "name": "unknown",
-        "credentialType": "ssh_private_key",
-        "description": "Unknown credential",
-        "windmillVariable": "",
-        "createdAt": "2024-01-01T00:00:00Z",
-        "lastUsedAt": None
-    })
+    if credential_id not in credentials:
+        return {
+            "result": "FAILURE",
+            "error": f"Credential with ID '{credential_id}' not found"
+        }
 
-    # Return in the same format as the controller
-    return {
-        "result": "SUCCESS",
-        "credential": credential_data
-    }
+    # Return credential object directly (not wrapped)
+    return credentials[credential_id]
