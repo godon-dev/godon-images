@@ -16,7 +16,9 @@ export windmill_client.createVariable, windmill_client.getVariable, windmill_cli
 # Godon-specific methods that use the shared client
 proc getBreeders*(client: WindmillApiClient): seq[BreederSummary] =
   let response = client.runJob("breeders_get")
-  if response.hasKey("breeders"):
+  if response.kind == JArray:
+    result = parseBreederSummariesFromJson(response)
+  elif response.hasKey("breeders"):
     result = parseBreederSummariesFromJson(response["breeders"])
   else:
     result = @[]
