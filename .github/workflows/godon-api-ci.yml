@@ -327,11 +327,13 @@ jobs:
         echo "Test 1: Validating breeder show response structure..."
         SHOW_OUTPUT=$(docker run --rm --network godon-api-test_default \
           $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
-          breeder show --id=550e8400-e29b-41d4-a716-446655440000 2>&1)
+          breeder show --id=550e8400-e29b-41d4-a716-446655440000 2>/dev/null)
+        echo "Debug: Show output was: $SHOW_OUTPUT"
         if echo "$SHOW_OUTPUT" | jq -e 'has("id") and has("name") and has("status")' > /dev/null 2>&1; then
           echo "✅ Breeder show returns proper object structure"
         else
           echo "❌ Breeder show response structure incorrect"
+          echo "Output was: $SHOW_OUTPUT"
           exit 1
         fi
 

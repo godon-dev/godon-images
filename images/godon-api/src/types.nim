@@ -52,7 +52,7 @@ proc parseBreederSummariesFromJson*(json: JsonNode): seq[BreederSummary] =
       result.add(parseBreederSummaryFromJson(item))
 
 proc parseBreederFromJson*(json: JsonNode): Breeder =
-  result = Breeder()
+  result = Breeder(config: newJObject())
   if json.hasKey("id"):
     result.id = json["id"].getStr()
   if json.hasKey("name"):
