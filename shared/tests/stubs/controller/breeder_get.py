@@ -11,13 +11,16 @@ def main(request_data=None):
             "error": f"Breeder with ID '{breeder_id}' not found"
         }
 
-    # For any other UUID, return breeder object directly (controller unwraps service response)
+    # For any other UUID, return wrapped breeder object
     return {
-        "id": breeder_id,
-        "name": "test-breeder",
-        "status": "active",
-        "createdAt": "2024-01-01T00:00:00Z",
-        "config": {
-            "type": "linux_performance"
+        "result": "SUCCESS",
+        "data": {
+            "id": breeder_id,
+            "name": "test-breeder",
+            "status": "active",
+            "createdAt": "2024-01-01T00:00:00Z",
+            "config": {
+                "type": "linux_performance"
+            }
         }
     }

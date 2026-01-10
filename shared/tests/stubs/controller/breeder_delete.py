@@ -8,5 +8,5 @@ def main(request_data=None):
     # Simulate deletion (always succeeds for stub)
     return {
         "result": "SUCCESS",
-        "message": f"Breeder {breeder_id} deleted successfully"
+        "data": None
     }
