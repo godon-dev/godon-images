@@ -1,0 +1,4 @@
+breeder:
+  type: linux_performance
+run:
+  parallel: 1

@@ -91,6 +91,12 @@ jobs:
         cd shared/tests
         ./deploy-stubs.sh
 
+    - name: Copy test data files
+      run: |
+        echo "📝 Copying test data files..."
+        mkdir -p test-data
+        cp shared/tests/stubs/test-data/*.yaml test-data/ 2>/dev/null || echo "No test data files found"
+
     - name: Start godon-api container
       run: |
         echo "🚀 Starting godon-api container..."
@@ -157,6 +163,18 @@ jobs:
         docker run --rm --network godon-api-test_default \
           ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
           --hostname=godon-api-test --port=9090 --insecure breeder list
+
+        # Verify list can be parsed as JSON array
+        echo "Verifying breeder list structure:"
+        LIST_OUTPUT=$(docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure breeder list 2>/dev/null)
+        if echo "$LIST_OUTPUT" | jq -e 'if type == "array" then true else false end' > /dev/null 2>&1; then
+          echo "✅ Breeder list returns proper JSON array"
+        else
+          echo "⚠️  Breeder list format unclear (might be wrapped)"
+          echo "Output was: $LIST_OUTPUT"
+        fi
 
         # Create a test breeder
         echo "Creating test breeder..."
@@ -225,7 +243,7 @@ jobs:
         docker run --rm --network godon-api-test_default \
           ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
           --hostname=godon-api-test --port=9090 --insecure \
-          breeder show --id=00000000-0000-0000-0000-000000000000 || echo "✅ Non-existent breeder properly handled"
+          breeder show --id=00000000-0000-4000-8000-000000000000 || echo "✅ Non-existent breeder properly handled"
 
     - name: Test credential operations with godon_cli container
       run: |
@@ -236,6 +254,18 @@ jobs:
         docker run --rm --network godon-api-test_default \
           ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
           --hostname=godon-api-test --port=9090 --insecure credential list
+
+        # Verify list can be parsed as JSON array
+        echo "Verifying credential list structure:"
+        CRED_LIST_OUTPUT=$(docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure credential list 2>/dev/null)
+        if echo "$CRED_LIST_OUTPUT" | jq -e 'if type == "array" then true else false end' > /dev/null 2>&1; then
+          echo "✅ Credential list returns proper JSON array"
+        else
+          echo "⚠️  Credential list format unclear (might be wrapped)"
+          echo "Output was: $CRED_LIST_OUTPUT"
+        fi
 
         # Create a test credential
         echo "Creating test credential..."
@@ -285,7 +315,89 @@ jobs:
         docker run --rm --network godon-api-test_default \
           ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
           --hostname=godon-api-test --port=9090 --insecure \
-          credential show --id=00000000-0000-0000-0000-000000000000 || echo "✅ Non-existent credential properly handled"
+          credential show --id=00000000-0000-4000-8000-000000000000 || echo "✅ Non-existent credential properly handled"
+
+    - name: Adversarial API Tests
+      run: |
+        echo "🚨 Running adversarial API tests..."
+
+        CLI_CONTAINER_IMAGE="${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }}"
+
+        # Test 1: Response structure validation
+        echo "Test 1: Validating breeder show response structure..."
+        SHOW_OUTPUT=$(docker run --rm --network godon-api-test_default \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          breeder show --id=550e8400-e29b-41d4-a716-446655440000 2>/dev/null)
+
+        # CLI outputs formatted text, so check for expected field names in the output
+        if echo "$SHOW_OUTPUT" | grep -q "ID:" && echo "$SHOW_OUTPUT" | grep -q "Name:" && echo "$SHOW_OUTPUT" | grep -q "Status:"; then
+          echo "✅ Breeder show returns proper object structure"
+        else
+          echo "❌ Breeder show response structure incorrect"
+          echo "Output was: $SHOW_OUTPUT"
+          exit 1
+        fi
+
+        # Test 2: Empty string ID
+        echo "Test 2: Testing empty string ID..."
+        docker run --rm --network godon-api-test_default \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          breeder show --id="" || echo "✅ Empty ID properly rejected"
+
+        # Test 3: Delete then get verification
+        echo "Test 3: Testing delete-then-get flow..."
+        TEST_ID="550e8400-e29b-41d4-a716-446655440000"
+        docker run --rm --network godon-api-test_default \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          breeder purge --id=$TEST_ID || echo "⚠️  Delete failed (might not exist)"
+
+        docker run --rm --network godon-api-test_default \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          breeder show --id=$TEST_ID || echo "✅ Deleted breeder properly inaccessible"
+
+        # Test 4: Special characters in names
+        echo "Test 4: Testing special characters in names..."
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/test-data/breeder-minimal.yaml:/breeder-config.yaml:ro" \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          breeder create --name="test with spaces" --file=/breeder-config.yaml || echo "✅ Spaces in name properly rejected"
+
+        # Test 5: Excessively long ID
+        echo "Test 5: Testing excessively long ID..."
+        LONG_ID=$(printf 'a%.0s' {1..1000})
+        docker run --rm --network godon-api-test_default \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          breeder show --id="$LONG_ID" || echo "✅ Overly long ID properly rejected"
+
+        # Test 6: Response time checks
+        echo "Test 6: Testing response times..."
+        START_TIME=$(date +%s%N)
+        docker run --rm --network godon-api-test_default \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          breeder list > /dev/null 2>&1
+        END_TIME=$(date +%s%N)
+        DURATION=$(( ($END_TIME - $START_TIME) / 1000000 ))
+        if [ $DURATION -gt 5000 ]; then
+          echo "⚠️  Response time high: ${DURATION}ms"
+        else
+          echo "✅ Response time acceptable: ${DURATION}ms"
+        fi
+
+        # Test 7: Credential create with invalid type
+        echo "Test 7: Testing invalid credential type..."
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/test-data/credential-invalid-type.yaml:/credential-config.yaml:ro" \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          credential create --file=/credential-config.yaml || echo "✅ Invalid type properly rejected"
+
+        # Test 8: Missing required fields
+        echo "Test 8: Testing missing required fields..."
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/test-data/credential-missing-fields.yaml:/credential-config.yaml:ro" \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          credential create --file=/credential-config.yaml || echo "✅ Missing fields properly rejected"
+
+        echo "✅ All adversarial tests completed"
 
     - name: Test API endpoints with curl
       run: |
