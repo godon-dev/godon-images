@@ -1,4 +1,4 @@
-def main():
+def main(request_data=None):
     """Stub for credentials_get - returns list of credentials"""
     return {
         "credentials": [
