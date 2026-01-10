@@ -50,7 +50,7 @@ proc createCredentialResponse*(client: WindmillApiClient, credentialData: JsonNo
   result = client.runJob("credential_create", args)
 
 proc getCredential*(client: WindmillApiClient, credentialId: string): Credential =
-  let args = %* {"request_data": {"credential_id": credentialId}}
+  let args = %* {"request_data": {"credentialId": credentialId}}
   let response = client.runJob("credential_get", args)
   if response.hasKey("credential"):
     result = parseCredentialFromJson(response["credential"])
@@ -58,7 +58,7 @@ proc getCredential*(client: WindmillApiClient, credentialId: string): Credential
     result = parseCredentialFromJson(response)
 
 proc deleteCredentialResponse*(client: WindmillApiClient, credentialId: string): JsonNode =
-  let args = %* {"request_data": {"credential_id": credentialId}}
+  let args = %* {"request_data": {"credentialId": credentialId}}
   result = client.runJob("credential_delete", args)
 
 # Create adapter to bridge godon-api Config to shared WindmillConfig

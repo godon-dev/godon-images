@@ -161,10 +161,9 @@ jobs:
         # Create a test breeder
         echo "Creating test breeder..."
 
-        # Create config file using working example from godon-cli CI
-        echo 'name: "Test Breeder"' > breeder-config.yaml
-        echo 'config: >' >> breeder-config.yaml
-        echo '  {"setting1": "value1", "setting2": 42}' >> breeder-config.yaml
+        # Fetch example config from upstream godon repository
+        curl -s https://raw.githubusercontent.com/godon-dev/godon/main/examples/network.yml -o breeder-config.yaml
+
         echo "Config file contents:"
         cat breeder-config.yaml
 
@@ -172,7 +171,7 @@ jobs:
           -v "$(pwd)/breeder-config.yaml:/breeder-config.yaml:ro" \
           ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
           --hostname=godon-api-test --port=9090 --insecure \
-          breeder create --file=/breeder-config.yaml
+          breeder create --name="TestBreeder" --file=/breeder-config.yaml
 
         # List breeders again to see if creation worked
         echo "Listing breeders after creation:"
@@ -189,12 +188,9 @@ jobs:
 
         # Test updating a breeder
         echo "Testing update breeder:"
-        # Create update config file using working example from godon-cli CI
-        echo 'uuid: "550e8400-e29b-41d4-a716-446655440000"' > update-config.yaml
-        echo 'name: "Updated Test Breeder"' >> update-config.yaml
-        echo 'description: "Updated integration test breeder"' >> update-config.yaml
-        echo 'config: >' >> update-config.yaml
-        echo '  {"setting1": "updated_value1", "setting2": 100, "new_setting": "new_value"}' >> update-config.yaml
+        # Fetch example config for update test
+        curl -s https://raw.githubusercontent.com/godon-dev/godon/main/examples/network.yml -o update-config.yaml
+
         echo "Update config file contents:"
         cat update-config.yaml
 
