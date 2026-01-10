@@ -1,5 +1,7 @@
-def main(credential_id):
+def main(request_data=None):
     """Stub for credential_get - gets a specific credential"""
+    credential_id = request_data.get("credentialId") if request_data else None
+
     # Map credential IDs to their data
     credentials = {
         "550e8400-e29b-41d4-a716-446655440010": {
@@ -22,7 +24,7 @@ def main(credential_id):
         }
     }
 
-    return credentials.get(credential_id, {
+    credential_data = credentials.get(credential_id, {
         "id": credential_id,
         "name": "unknown",
         "credentialType": "ssh_private_key",
@@ -31,3 +33,9 @@ def main(credential_id):
         "createdAt": "2024-01-01T00:00:00Z",
         "lastUsedAt": None
     })
+
+    # Return in the same format as the controller
+    return {
+        "result": "SUCCESS",
+        "credential": credential_data
+    }
