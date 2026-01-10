@@ -46,7 +46,7 @@ proc getCredentials*(client: WindmillApiClient): seq[Credential] =
     result = @[]
 
 proc createCredentialResponse*(client: WindmillApiClient, credentialData: JsonNode): JsonNode =
-  let args = %* {"request_data": {"credential_data": credentialData}}
+  let args = %* {"request_data": credentialData}
   result = client.runJob("credential_create", args)
 
 proc getCredential*(client: WindmillApiClient, credentialId: string): Credential =
