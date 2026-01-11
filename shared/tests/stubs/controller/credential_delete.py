@@ -8,5 +8,5 @@ def main(request_data=None):
     # Simulate deletion (always succeeds for stub)
     return {
         "result": "SUCCESS",
-        "message": f"Credential {credential_id} deleted successfully"
+        "data": None
     }

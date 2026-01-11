@@ -37,5 +37,8 @@ def main(request_data=None):
             "error": f"Credential with ID '{credential_id}' not found"
         }
 
-    # Return credential object directly (not wrapped)
-    return credentials[credential_id]
+    # Return wrapped credential object
+    return {
+        "result": "SUCCESS",
+        "data": credentials[credential_id]
+    }

@@ -164,23 +164,13 @@ jobs:
           ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
           --hostname=godon-api-test --port=9090 --insecure breeder list
 
-        # Verify list can be parsed as JSON array
-        echo "Verifying breeder list structure:"
-        LIST_OUTPUT=$(docker run --rm --network godon-api-test_default \
-          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
-          --hostname=godon-api-test --port=9090 --insecure breeder list 2>/dev/null)
-        if echo "$LIST_OUTPUT" | jq -e 'if type == "array" then true else false end' > /dev/null 2>&1; then
-          echo "✅ Breeder list returns proper JSON array"
-        else
-          echo "⚠️  Breeder list format unclear (might be wrapped)"
-          echo "Output was: $LIST_OUTPUT"
-        fi
+        # Create a test breeder
 
         # Create a test breeder
         echo "Creating test breeder..."
 
         # Fetch example config from upstream godon repository
-        curl -s https://raw.githubusercontent.com/godon-dev/godon/main/examples/network.yml -o breeder-config.yaml
+        curl -s https://raw.githubusercontent.com/godon-dev/godon/refs/heads/master/examples/network.yml -o breeder-config.yaml
 
         echo "Config file contents:"
         cat breeder-config.yaml
@@ -207,7 +197,10 @@ jobs:
         # Test updating a breeder
         echo "Testing update breeder:"
         # Fetch example config for update test
-        curl -s https://raw.githubusercontent.com/godon-dev/godon/main/examples/network.yml -o update-config.yaml
+        curl -s https://raw.githubusercontent.com/godon-dev/godon/refs/heads/master/examples/network.yml -o update-config.yaml
+
+        # Modify the config slightly to verify CLI reads it
+        sed -i 's/parallel: 1/parallel: 2/' update-config.yaml
 
         echo "Update config file contents:"
         cat update-config.yaml
