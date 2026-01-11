@@ -113,12 +113,13 @@ proc handleBreederDelete*(request: Request, breederId: string): (HttpCode, strin
     
     let cfg = loadConfig()
     var client = newWindmillClient(cfg)
-    
+
     client.deleteBreeder(breederId)
     let response = %*{
-      "message": "Purged Breeder " & breederId
+      "id": breederId,
+      "deleted": true
     }
-    
+
     info("Successfully deleted breeder: " & breederId)
     result = (Http200, $response)
   except ValueError as e:
@@ -286,7 +287,8 @@ proc handleCredentialDelete*(request: Request, credentialId: string): (HttpCode,
     client.deleteCredentialResponse(credentialId)
 
     let response = %*{
-      "message": "Purged Credential " & credentialId
+      "id": credentialId,
+      "deleted": true
     }
 
     info("Successfully deleted credential: " & credentialId)
