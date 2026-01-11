@@ -209,12 +209,24 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SuccessMessage'
+                type: object
+                required:
+                  - id
+                  - deleted
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                    description: The ID of the deleted breeder
+                  deleted:
+                    type: boolean
+                    description: Confirmation that the breeder was deleted
               examples:
                 deleted:
                   summary: Deletion confirmation
                   value:
-                    message: "Breeder 550e8400-e29b-41d4-a716-446655440000 successfully deleted"
+                    id: "550e8400-e29b-41d4-a716-446655440000"
+                    deleted: true
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -343,12 +355,24 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SuccessMessage'
+                type: object
+                required:
+                  - id
+                  - deleted
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                    description: The ID of the deleted credential
+                  deleted:
+                    type: boolean
+                    description: Confirmation that the credential was deleted
               examples:
                 deleted:
                   summary: Deletion confirmation
                   value:
-                    message: "Credential 550e8400-e29b-41d4-a716-446655440001 successfully deleted"
+                    id: "550e8400-e29b-41d4-a716-446655440001"
+                    deleted: true
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
