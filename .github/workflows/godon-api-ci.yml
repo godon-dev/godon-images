@@ -164,17 +164,7 @@ jobs:
           ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
           --hostname=godon-api-test --port=9090 --insecure breeder list
 
-        # Verify list can be parsed as JSON array
-        echo "Verifying breeder list structure:"
-        LIST_OUTPUT=$(docker run --rm --network godon-api-test_default \
-          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
-          --hostname=godon-api-test --port=9090 --insecure breeder list 2>/dev/null)
-        if echo "$LIST_OUTPUT" | jq -e 'if type == "array" then true else false end' > /dev/null 2>&1; then
-          echo "✅ Breeder list returns proper JSON array"
-        else
-          echo "⚠️  Breeder list format unclear (might be wrapped)"
-          echo "Output was: $LIST_OUTPUT"
-        fi
+        # Create a test breeder
 
         # Create a test breeder
         echo "Creating test breeder..."
