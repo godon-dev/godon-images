@@ -21,7 +21,7 @@ def main(request_data=None):
 
     return {
         "result": "SUCCESS",
-        "credential": {
+        "data": {
             "id": "550e8400-e29b-41d4-a716-446655440011",
             "name": name,
             "credentialType": credential_type,

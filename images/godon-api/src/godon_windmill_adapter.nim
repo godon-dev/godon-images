@@ -16,14 +16,20 @@ export windmill_client.createVariable, windmill_client.getVariable, windmill_cli
 # Godon-specific methods that use the shared client
 proc getBreeders*(client: WindmillApiClient): seq[BreederSummary] =
   let response = client.runJob("breeders_get")
-  if response.kind == JArray:
-    result = parseBreederSummariesFromJson(response)
-  elif response.hasKey("breeders"):
-    result = parseBreederSummariesFromJson(response["breeders"])
+
+  # Check for error
+  if response.hasKey("result") and response["result"].getStr() == "FAILURE":
+    raise newException(ValueError, "Failed to list breeders: " & response.getOrDefault("error").getStr("Unknown error"))
+
+  # Unwrap data field
+  let data = if response.hasKey("data"): response["data"] else: response
+
+  if data.kind == JArray:
+    result = parseBreederSummariesFromJson(data)
   else:
     result = @[]
 
-proc createBreederResponse*(client: WindmillApiClient, breederConfig: JsonNode): JsonNode =
+proc createBreederResponse*(client: WindmillApiClient, breederConfig: JsonNode): BreederSummary =
   let args = %* {"request_data": breederConfig}
   let response = client.runJob("breeder_create", args)
 
@@ -31,7 +37,9 @@ proc createBreederResponse*(client: WindmillApiClient, breederConfig: JsonNode):
   if response.hasKey("result") and response["result"].getStr() == "FAILURE":
     raise newException(ValueError, "Failed to create breeder: " & response.getOrDefault("error").getStr("Unknown error"))
 
-  result = response
+  # Unwrap data field
+  let data = if response.hasKey("data"): response["data"] else: response
+  result = parseBreederSummaryFromJson(data)
 
 proc getBreeder*(client: WindmillApiClient, breederId: string): Breeder =
   let args = %* {"request_data": {"breeder_id": breederId}}
@@ -41,7 +49,9 @@ proc getBreeder*(client: WindmillApiClient, breederId: string): Breeder =
   if response.hasKey("result") and response["result"].getStr() == "FAILURE":
     raise newException(ValueError, "Failed to get breeder: " & response.getOrDefault("error").getStr("Unknown error"))
 
-  result = parseBreederFromJson(response)
+  # Unwrap data field
+  let data = if response.hasKey("data"): response["data"] else: response
+  result = parseBreederFromJson(data)
 
   # Validate required fields were populated
   if result.id.len == 0:
@@ -49,20 +59,30 @@ proc getBreeder*(client: WindmillApiClient, breederId: string): Breeder =
 
 proc deleteBreeder*(client: WindmillApiClient, breederId: string) =
   let args = %* {"request_data": {"breeder_id": breederId}}
-  discard client.runJob("breeder_delete", args)
+  let response = client.runJob("breeder_delete", args)
+
+  # Check for error
+  if response.hasKey("result") and response["result"].getStr() == "FAILURE":
+    raise newException(ValueError, "Failed to delete breeder: " & response.getOrDefault("error").getStr("Unknown error"))
 
 # Credential management methods
 
 proc getCredentials*(client: WindmillApiClient): seq[Credential] =
   let response = client.runJob("credentials_get")
-  if response.kind == JArray:
-    result = parseCredentialsFromJson(response)
-  elif response.hasKey("credentials"):
-    result = parseCredentialsFromJson(response["credentials"])
+
+  # Check for error
+  if response.hasKey("result") and response["result"].getStr() == "FAILURE":
+    raise newException(ValueError, "Failed to list credentials: " & response.getOrDefault("error").getStr("Unknown error"))
+
+  # Unwrap data field
+  let data = if response.hasKey("data"): response["data"] else: response
+
+  if data.kind == JArray:
+    result = parseCredentialsFromJson(data)
   else:
     result = @[]
 
-proc createCredentialResponse*(client: WindmillApiClient, credentialData: JsonNode): JsonNode =
+proc createCredentialResponse*(client: WindmillApiClient, credentialData: JsonNode): Credential =
   let args = %* {"request_data": credentialData}
   let response = client.runJob("credential_create", args)
 
@@ -70,7 +90,9 @@ proc createCredentialResponse*(client: WindmillApiClient, credentialData: JsonNo
   if response.hasKey("result") and response["result"].getStr() == "FAILURE":
     raise newException(ValueError, "Failed to create credential: " & response.getOrDefault("error").getStr("Unknown error"))
 
-  result = response
+  # Unwrap data field
+  let data = if response.hasKey("data"): response["data"] else: response
+  result = parseCredentialFromJson(data)
 
 proc getCredential*(client: WindmillApiClient, credentialId: string): Credential =
   let args = %* {"request_data": {"credentialId": credentialId}}
@@ -80,18 +102,21 @@ proc getCredential*(client: WindmillApiClient, credentialId: string): Credential
   if response.hasKey("result") and response["result"].getStr() == "FAILURE":
     raise newException(ValueError, "Failed to get credential: " & response.getOrDefault("error").getStr("Unknown error"))
 
-  if response.hasKey("credential"):
-    result = parseCredentialFromJson(response["credential"])
-  else:
-    result = parseCredentialFromJson(response)
+  # Unwrap data field
+  let data = if response.hasKey("data"): response["data"] else: response
+  result = parseCredentialFromJson(data)
 
   # Validate required fields were populated
   if result.id.len == 0:
     raise newException(ValueError, "Invalid credential response: missing id field")
 
-proc deleteCredentialResponse*(client: WindmillApiClient, credentialId: string): JsonNode =
+proc deleteCredentialResponse*(client: WindmillApiClient, credentialId: string) =
   let args = %* {"request_data": {"credentialId": credentialId}}
-  result = client.runJob("credential_delete", args)
+  let response = client.runJob("credential_delete", args)
+
+  # Check for error
+  if response.hasKey("result") and response["result"].getStr() == "FAILURE":
+    raise newException(ValueError, "Failed to delete credential: " & response.getOrDefault("error").getStr("Unknown error"))
 
 # Create adapter to bridge godon-api Config to shared WindmillConfig
 proc newWindmillClient*(godonCfg: Config): WindmillApiClient =

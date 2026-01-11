@@ -16,8 +16,11 @@ def main(request_data=None):
         return {"result": "FAILURE", "error": "Missing required field: config"}
 
     return {
-        "id": "test-breeder-2",
-        "name": name,
-        "status": "active",
-        "createdAt": "2024-01-01T00:00:00Z"
+        "result": "SUCCESS",
+        "data": {
+            "id": "test-breeder-2",
+            "name": name,
+            "status": "active",
+            "createdAt": "2024-01-01T00:00:00Z"
+        }
     }

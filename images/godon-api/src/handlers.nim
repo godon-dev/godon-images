@@ -1,6 +1,7 @@
 import std/[json, strformat, strutils, re, logging]
 import jester
 import godon_windmill_adapter, types, config
+import jsony
 
 # Configure logging
 addHandler(newConsoleLogger())
@@ -24,12 +25,11 @@ proc handleBreedersGet*(request: Request): (HttpCode, string) =
     
     let cfg = loadConfig()
     var client = newWindmillClient(cfg)
-    
+
     let breeders = client.getBreeders()
-    let response = %*breeders
-    
+
     info("Successfully retrieved " & $breeders.len & " breeders")
-    result = (Http200, $response)
+    result = (Http200, jsony.toJson(breeders))
   except ValueError as e:
     error("Validation error in GET /breeders: " & e.msg)
     let errorResponse = createErrorResponse("Invalid request parameters", "BAD_REQUEST", %*{"error": e.msg})
@@ -59,11 +59,11 @@ proc handleBreedersPost*(request: Request): (HttpCode, string) =
     
     let cfg = loadConfig()
     var client = newWindmillClient(cfg)
-    
+
     let response = client.createBreederResponse(breederConfig)
-    
+
     info("Successfully created breeder")
-    result = (Http201, $response)
+    result = (Http201, jsony.toJson(response))
   except CatchableError:  # Jester uses CatchableError for JSON parsing
     error("Invalid JSON in POST /breeders: " & getCurrentExceptionMsg())
     let errorResponse = createErrorResponse("Invalid JSON in request body", "BAD_REQUEST")
@@ -86,12 +86,11 @@ proc handleBreederGet*(request: Request, breederId: string): (HttpCode, string) 
     
     let cfg = loadConfig()
     var client = newWindmillClient(cfg)
-    
+
     let breeder = client.getBreeder(breederId)
-    let response = %*breeder
-    
+
     info("Successfully retrieved breeder: " & breederId)
-    result = (Http200, $response)
+    result = (Http200, jsony.toJson(breeder))
   except ValueError as e:
     error("Validation error in GET /breeders/" & breederId & ": " & e.msg)
     let errorResponse = createErrorResponse("Invalid request parameters", "BAD_REQUEST", %*{"error": e.msg})
@@ -114,12 +113,13 @@ proc handleBreederDelete*(request: Request, breederId: string): (HttpCode, strin
     
     let cfg = loadConfig()
     var client = newWindmillClient(cfg)
-    
+
     client.deleteBreeder(breederId)
     let response = %*{
-      "message": "Purged Breeder " & breederId
+      "id": breederId,
+      "deleted": true
     }
-    
+
     info("Successfully deleted breeder: " & breederId)
     result = (Http200, $response)
   except ValueError as e:
@@ -145,12 +145,11 @@ proc handleCredentialsGet*(request: Request): (HttpCode, string) =
     
     let cfg = loadConfig()
     var client = newWindmillClient(cfg)
-    
+
     let credentials = client.getCredentials()
-    let response = %*credentials
-    
+
     info("Successfully retrieved " & $credentials.len & " credentials")
-    result = (Http200, $response)
+    result = (Http200, jsony.toJson(credentials))
   except Exception as e:
     error("Internal error in GET /credentials: " & e.msg)
     let errorResponse = createErrorResponse("Failed to retrieve credentials", "INTERNAL_SERVER_ERROR", %*{"error": e.msg})
@@ -202,9 +201,9 @@ proc handleCredentialsPost*(request: Request): (HttpCode, string) =
     }
     
     let response = client.createCredentialResponse(catalogData)
-    
+
     info("Successfully created credential")
-    result = (Http201, $response)
+    result = (Http201, jsony.toJson(response))
   except CatchableError:
     error("Invalid JSON in POST /credentials: " & getCurrentExceptionMsg())
     let errorResponse = createErrorResponse("Invalid JSON in request body", "BAD_REQUEST")
@@ -246,11 +245,9 @@ proc handleCredentialGet*(request: Request, credentialId: string): (HttpCode, st
       "lastUsedAt": credential.lastUsedAt,
       "content": credentialContent
     }
-    
-    let response = credentialWithContent
-    
+
     info("Successfully retrieved credential: " & credentialId)
-    result = (Http200, $response)
+    result = (Http200, $credentialWithContent)
   except ValueError as e:
     error("Validation error in GET /credentials/" & credentialId & ": " & e.msg)
     let errorResponse = createErrorResponse("Invalid request parameters", "BAD_REQUEST", %*{"error": e.msg})
@@ -287,8 +284,13 @@ proc handleCredentialDelete*(request: Request, credentialId: string): (HttpCode,
       # Continue anyway to clean up catalog
     
     # Step 3: Delete from catalog via controller script
-    let response = client.deleteCredentialResponse(credentialId)
-    
+    client.deleteCredentialResponse(credentialId)
+
+    let response = %*{
+      "id": credentialId,
+      "deleted": true
+    }
+
     info("Successfully deleted credential: " & credentialId)
     result = (Http200, $response)
   except ValueError as e:
