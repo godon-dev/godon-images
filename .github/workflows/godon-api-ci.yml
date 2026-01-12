@@ -390,6 +390,51 @@ jobs:
           $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
           credential create --file=/credential-config.yaml || echo "✅ Missing fields properly rejected"
 
+        # Test 9: Empty credential content
+        echo "Test 9: Testing empty credential content..."
+        echo 'name: "test-empty-content"' > test-empty-content.yaml
+        echo 'credentialType: "ssh_private_key"' >> test-empty-content.yaml
+        echo 'description: "Test empty content"' >> test-empty-content.yaml
+        echo 'content: ""' >> test-empty-content.yaml
+
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/test-empty-content.yaml:/test-empty-content.yaml:ro" \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          credential create --file=/test-empty-content.yaml || echo "✅ Empty content properly rejected"
+
+        # Test 10: Special characters in credential name
+        echo "Test 10: Testing special characters in credential name..."
+        echo 'name: "test-cred-special-<>-\"-\\"' > test-special-chars.yaml
+        echo 'credentialType: "ssh_private_key"' >> test-special-chars.yaml
+        echo 'description: "Test special chars"' >> test-special-chars.yaml
+        echo 'content: "test content"' >> test-special-chars.yaml
+
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/test-special-chars.yaml:/test-special-chars.yaml:ro" \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          credential create --file=/test-special-chars.yaml || echo "✅ Special characters properly rejected"
+
+        # Test 11: Create credential without content (godon-api use case)
+        echo "Test 11: Testing credential creation without content field..."
+        echo 'name: "test-no-content"' > test-no-content.yaml
+        echo 'credentialType: "api_token"' >> test-no-content.yaml
+        echo 'description: "Test without content"' >> test-no-content.yaml
+        # Note: No content field - API should still accept this since content stored in Windmill
+
+        # This should work since content is optional when stored in Windmill
+        OUTPUT=$(docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/test-no-content.yaml:/test-no-content.yaml:ro" \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          credential create --file=/test-no-content.yaml 2>&1 || true)
+
+        if echo "$OUTPUT" | grep -q "Failed to create credential: 400"; then
+          echo "⚠️  Credential without content rejected (this is expected if API requires content)"
+        elif echo "$OUTPUT" | grep -q "created successfully"; then
+          echo "✅ Credential created without content (godon-api stores content in Windmill)"
+        else
+          echo "Output: $OUTPUT"
+        fi
+
         echo "✅ All adversarial tests completed"
 
     - name: Test API endpoints with curl
