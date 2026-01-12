@@ -181,7 +181,14 @@ proc handleCredentialsPost*(request: Request): (HttpCode, string) =
     let content = credentialData["content"].getStr()
     let credentialType = credentialData["credentialType"].getStr()
     let windmillVariablePath = "f/vars/" & name
-    
+
+    # Validate that content is not empty
+    if content.strip() == "":
+      error("Invalid content: content cannot be empty")
+      let errorResponse = createErrorResponse("Invalid content: content cannot be empty", "BAD_REQUEST")
+      result = (Http400, $errorResponse)
+      return
+
     try:
       client.createVariable(windmillVariablePath, content, isSecret=true)
       info("Created Windmill variable: " & windmillVariablePath)
