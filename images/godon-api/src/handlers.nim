@@ -182,6 +182,21 @@ proc handleCredentialsPost*(request: Request): (HttpCode, string) =
     let credentialType = credentialData["credentialType"].getStr()
     let windmillVariablePath = "f/vars/" & name
 
+    # Validate name format (must be alphanumeric/hyphen/underscore only)
+    if not name.match(re"^([a-zA-Z0-9_-]{1,})$"):
+      error("Invalid name format: " & name)
+      let errorResponse = createErrorResponse("Invalid name format: '" & name & "'. Use only alphanumeric characters, hyphens, and underscores", "BAD_REQUEST")
+      result = (Http400, $errorResponse)
+      return
+
+    # Validate credential type
+    let validTypes = @["ssh_private_key", "api_token", "database_connection", "http_basic_auth"]
+    if credentialType notin validTypes:
+      error("Invalid credential type: " & credentialType)
+      let errorResponse = createErrorResponse("Invalid credentialType: '" & credentialType & "'. Must be one of: " & $validTypes, "BAD_REQUEST")
+      result = (Http400, $errorResponse)
+      return
+
     # Validate that content is not empty
     if content.strip() == "":
       error("Invalid content: content cannot be empty")
