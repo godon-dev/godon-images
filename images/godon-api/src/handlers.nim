@@ -194,8 +194,14 @@ proc handleCredentialsPost*(request: Request): (HttpCode, string) =
       info("Created Windmill variable: " & windmillVariablePath)
     except Exception as e:
       error("Failed to create Windmill variable: " & e.msg)
-      let errorResponse = createErrorResponse("Failed to create Windmill variable", "INTERNAL_SERVER_ERROR", %*{"error": e.msg})
-      result = (Http500, $errorResponse)
+      # Check if it's a duplicate variable error (400 Bad Request from Windmill)
+      let errorMsg = e.msg.toLowerAscii()
+      if "already exists" in errorMsg or "400" in errorMsg:
+        let errorResponse = createErrorResponse("Credential with name '" & name & "' already exists", "BAD_REQUEST")
+        result = (Http400, $errorResponse)
+      else:
+        let errorResponse = createErrorResponse("Failed to create Windmill variable", "INTERNAL_SERVER_ERROR", %*{"error": e.msg})
+        result = (Http500, $errorResponse)
       return
     
     # Step 2: Create catalog entry via controller script
