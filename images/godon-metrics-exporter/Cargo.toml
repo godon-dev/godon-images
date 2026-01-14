@@ -1,0 +1,21 @@
+[package]
+name = "godon-metrics-exporter"
+version = "0.0.1"
+authors = ["godon-dev Matthias Tafelmeier"]
+edition = "2024"
+description = "Godon Metrics Exporter - Prometheus exporter for Godon metrics"
+license = "AGPL-3.0"
+
+[dependencies]
+# Prometheus client library
+prometheus = "0.13"
+# HTTP server
+hyper = { version = "0.14", features = ["full"] }
+tokio = { version = "1.0", features = ["full"] }
+# HTTP client for Push Gateway
+reqwest = { version = "0.11", features = ["blocking"] }
+# Logging
+log = "0.4"
+env_logger = "0.10"
+# Command line parsing
+clap = { version = "4.0", features = ["derive"] }
