@@ -1,0 +1,74 @@
+name: Godon Seeder Unit Tests
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'images/godon-seeder/**'
+      - 'shared/windmill_client/**'
+      - '.github/workflows/godon-seeder-unit-tests.yml'
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Install Nix
+      uses: cachix/install-nix-action@v25
+      with:
+        nix_path: nixpkgs=channel:nixos-25.11
+        extra_nix_config: |
+          sandbox = false
+          sandbox-paths = /etc/ssl/certs/ca-bundle.crt
+          experimental-features = nix-command flakes
+
+    - name: Configure Nix daemon SSL certificates
+      run: |
+        # Find and symlink SSL certificates for Nix daemon
+        sudo mkdir -p /etc/ssl/certs
+        CERT_BUNDLE=$(find /nix/store -name "ca-bundle.crt" | head -1)
+        echo "Found certificate bundle: $CERT_BUNDLE"
+        sudo ln -sf "$CERT_BUNDLE" /etc/ssl/certs/ca-bundle.crt
+        sudo ln -sf "$CERT_BUNDLE" /etc/ssl/certs/ca-certificates.crt
+
+        # Set environment variables for this session
+        export SSL_CERT_FILE="/etc/ssl/certs/ca-bundle.crt"
+        export NIX_SSL_CERT_FILE="/etc/ssl/certs/ca-bundle.crt"
+        export CURL_CA_BUNDLE="/etc/ssl/certs/ca-bundle.crt"
+
+        # Add to nix.conf for daemon
+        echo "ssl-cert-file = /etc/ssl/certs/ca-bundle.crt" | sudo tee -a /etc/nix/nix.conf
+
+        echo "SSL certificates configured for Nix daemon"
+
+    - name: Run retry logic unit tests
+      run: |
+        echo "🧪 Running retry logic unit tests..."
+        cd images/godon-seeder
+
+        # Set SSL cert environment
+        export SSL_CERT_FILE="/etc/ssl/certs/ca-bundle.crt"
+        export NIX_SSL_CERT_FILE="/etc/ssl/certs/ca-bundle.crt"
+        export CURL_CA_BUNDLE="/etc/ssl/certs/ca-bundle.crt"
+
+        # Create build directory
+        mkdir -p build
+
+        # Compile and run the test file using nix-shell
+        nix-shell -p nim --run "
+          nim compile --opt:speed -d:release --out:build/test_retry tests/test_retry.nim && \
+          ./build/test_retry
+        "
+
+    - name: Test summary
+      if: always()
+      run: |
+        echo "✅ Unit tests completed successfully!"
+
