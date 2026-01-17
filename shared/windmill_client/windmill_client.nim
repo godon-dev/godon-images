@@ -236,6 +236,38 @@ proc createFolder*(client: WindmillApiClient, workspace: string, folderPath: str
     error("Error creating folder: " & e.msg)
     raise
 
+proc existsScript*(client: WindmillApiClient, workspace: string, scriptPath: string): bool =
+  ## Check if a script exists in Windmill
+  let url = &"{client.config.windmillBaseUrl}/w/{workspace}/scripts/exists/p/{scriptPath}"
+
+  try:
+    let response = client.http.get(url)
+    if response.code == Http200:
+      let exists = parseJson(response.body).getBool()
+      return exists
+    else:
+      error("Failed to check script existence: " & response.status)
+      return false
+  except CatchableError as e:
+    error("Error checking script existence: " & e.msg)
+    return false
+
+proc existsFlow*(client: WindmillApiClient, workspace: string, flowPath: string): bool =
+  ## Check if a flow exists in Windmill (flows have separate endpoint)
+  let url = &"{client.config.windmillBaseUrl}/w/{workspace}/flows/exists/{flowPath}"
+
+  try:
+    let response = client.http.get(url)
+    if response.code == Http200:
+      let exists = parseJson(response.body).getBool()
+      return exists
+    else:
+      error("Failed to check flow existence: " & response.status)
+      return false
+  except CatchableError as e:
+    error("Error checking flow existence: " & e.msg)
+    return false
+
 proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: JsonNode = nil) =
   ## Deploy a script to Windmill using the API
   info("Deploying script: " & scriptPath)
