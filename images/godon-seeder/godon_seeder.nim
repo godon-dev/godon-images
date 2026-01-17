@@ -247,6 +247,13 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
 
 proc deployFlowWithRetry*(client: WindmillApiClient, workspace: string, flowPath: string, flowYaml: string, settings: FlowSettings, maxRetries: int, retryDelay: int) =
   ## Deploy a flow with retry logic and linear backoff
+  ## Skips deployment if flow already exists (idempotent)
+
+  # Check if flow already exists
+  if client.existsFlow(workspace, flowPath):
+    info("Flow already exists, skipping deployment: " & flowPath)
+    return
+
   var lastException: ref Exception = nil
 
   for attempt in 0..maxRetries:
@@ -272,6 +279,13 @@ proc deployFlowWithRetry*(client: WindmillApiClient, workspace: string, flowPath
 
 proc deployScriptWithRetry*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: ScriptSettings, maxRetries: int, retryDelay: int) =
   ## Deploy a script with retry logic and linear backoff
+  ## Skips deployment if script already exists (idempotent)
+
+  # Check if script already exists
+  if client.existsScript(workspace, scriptPath):
+    info("Script already exists, skipping deployment: " & scriptPath)
+    return
+
   var lastException: ref Exception = nil
 
   for attempt in 0..maxRetries:
