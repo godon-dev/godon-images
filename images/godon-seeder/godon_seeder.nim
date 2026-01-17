@@ -261,10 +261,13 @@ proc createNestedFolders*(client: WindmillApiClient, workspace: string, folderPa
     # If folder creation fails, log but continue - it might already exist
     debug("Folder creation attempt for " & topLevelFolder & " failed: " & e.msg)
 
-proc deployComponentScripts*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string) =
+proc deployComponentScripts*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string): int =
   ## Deploy all scripts for a component
+  ## Returns number of failed deployments
   info("Deploying scripts for component: " & component.name)
-  
+
+  var failures = 0
+
   # Create nested folders if component target is specified
   if component.target.len > 0:
     createNestedFolders(client, workspace, component.target)
@@ -309,10 +312,16 @@ proc deployComponentScripts*(client: WindmillApiClient, workspace: string, compo
         deployScript(client, workspace, windmillPath, content, scriptSpec.settings)
       except CatchableError as e:
         logging.error("Failed to deploy script " & scriptFile & ": " & e.msg)
+        inc(failures)
 
-proc deployComponentFlows*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string) =
+  return failures
+
+proc deployComponentFlows*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string): int =
   ## Deploy all flows for a component
+  ## Returns number of failed deployments
   info("Deploying flows for component: " & component.name)
+
+  var failures = 0
 
   # Create nested folders if component target is specified
   if component.target.len > 0:
@@ -359,10 +368,16 @@ proc deployComponentFlows*(client: WindmillApiClient, workspace: string, compone
         deployFlow(client, workspace, windmillPath, flowYaml, flowSpec.settings)
       except CatchableError as e:
         logging.error("Failed to deploy flow " & flowFile & ": " & e.msg)
+        inc(failures)
 
-proc seedWorkspace*(config: SeederConfig) =
+  return failures
+
+proc seedWorkspace*(config: SeederConfig): int =
   ## Main seeding function - discover and deploy all components
+  ## Returns number of failed deployments
   info("Starting component deployment")
+
+  var totalFailures = 0
 
   # Create Windmill client
   let windmillConfig = WindmillConfig(
@@ -410,13 +425,20 @@ proc seedWorkspace*(config: SeederConfig) =
 
     # Deploy scripts
     if component.scripts.len > 0:
-      deployComponentScripts(client, targetWorkspace, component, componentDir)
+      let scriptFailures = deployComponentScripts(client, targetWorkspace, component, componentDir)
+      totalFailures += scriptFailures
 
     # Deploy flows
     if component.flows.isSome and component.flows.get().len > 0:
-      deployComponentFlows(client, targetWorkspace, component, componentDir)
+      let flowFailures = deployComponentFlows(client, targetWorkspace, component, componentDir)
+      totalFailures += flowFailures
 
-  info("✅ Component deployment completed successfully")
+  if totalFailures > 0:
+    logging.error("Component deployment completed with " & $totalFailures & " failures")
+  else:
+    info("✅ Component deployment completed successfully")
+
+  return totalFailures
 
 proc printHelp* =
   echo """
@@ -522,7 +544,9 @@ proc main* =
 
   # Perform the seeding
   try:
-    config.seedWorkspace()
+    let failureCount = config.seedWorkspace()
+    if failureCount > 0:
+      quit(1)  # Exit with error code if any deployments failed
   except CatchableError as e:
     logging.error("Seeding failed: " & e.msg)
     quit(1)
