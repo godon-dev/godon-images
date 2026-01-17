@@ -245,6 +245,56 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
   client.deployScript(workspace, scriptPath, content, scriptSettings)
   info("✅ Successfully deployed script: " & scriptPath)
 
+proc deployFlowWithRetry*(client: WindmillApiClient, workspace: string, flowPath: string, flowYaml: string, settings: FlowSettings, maxRetries: int, retryDelay: int) =
+  ## Deploy a flow with retry logic and linear backoff
+  var lastException: ref Exception = nil
+
+  for attempt in 0..maxRetries:
+    try:
+      deployFlow(client, workspace, flowPath, flowYaml, settings)
+      return  # Success, exit retry loop
+    except CatchableError as e:
+      lastException = e
+      if attempt == maxRetries:
+        # Final attempt failed, give up
+        logging.error("Failed to deploy flow " & flowPath & " after " & $(attempt + 1) & " attempts: " & e.msg)
+        raise
+
+      # Fixed delay before retry
+      let backoffDelay = retryDelay
+      warn("Attempt " & $(attempt + 1) & " failed for flow " & flowPath & ": " & e.msg)
+      info("Retrying in " & $backoffDelay & " seconds...")
+      sleep(backoffDelay * 1000)
+
+  # Shouldn't reach here, but just in case
+  if lastException != nil:
+    raise lastException
+
+proc deployScriptWithRetry*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: ScriptSettings, maxRetries: int, retryDelay: int) =
+  ## Deploy a script with retry logic and linear backoff
+  var lastException: ref Exception = nil
+
+  for attempt in 0..maxRetries:
+    try:
+      deployScript(client, workspace, scriptPath, content, settings)
+      return  # Success, exit retry loop
+    except CatchableError as e:
+      lastException = e
+      if attempt == maxRetries:
+        # Final attempt failed, give up
+        logging.error("Failed to deploy script " & scriptPath & " after " & $(attempt + 1) & " attempts: " & e.msg)
+        raise
+
+      # Fixed delay before retry
+      let backoffDelay = retryDelay
+      warn("Attempt " & $(attempt + 1) & " failed for script " & scriptPath & ": " & e.msg)
+      info("Retrying in " & $backoffDelay & " seconds...")
+      sleep(backoffDelay * 1000)
+
+  # Shouldn't reach here, but just in case
+  if lastException != nil:
+    raise lastException
+
 proc createNestedFolders*(client: WindmillApiClient, workspace: string, folderPath: string) =
   ## Create only the top-level folder (Windmill doesn't support nested folders)
   ## Windmill uses virtual folder structure - only top-level folders need to be created
@@ -261,7 +311,7 @@ proc createNestedFolders*(client: WindmillApiClient, workspace: string, folderPa
     # If folder creation fails, log but continue - it might already exist
     debug("Folder creation attempt for " & topLevelFolder & " failed: " & e.msg)
 
-proc deployComponentScripts*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string): int =
+proc deployComponentScripts*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string, maxRetries: int, retryDelay: int): int =
   ## Deploy all scripts for a component
   ## Returns number of failed deployments
   info("Deploying scripts for component: " & component.name)
@@ -309,14 +359,14 @@ proc deployComponentScripts*(client: WindmillApiClient, workspace: string, compo
 
       try:
         let content = readScriptContent(scriptFile)
-        deployScript(client, workspace, windmillPath, content, scriptSpec.settings)
+        deployScriptWithRetry(client, workspace, windmillPath, content, scriptSpec.settings, maxRetries, retryDelay)
       except CatchableError as e:
-        logging.error("Failed to deploy script " & scriptFile & ": " & e.msg)
+        logging.error("Failed to deploy script " & scriptFile & " after retries: " & e.msg)
         inc(failures)
 
   return failures
 
-proc deployComponentFlows*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string): int =
+proc deployComponentFlows*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string, maxRetries: int, retryDelay: int): int =
   ## Deploy all flows for a component
   ## Returns number of failed deployments
   info("Deploying flows for component: " & component.name)
@@ -365,9 +415,9 @@ proc deployComponentFlows*(client: WindmillApiClient, workspace: string, compone
 
       try:
         let flowYaml = readFlowContent(flowFile)
-        deployFlow(client, workspace, windmillPath, flowYaml, flowSpec.settings)
+        deployFlowWithRetry(client, workspace, windmillPath, flowYaml, flowSpec.settings, maxRetries, retryDelay)
       except CatchableError as e:
-        logging.error("Failed to deploy flow " & flowFile & ": " & e.msg)
+        logging.error("Failed to deploy flow " & flowFile & " after retries: " & e.msg)
         inc(failures)
 
   return failures
@@ -425,12 +475,12 @@ proc seedWorkspace*(config: SeederConfig): int =
 
     # Deploy scripts
     if component.scripts.len > 0:
-      let scriptFailures = deployComponentScripts(client, targetWorkspace, component, componentDir)
+      let scriptFailures = deployComponentScripts(client, targetWorkspace, component, componentDir, config.maxRetries, config.retryDelay)
       totalFailures += scriptFailures
 
     # Deploy flows
     if component.flows.isSome and component.flows.get().len > 0:
-      let flowFailures = deployComponentFlows(client, targetWorkspace, component, componentDir)
+      let flowFailures = deployComponentFlows(client, targetWorkspace, component, componentDir, config.maxRetries, config.retryDelay)
       totalFailures += flowFailures
 
   if totalFailures > 0:
