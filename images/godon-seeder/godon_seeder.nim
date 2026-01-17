@@ -1,4 +1,5 @@
 import std/[parseopt, strutils, os, logging, json, times, tables, sequtils, sets, options, streams]
+import std/jsonutils
 import yaml
 import yaml/tojson
 import windmill_client.config
@@ -32,12 +33,12 @@ type
     path*: Option[string]    # Optional: for subdirectory specification
     settings*: FlowSettings
 
-  ComponentConfig* = object
+  ComponentConfig* {.sparse.} = object
     name*: string
     target*: string
-    workspace*: Option[string]
+    workspace*: string
     scripts*: seq[ScriptSpec]
-    flows*: Option[seq[FlowSpec]]   # Optional: defaults to empty seq if not specified
+    flows*: Option[seq[FlowSpec]]
 
   ComponentInfo* = object
     config*: ComponentConfig
@@ -82,11 +83,17 @@ proc parseComponentConfig(yamlPath: string): ComponentConfig =
 
   let yamlContent = readFile(yamlPath)
 
-  # Use YAML library to parse into ComponentConfig using streams
+  # Parse YAML to JSON first, then convert to ComponentConfig
   try:
-    var s = newStringStream(yamlContent)
-    load(s, result)
-    s.close()
+    let yamlData = loadToJson(yamlContent)
+    if yamlData.len == 0:
+      raise newException(IOError, "Empty YAML file")
+
+    let json = yamlData[0]
+
+    # Use to() which respects sparse objects - allows extra fields in YAML
+    result = to(json, ComponentConfig)
+
     info("Parsed component '" & result.name & "' with " & $result.scripts.len & " scripts")
   except CatchableError as e:
     logging.error("Failed to parse YAML: " & e.msg)
@@ -94,7 +101,7 @@ proc parseComponentConfig(yamlPath: string): ComponentConfig =
     result = ComponentConfig(
       name: yamlPath.splitPath().head,
       target: "",
-      workspace: none(string),
+      workspace: "",
       scripts: @[]
     )
 
@@ -391,8 +398,7 @@ proc deployComponentFlows*(client: WindmillApiClient, workspace: string, compone
   if component.target.len > 0:
     createNestedFolders(client, workspace, component.target)
 
-  let flows = component.flows.get()
-  for flowSpec in flows:
+  for flowSpec in component.flows.get(@[]):
     var flowFiles: seq[string]
 
     if flowSpec.pattern.len > 0:
@@ -474,8 +480,8 @@ proc seedWorkspace*(config: SeederConfig): int =
     let componentDir = componentInfo.directory
 
     # Use component-specific workspace or default to global workspace
-    let targetWorkspace = if component.workspace.isSome:
-                            component.workspace.get()
+    let targetWorkspace = if component.workspace.len > 0:
+                            component.workspace
                           else:
                             config.windmillWorkspace
 
