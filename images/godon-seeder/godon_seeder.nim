@@ -9,10 +9,13 @@ setLogFilter(lvlInfo)
 
 type
   # Component configuration types
-  ScriptSettings* = object
+  ScriptSettings* {.sparse.} = object
     summary*: string
     description*: string
     timeout*: Option[int]
+    tag*: Option[string]
+    # Any other Windmill script settings can be added in component.yaml
+    # and will be passed through to Windmill API
 
   FlowSettings* {.sparse.} = object
     summary*: string
@@ -55,11 +58,13 @@ type
 
 proc parseScriptSettings(settingsJson: JsonNode): ScriptSettings =
   ## Parse script settings from JSON node
-  result = ScriptSettings(
-    summary: settingsJson.getOrDefault("summary").getStr(""),
-    description: settingsJson.getOrDefault("description").getStr(""),
-    timeout: if settingsJson.hasKey("timeout"): some(settingsJson["timeout"].getInt()) else: none(int)
-  )
+  ## With sparse objects, YAML parser automatically includes all fields
+  ## We just validate required string fields have defaults
+  result = to(settingsJson, ScriptSettings)
+  if result.summary.len == 0:
+    result.summary = ""
+  if result.description.len == 0:
+    result.description = ""
 
 proc parseScriptSpec(specJson: JsonNode): ScriptSpec =
   ## Parse script specification from JSON node
@@ -229,14 +234,13 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
   ## Deploy a single script to Windmill
   info("Deploying script: " & scriptPath)
 
-  # Build script settings JSON
-  var scriptSettings = newJObject()
-  if settings.summary.len > 0:
-    scriptSettings["summary"] = %* settings.summary
-  if settings.description.len > 0:
-    scriptSettings["description"] = %* settings.description
-  if settings.timeout.isSome:
-    scriptSettings["timeout"] = %* settings.timeout.get()
+  # Convert ScriptSettings object to JSON to pass through all fields
+  var scriptSettings = %(settings)
+  # Ensure required fields are present (Windmill 1.601.1+ requires these)
+  if scriptSettings.hasKey("summary") and scriptSettings["summary"].kind == JNull:
+    scriptSettings["summary"] = %* ""
+  if scriptSettings.hasKey("description") and scriptSettings["description"].kind == JNull:
+    scriptSettings["description"] = %* ""
 
   client.deployScript(workspace, scriptPath, content, scriptSettings)
   info("✅ Successfully deployed script: " & scriptPath)
