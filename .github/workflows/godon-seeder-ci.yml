@@ -104,7 +104,7 @@ jobs:
           -e WINDMILL_WORKSPACE=seeder-test \
           -e WINDMILL_EMAIL=admin@windmill.dev \
           -e WINDMILL_PASSWORD=changeme \
-          -e CONTROLLER_VERSION=0.20.0 \
+          -e CONTROLLER_VERSION=0.21.0 \
           -e BREEDER_VERSION=0.14.0 \
           -e GODON_DIR=/var/lib/godon \
           -e VERBOSE=true \
@@ -131,11 +131,57 @@ jobs:
 
         if echo "$SCRIPT_LIST" | grep -q -E 'breeder|controller|effect|recon'; then
           echo "✅ Deployed scripts found in workspace"
-          echo "Found scripts: $SCRIPT_LIST"
         else
           echo "❌ No deployed scripts found"
           echo "Script list: $SCRIPT_LIST"
           exit 1
+        fi
+
+        # Verify worker tags are correctly applied to ALL scripts
+        echo "🏷️  Verifying worker tags on all deployed scripts..."
+        TAG_ERRORS=0
+
+        # Check all controller scripts have "controller" tag
+        CONTROLLER_SCRIPTS=$(echo "$SCRIPT_LIST" | grep -o '"path":"f/controller/[^"]*"' | cut -d'"' -f4)
+        for script_path in $CONTROLLER_SCRIPTS; do
+          script_json=$(curl -s "http://localhost:9101/api/w/godon/scripts/${script_path}/get" \
+            -H "Authorization: Bearer $TOKEN")
+
+          if echo "$script_json" | grep -q '"tag":\s*"controller"'; then
+            echo "✅ $script_path has tag: controller"
+          elif echo "$script_json" | grep -q '"tag":\s*null'; then
+            echo "❌ $script_path has tag: null (should be 'controller')"
+            TAG_ERRORS=$((TAG_ERRORS + 1))
+          else
+            echo "❌ $script_path has unexpected tag"
+            echo "$script_json" | grep -o '"tag":[^,}]*'
+            TAG_ERRORS=$((TAG_ERRORS + 1))
+          fi
+        done
+
+        # Check all breeder scripts have "breeder" tag
+        BREEDER_SCRIPTS=$(echo "$SCRIPT_LIST" | grep -o '"path":"f/\(breeder\|reconnaissance\|effectuation\)/[^"]*"' | cut -d'"' -f4)
+        for script_path in $BREEDER_SCRIPTS; do
+          script_json=$(curl -s "http://localhost:9101/api/w/godon/scripts/${script_path}/get" \
+            -H "Authorization: Bearer $TOKEN")
+
+          if echo "$script_json" | grep -q '"tag":\s*"breeder"'; then
+            echo "✅ $script_path has tag: breeder"
+          elif echo "$script_json" | grep -q '"tag":\s*null'; then
+            echo "❌ $script_path has tag: null (should be 'breeder')"
+            TAG_ERRORS=$((TAG_ERRORS + 1))
+          else
+            echo "❌ $script_path has unexpected tag"
+            echo "$script_json" | grep -o '"tag":[^,}]*'
+            TAG_ERRORS=$((TAG_ERRORS + 1))
+          fi
+        done
+
+        if [ $TAG_ERRORS -gt 0 ]; then
+          echo "❌ Found $TAG_ERRORS scripts with incorrect tags"
+          exit 1
+        else
+          echo "✅ All scripts have correct worker tags"
         fi
 
     - name: Test retry mechanism with delayed Windmill start
@@ -153,7 +199,7 @@ jobs:
           -e WINDMILL_WORKSPACE=retry-test \
           -e WINDMILL_EMAIL=admin@windmill.dev \
           -e WINDMILL_PASSWORD=changeme \
-          -e CONTROLLER_VERSION=0.20.0 \
+          -e CONTROLLER_VERSION=0.21.0 \
           -e BREEDER_VERSION=0.14.0 \
           -e GODON_DIR=/var/lib/godon \
           -e SEEDER_MAX_RETRIES=10 \
