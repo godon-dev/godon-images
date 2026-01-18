@@ -67,6 +67,25 @@ jobs:
           ./build/test_retry
         "
 
+    - name: Run exit code unit tests
+      run: |
+        echo "🧪 Running exit code unit tests..."
+        cd images/godon-seeder
+
+        # Set SSL cert environment
+        export SSL_CERT_FILE="/etc/ssl/certs/ca-bundle.crt"
+        export NIX_SSL_CERT_FILE="/etc/ssl/certs/ca-bundle.crt"
+        export CURL_CA_BUNDLE="/etc/ssl/certs/ca-bundle.crt"
+
+        # Create build directory
+        mkdir -p build
+
+        # Compile and run the test file using nix-shell
+        nix-shell -p nim --run "
+          nim compile --opt:speed -d:release --out:build/test_exit_code tests/test_exit_code.nim && \
+          ./build/test_exit_code
+        "
+
     - name: Test summary
       if: always()
       run: |
