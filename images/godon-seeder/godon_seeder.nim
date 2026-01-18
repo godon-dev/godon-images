@@ -1,4 +1,5 @@
 import std/[parseopt, strutils, os, logging, json, times, tables, sequtils, sets, options, streams]
+import std/jsonutils
 import yaml
 import yaml/tojson
 import windmill_client.config
@@ -9,10 +10,13 @@ setLogFilter(lvlInfo)
 
 type
   # Component configuration types
-  ScriptSettings* = object
+  ScriptSettings* {.sparse.} = object
     summary*: string
     description*: string
     timeout*: Option[int]
+    tag*: Option[string]
+    # Any other Windmill script settings can be added in component.yaml
+    # and will be passed through to Windmill API
 
   FlowSettings* {.sparse.} = object
     summary*: string
@@ -29,12 +33,12 @@ type
     path*: Option[string]    # Optional: for subdirectory specification
     settings*: FlowSettings
 
-  ComponentConfig* = object
+  ComponentConfig* {.sparse.} = object
     name*: string
     target*: string
-    workspace*: Option[string]
+    workspace*: string
     scripts*: seq[ScriptSpec]
-    flows*: Option[seq[FlowSpec]]   # Optional: defaults to empty seq if not specified
+    flows*: Option[seq[FlowSpec]]
 
   ComponentInfo* = object
     config*: ComponentConfig
@@ -55,11 +59,13 @@ type
 
 proc parseScriptSettings(settingsJson: JsonNode): ScriptSettings =
   ## Parse script settings from JSON node
-  result = ScriptSettings(
-    summary: settingsJson.getOrDefault("summary").getStr(""),
-    description: settingsJson.getOrDefault("description").getStr(""),
-    timeout: if settingsJson.hasKey("timeout"): some(settingsJson["timeout"].getInt()) else: none(int)
-  )
+  ## With sparse objects, YAML parser automatically includes all fields
+  ## We just validate required string fields have defaults
+  result = to(settingsJson, ScriptSettings)
+  if result.summary.len == 0:
+    result.summary = ""
+  if result.description.len == 0:
+    result.description = ""
 
 proc parseScriptSpec(specJson: JsonNode): ScriptSpec =
   ## Parse script specification from JSON node
@@ -77,11 +83,17 @@ proc parseComponentConfig(yamlPath: string): ComponentConfig =
 
   let yamlContent = readFile(yamlPath)
 
-  # Use YAML library to parse into ComponentConfig using streams
+  # Parse YAML to JSON first, then convert to ComponentConfig
   try:
-    var s = newStringStream(yamlContent)
-    load(s, result)
-    s.close()
+    let yamlData = loadToJson(yamlContent)
+    if yamlData.len == 0:
+      raise newException(IOError, "Empty YAML file")
+
+    let json = yamlData[0]
+
+    # Use to() which respects sparse objects - allows extra fields in YAML
+    result = to(json, ComponentConfig)
+
     info("Parsed component '" & result.name & "' with " & $result.scripts.len & " scripts")
   except CatchableError as e:
     logging.error("Failed to parse YAML: " & e.msg)
@@ -89,7 +101,7 @@ proc parseComponentConfig(yamlPath: string): ComponentConfig =
     result = ComponentConfig(
       name: yamlPath.splitPath().head,
       target: "",
-      workspace: none(string),
+      workspace: "",
       scripts: @[]
     )
 
@@ -229,17 +241,80 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
   ## Deploy a single script to Windmill
   info("Deploying script: " & scriptPath)
 
-  # Build script settings JSON
-  var scriptSettings = newJObject()
-  if settings.summary.len > 0:
-    scriptSettings["summary"] = %* settings.summary
-  if settings.description.len > 0:
-    scriptSettings["description"] = %* settings.description
-  if settings.timeout.isSome:
-    scriptSettings["timeout"] = %* settings.timeout.get()
+  # Convert ScriptSettings object to JSON to pass through all fields
+  var scriptSettings = %(settings)
+  # Ensure required fields are present (Windmill 1.601.1+ requires these)
+  if scriptSettings.hasKey("summary") and scriptSettings["summary"].kind == JNull:
+    scriptSettings["summary"] = %* ""
+  if scriptSettings.hasKey("description") and scriptSettings["description"].kind == JNull:
+    scriptSettings["description"] = %* ""
 
   client.deployScript(workspace, scriptPath, content, scriptSettings)
   info("✅ Successfully deployed script: " & scriptPath)
+
+proc deployFlowWithRetry*(client: WindmillApiClient, workspace: string, flowPath: string, flowYaml: string, settings: FlowSettings, maxRetries: int, retryDelay: int) =
+  ## Deploy a flow with retry logic and linear backoff
+  ## Skips deployment if flow already exists (idempotent)
+
+  # Check if flow already exists
+  if client.existsFlow(workspace, flowPath):
+    info("Flow already exists, skipping deployment: " & flowPath)
+    return
+
+  var lastException: ref Exception = nil
+
+  for attempt in 0..maxRetries:
+    try:
+      deployFlow(client, workspace, flowPath, flowYaml, settings)
+      return  # Success, exit retry loop
+    except CatchableError as e:
+      lastException = e
+      if attempt == maxRetries:
+        # Final attempt failed, give up
+        logging.error("Failed to deploy flow " & flowPath & " after " & $(attempt + 1) & " attempts: " & e.msg)
+        raise
+
+      # Fixed delay before retry
+      let backoffDelay = retryDelay
+      warn("Attempt " & $(attempt + 1) & " failed for flow " & flowPath & ": " & e.msg)
+      info("Retrying in " & $backoffDelay & " seconds...")
+      sleep(backoffDelay * 1000)
+
+  # Shouldn't reach here, but just in case
+  if lastException != nil:
+    raise lastException
+
+proc deployScriptWithRetry*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: ScriptSettings, maxRetries: int, retryDelay: int) =
+  ## Deploy a script with retry logic and linear backoff
+  ## Skips deployment if script already exists (idempotent)
+
+  # Check if script already exists
+  if client.existsScript(workspace, scriptPath):
+    info("Script already exists, skipping deployment: " & scriptPath)
+    return
+
+  var lastException: ref Exception = nil
+
+  for attempt in 0..maxRetries:
+    try:
+      deployScript(client, workspace, scriptPath, content, settings)
+      return  # Success, exit retry loop
+    except CatchableError as e:
+      lastException = e
+      if attempt == maxRetries:
+        # Final attempt failed, give up
+        logging.error("Failed to deploy script " & scriptPath & " after " & $(attempt + 1) & " attempts: " & e.msg)
+        raise
+
+      # Fixed delay before retry
+      let backoffDelay = retryDelay
+      warn("Attempt " & $(attempt + 1) & " failed for script " & scriptPath & ": " & e.msg)
+      info("Retrying in " & $backoffDelay & " seconds...")
+      sleep(backoffDelay * 1000)
+
+  # Shouldn't reach here, but just in case
+  if lastException != nil:
+    raise lastException
 
 proc createNestedFolders*(client: WindmillApiClient, workspace: string, folderPath: string) =
   ## Create only the top-level folder (Windmill doesn't support nested folders)
@@ -257,10 +332,13 @@ proc createNestedFolders*(client: WindmillApiClient, workspace: string, folderPa
     # If folder creation fails, log but continue - it might already exist
     debug("Folder creation attempt for " & topLevelFolder & " failed: " & e.msg)
 
-proc deployComponentScripts*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string) =
+proc deployComponentScripts*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string, maxRetries: int, retryDelay: int): int =
   ## Deploy all scripts for a component
+  ## Returns number of failed deployments
   info("Deploying scripts for component: " & component.name)
-  
+
+  var failures = 0
+
   # Create nested folders if component target is specified
   if component.target.len > 0:
     createNestedFolders(client, workspace, component.target)
@@ -302,20 +380,25 @@ proc deployComponentScripts*(client: WindmillApiClient, workspace: string, compo
 
       try:
         let content = readScriptContent(scriptFile)
-        deployScript(client, workspace, windmillPath, content, scriptSpec.settings)
+        deployScriptWithRetry(client, workspace, windmillPath, content, scriptSpec.settings, maxRetries, retryDelay)
       except CatchableError as e:
-        logging.error("Failed to deploy script " & scriptFile & ": " & e.msg)
+        logging.error("Failed to deploy script " & scriptFile & " after retries: " & e.msg)
+        inc(failures)
 
-proc deployComponentFlows*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string) =
+  return failures
+
+proc deployComponentFlows*(client: WindmillApiClient, workspace: string, component: ComponentConfig, baseDir: string, maxRetries: int, retryDelay: int): int =
   ## Deploy all flows for a component
+  ## Returns number of failed deployments
   info("Deploying flows for component: " & component.name)
+
+  var failures = 0
 
   # Create nested folders if component target is specified
   if component.target.len > 0:
     createNestedFolders(client, workspace, component.target)
 
-  let flows = component.flows.get()
-  for flowSpec in flows:
+  for flowSpec in component.flows.get(@[]):
     var flowFiles: seq[string]
 
     if flowSpec.pattern.len > 0:
@@ -352,13 +435,19 @@ proc deployComponentFlows*(client: WindmillApiClient, workspace: string, compone
 
       try:
         let flowYaml = readFlowContent(flowFile)
-        deployFlow(client, workspace, windmillPath, flowYaml, flowSpec.settings)
+        deployFlowWithRetry(client, workspace, windmillPath, flowYaml, flowSpec.settings, maxRetries, retryDelay)
       except CatchableError as e:
-        logging.error("Failed to deploy flow " & flowFile & ": " & e.msg)
+        logging.error("Failed to deploy flow " & flowFile & " after retries: " & e.msg)
+        inc(failures)
 
-proc seedWorkspace*(config: SeederConfig) =
+  return failures
+
+proc seedWorkspace*(config: SeederConfig): int =
   ## Main seeding function - discover and deploy all components
+  ## Returns number of failed deployments
   info("Starting component deployment")
+
+  var totalFailures = 0
 
   # Create Windmill client
   let windmillConfig = WindmillConfig(
@@ -391,8 +480,8 @@ proc seedWorkspace*(config: SeederConfig) =
     let componentDir = componentInfo.directory
 
     # Use component-specific workspace or default to global workspace
-    let targetWorkspace = if component.workspace.isSome:
-                            component.workspace.get()
+    let targetWorkspace = if component.workspace.len > 0:
+                            component.workspace
                           else:
                             config.windmillWorkspace
 
@@ -406,13 +495,20 @@ proc seedWorkspace*(config: SeederConfig) =
 
     # Deploy scripts
     if component.scripts.len > 0:
-      deployComponentScripts(client, targetWorkspace, component, componentDir)
+      let scriptFailures = deployComponentScripts(client, targetWorkspace, component, componentDir, config.maxRetries, config.retryDelay)
+      totalFailures += scriptFailures
 
     # Deploy flows
     if component.flows.isSome and component.flows.get().len > 0:
-      deployComponentFlows(client, targetWorkspace, component, componentDir)
+      let flowFailures = deployComponentFlows(client, targetWorkspace, component, componentDir, config.maxRetries, config.retryDelay)
+      totalFailures += flowFailures
 
-  info("✅ Component deployment completed successfully")
+  if totalFailures > 0:
+    logging.error("Component deployment completed with " & $totalFailures & " failures")
+  else:
+    info("✅ Component deployment completed successfully")
+
+  return totalFailures
 
 proc printHelp* =
   echo """
@@ -518,7 +614,9 @@ proc main* =
 
   # Perform the seeding
   try:
-    config.seedWorkspace()
+    let failureCount = config.seedWorkspace()
+    if failureCount > 0:
+      quit(1)  # Exit with error code if any deployments failed
   except CatchableError as e:
     logging.error("Seeding failed: " & e.msg)
     quit(1)
