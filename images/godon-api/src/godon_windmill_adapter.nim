@@ -57,13 +57,38 @@ proc getBreeder*(client: WindmillApiClient, breederId: string): Breeder =
   if result.id.len == 0:
     raise newException(ValueError, "Invalid breeder response: missing id field")
 
-proc deleteBreeder*(client: WindmillApiClient, breederId: string) =
-  let args = %* {"request_data": {"breeder_id": breederId}}
+proc deleteBreeder*(client: WindmillApiClient, breederId: string, force: bool = false) =
+  var requestData = %* {"breeder_id": breederId}
+  if force:
+    requestData["force"] = %force
+  let args = %* {"request_data": requestData}
   let response = client.runJob("breeder_delete", args)
 
   # Check for error
   if response.hasKey("result") and response["result"].getStr() == "FAILURE":
     raise newException(ValueError, "Failed to delete breeder: " & response.getOrDefault("error").getStr("Unknown error"))
+
+proc stopBreeder*(client: WindmillApiClient, breederId: string): JsonNode =
+  let args = %* {"request_data": {"breeder_id": breederId}}
+  let response = client.runJob("breeder_stop", args)
+
+  # Check for error
+  if response.hasKey("result") and response["result"].getStr() == "FAILURE":
+    raise newException(ValueError, "Failed to stop breeder: " & response.getOrDefault("error").getStr("Unknown error"))
+
+  # Return full response (contains shutdown_type info)
+  result = response
+
+proc startBreeder*(client: WindmillApiClient, breederId: string): JsonNode =
+  let args = %* {"request_data": {"breeder_id": breederId}}
+  let response = client.runJob("breeder_start", args)
+
+  # Check for error
+  if response.hasKey("result") and response["result"].getStr() == "FAILURE":
+    raise newException(ValueError, "Failed to start breeder: " & response.getOrDefault("error").getStr("Unknown error"))
+
+  # Return full response (contains status info)
+  result = response
 
 # Credential management methods
 

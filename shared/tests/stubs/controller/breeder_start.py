@@ -1,17 +1,16 @@
 def main(request_data=None):
-    """Stub for breeder_delete - deletes a breeder"""
+    """Stub for breeder_start - starts/resumes a breeder"""
     breeder_id = request_data.get("breeder_id") if request_data else None
-    force = request_data.get("force", False) if request_data else False
 
     if not breeder_id:
         return {"result": "FAILURE", "error": "Missing breeder_id parameter"}
 
-    # Simulate deletion (always succeeds for stub)
+    # Simulate start (always succeeds for stub)
     return {
         "result": "SUCCESS",
         "data": {
             "breeder_id": breeder_id,
-            "delete_type": "force" if force else "graceful",
-            "workers_cancelled": 1 if force else 0
+            "status": "ACTIVE",
+            "workers_started": 3
         }
     }
