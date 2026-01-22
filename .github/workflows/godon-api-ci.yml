@@ -214,12 +214,33 @@ jobs:
           breeder update --file=/update-config.yaml \
           || echo "✅ Update correctly returned NOT_IMPLEMENTED as expected"
 
-        # Test deleting a breeder
-        echo "Testing delete breeder:"
+        # Test deleting a breeder (safe mode without workers)
+        echo "Testing delete breeder (safe mode):"
         docker run --rm --network godon-api-test_default \
           ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
           --hostname=godon-api-test --port=9090 --insecure \
           breeder purge --id=550e8400-e29b-41d4-a716-446655440000
+
+        # Test stop breeder
+        echo "Testing stop breeder:"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          breeder stop --id=550e8400-e29b-41d4-a716-446655440000
+
+        # Test start breeder
+        echo "Testing start breeder:"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          breeder start --id=550e8400-e29b-41d4-a716-446655440000
+
+        # Test force delete breeder
+        echo "Testing force delete breeder:"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          breeder purge --force --id=550e8400-e29b-41d4-a716-446655440000
 
         # Test error scenarios
         echo "Testing error scenarios..."

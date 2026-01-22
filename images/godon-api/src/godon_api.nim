@@ -77,7 +77,27 @@ routes:
   delete "/breeders/@id":
     let (code, response) = handleBreederDelete(request, @"id")
     resp code, [(
-      key: "Content-Type", 
+      key: "Content-Type",
+      val: "application/json"
+    ), (
+      key: "Access-Control-Allow-Origin",
+      val: "*"
+    )], response
+
+  post "/breeders/@id/stop":
+    let (code, response) = handleBreederStop(request, @"id")
+    resp code, [(
+      key: "Content-Type",
+      val: "application/json"
+    ), (
+      key: "Access-Control-Allow-Origin",
+      val: "*"
+    )], response
+
+  post "/breeders/@id/start":
+    let (code, response) = handleBreederStart(request, @"id")
+    resp code, [(
+      key: "Content-Type",
       val: "application/json"
     ), (
       key: "Access-Control-Allow-Origin",

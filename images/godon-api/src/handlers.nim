@@ -103,24 +103,29 @@ proc handleBreederGet*(request: Request, breederId: string): (HttpCode, string) 
 proc handleBreederDelete*(request: Request, breederId: string): (HttpCode, string) =
   try:
     info("DELETE /breeders/" & breederId & " request received")
-    
+
     # Validate UUID format
     if breederId.isEmptyOrWhitespace() or not isValidUUID(breederId):
       error("Invalid UUID format: " & breederId)
       let errorResponse = createErrorResponse("Invalid UUID format", "BAD_REQUEST", %*{"uuid": breederId})
       result = (Http400, $errorResponse)
       return
-    
+
+    # Parse force query parameter
+    let forceParam = request.params.getOrDefault("force", "false")
+    let force = forceParam == "true" or forceParam == "1"
+
     let cfg = loadConfig()
     var client = newWindmillClient(cfg)
 
-    client.deleteBreeder(breederId)
+    client.deleteBreeder(breederId, force)
     let response = %*{
       "id": breederId,
-      "deleted": true
+      "deleted": true,
+      "force": force
     }
 
-    info("Successfully deleted breeder: " & breederId)
+    info("Successfully deleted breeder: " & breederId & " (force=" & $force & ")")
     result = (Http200, $response)
   except ValueError as e:
     error("Validation error in DELETE /breeders/" & breederId & ": " & e.msg)
@@ -129,6 +134,66 @@ proc handleBreederDelete*(request: Request, breederId: string): (HttpCode, strin
   except Exception as e:
     error("Internal error in DELETE /breeders/" & breederId & ": " & e.msg)
     let errorResponse = createErrorResponse("Failed to delete breeder", "INTERNAL_SERVER_ERROR", %*{"error": e.msg})
+    result = (Http500, $errorResponse)
+
+proc handleBreederStop*(request: Request, breederId: string): (HttpCode, string) =
+  try:
+    info("POST /breeders/" & breederId & "/stop request received")
+
+    # Validate UUID format
+    if breederId.isEmptyOrWhitespace() or not isValidUUID(breederId):
+      error("Invalid UUID format: " & breederId)
+      let errorResponse = createErrorResponse("Invalid UUID format", "BAD_REQUEST", %*{"uuid": breederId})
+      result = (Http400, $errorResponse)
+      return
+
+    let cfg = loadConfig()
+    var client = newWindmillClient(cfg)
+
+    let response = client.stopBreeder(breederId)
+
+    # Unwrap data field
+    let data = if response.hasKey("data"): response["data"] else: response
+
+    info("Successfully requested graceful shutdown for breeder: " & breederId)
+    result = (Http200, $data)
+  except ValueError as e:
+    error("Validation error in POST /breeders/" & breederId & "/stop: " & e.msg)
+    let errorResponse = createErrorResponse("Invalid request parameters", "BAD_REQUEST", %*{"error": e.msg})
+    result = (Http400, $errorResponse)
+  except Exception as e:
+    error("Internal error in POST /breeders/" & breederId & "/stop: " & e.msg)
+    let errorResponse = createErrorResponse("Failed to stop breeder", "INTERNAL_SERVER_ERROR", %*{"error": e.msg})
+    result = (Http500, $errorResponse)
+
+proc handleBreederStart*(request: Request, breederId: string): (HttpCode, string) =
+  try:
+    info("POST /breeders/" & breederId & "/start request received")
+
+    # Validate UUID format
+    if breederId.isEmptyOrWhitespace() or not isValidUUID(breederId):
+      error("Invalid UUID format: " & breederId)
+      let errorResponse = createErrorResponse("Invalid UUID format", "BAD_REQUEST", %*{"uuid": breederId})
+      result = (Http400, $errorResponse)
+      return
+
+    let cfg = loadConfig()
+    var client = newWindmillClient(cfg)
+
+    let response = client.startBreeder(breederId)
+
+    # Unwrap data field
+    let data = if response.hasKey("data"): response["data"] else: response
+
+    info("Successfully started breeder: " & breederId)
+    result = (Http200, $data)
+  except ValueError as e:
+    error("Validation error in POST /breeders/" & breederId & "/start: " & e.msg)
+    let errorResponse = createErrorResponse("Invalid request parameters", "BAD_REQUEST", %*{"error": e.msg})
+    result = (Http400, $errorResponse)
+  except Exception as e:
+    error("Internal error in POST /breeders/" & breederId & "/start: " & e.msg)
+    let errorResponse = createErrorResponse("Failed to start breeder", "INTERNAL_SERVER_ERROR", %*{"error": e.msg})
     result = (Http500, $errorResponse)
 
 proc handleBreederPut*(request: Request, breederId: string): (HttpCode, string) =
