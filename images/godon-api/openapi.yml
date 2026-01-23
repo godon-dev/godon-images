@@ -202,7 +202,25 @@ paths:
         - breeders
       operationId: deleteBreeder
       summary: Delete a breeder
-      description: Permanently removes a breeder and its configuration
+      description: |
+        Permanently removes a breeder and its configuration.
+
+        **Default behavior (safe):** Requires workers to be gracefully stopped first.
+        Call `stop_breeder()` to request graceful shutdown, then delete.
+
+        **Force deletion:** Use `force=true` to cancel workers immediately.
+        Use for automated cleanup or when worker state is not important.
+      parameters:
+        - name: force
+          in: query
+          description: |
+            Cancel workers immediately instead of requiring graceful stop.
+            Default is false (safe).
+          required: false
+          schema:
+            type: boolean
+            default: false
+          example: true
       responses:
         '200':
           description: Successfully deleted the breeder
@@ -227,6 +245,122 @@ paths:
                   value:
                     id: "550e8400-e29b-41d4-a716-446655440000"
                     deleted: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /breeders/{breederId}/stop:
+    post:
+      tags:
+        - breeders
+      operationId: stopBreeder
+      summary: Stop a breeder
+      description: |
+        Requests graceful shutdown of a breeder's workers.
+        Workers will finish their current trial before stopping.
+        This is an asynchronous operation - check status with GET /breeders/{breederId}.
+      parameters:
+        - $ref: '#/components/parameters/BreederId'
+      responses:
+        '200':
+          description: Graceful shutdown requested successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - result
+                  - data
+                properties:
+                  result:
+                    type: string
+                    enum: [SUCCESS]
+                  data:
+                    type: object
+                    required:
+                      - breeder_id
+                      - shutdown_type
+                    properties:
+                      breeder_id:
+                        type: string
+                        format: uuid
+                        description: The ID of the breeder to stop
+                      shutdown_type:
+                        type: string
+                        enum: [graceful]
+                        description: Type of shutdown (graceful)
+              examples:
+                shutdownRequested:
+                  summary: Graceful shutdown requested
+                  value:
+                    result: "SUCCESS"
+                    message: "Graceful shutdown requested. Workers will stop after completing current trials."
+                    data:
+                      breeder_id: "550e8400-e29b-41d4-a716-446655440000"
+                      shutdown_type: "graceful"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /breeders/{breederId}/start:
+    post:
+      tags:
+        - breeders
+      operationId: startBreeder
+      summary: Start/resume a breeder
+      description: |
+        Starts or resumes a stopped breeder by clearing the shutdown flag
+        and relaunching workers. Use this to resume optimization after
+        calling stop_breeder().
+      parameters:
+        - $ref: '#/components/parameters/BreederId'
+      responses:
+        '200':
+          description: Breeder started successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - result
+                  - data
+                properties:
+                  result:
+                    type: string
+                    enum: [SUCCESS]
+                  data:
+                    type: object
+                    required:
+                      - breeder_id
+                      - status
+                      - workers_started
+                    properties:
+                      breeder_id:
+                        type: string
+                        format: uuid
+                        description: The ID of the breeder that was started
+                      status:
+                        type: string
+                        enum: [ACTIVE]
+                        description: New status of the breeder
+                      workers_started:
+                        type: integer
+                        description: Number of worker jobs that were launched
+              examples:
+                started:
+                  summary: Breeder started successfully
+                  value:
+                    result: "SUCCESS"
+                    data:
+                      breeder_id: "550e8400-e29b-41d4-a716-446655440000"
+                      workers_started: 3
+                      status: "ACTIVE"
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
