@@ -252,7 +252,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
-  /breeders/{breederId}/stop:
+  /breeders/{uuid}/stop:
     post:
       tags:
         - breeders
@@ -261,9 +261,9 @@ paths:
       description: |
         Requests graceful shutdown of a breeder's workers.
         Workers will finish their current trial before stopping.
-        This is an asynchronous operation - check status with GET /breeders/{breederId}.
+        This is an asynchronous operation - check status with GET /breeders/{uuid}.
       parameters:
-        - $ref: '#/components/parameters/BreederId'
+        - $ref: '#/components/parameters/BreederUuid'
       responses:
         '200':
           description: Graceful shutdown requested successfully
@@ -308,7 +308,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
-  /breeders/{breederId}/start:
+  /breeders/{uuid}/start:
     post:
       tags:
         - breeders
@@ -319,7 +319,7 @@ paths:
         and relaunching workers. Use this to resume optimization after
         calling stop_breeder().
       parameters:
-        - $ref: '#/components/parameters/BreederId'
+        - $ref: '#/components/parameters/BreederUuid'
       responses:
         '200':
           description: Breeder started successfully
