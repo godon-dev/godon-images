@@ -285,6 +285,8 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
     of ".sh": "bash"
     of ".sql": "postgresql"
     of ".ts": "nativets"
+    of ".yml": "ansible"
+    of ".yaml": "ansible"
     else: "python3"  # Default fallback
   
   let url = &"{client.config.windmillBaseUrl}/w/{workspace}/scripts/create"
