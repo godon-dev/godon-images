@@ -1,0 +1,32 @@
+---
+# Test Ansible playbook for godon-seeder CI/CD testing
+# Minimal playbook to verify Ansible playbook deployment works correctly
+
+inventory:
+  all_children:
+    targets:
+      hosts:
+        "localhost":
+          ansible_host: "127.0.0.1"
+          ansible_user: "root"
+          ansible_connection: "local"
+
+extra_vars:
+  test_var:
+    type: string
+    default: "test_value"
+
+---
+- name: Test Ansible playbook execution
+  hosts: targets
+  become: yes
+  tasks:
+    - name: Set test fact
+      set_fact:
+        test_result: "{{ test_var }}"
+
+    - name: Return success result
+      delegate_to: localhost
+      copy:
+        content: "{{ { 'success': true, 'test_var': test_var } | to_json }}"
+        dest: result.json
