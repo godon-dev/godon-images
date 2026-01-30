@@ -9,3 +9,10 @@ scripts:
     settings:
       summary: "Test stub scripts"
       description: "Stub scripts for API testing"
+
+  - pattern: "test_ansible_playbook.yml"
+    path: "stubs"
+    settings:
+      summary: "Test Ansible Playbook"
+      description: "Minimal Ansible playbook for testing seeder Ansible deployment"
+      tag: "test"

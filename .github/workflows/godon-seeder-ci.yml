@@ -105,7 +105,7 @@ jobs:
           -e WINDMILL_EMAIL=admin@windmill.dev \
           -e WINDMILL_PASSWORD=changeme \
           -e CONTROLLER_VERSION=0.20.0 \
-          -e BREEDER_VERSION=0.14.0 \
+          -e BREEDER_VERSION=0.25.0 \
           -e GODON_DIR=/var/lib/godon \
           -e VERBOSE=true \
           godon-seeder-test:test-${{ github.run_number }} \
@@ -126,15 +126,27 @@ jobs:
           -H "Content-Type: application/json" \
           -d '{"email":"admin@windmill.dev","password":"changeme"}' | tr -d '"')
 
-        SCRIPT_LIST=$(curl -s http://localhost:9101/api/w/godon/scripts/list \
+        GODON_SCRIPTS=$(curl -s http://localhost:9101/api/w/godon/scripts/list \
           -H "Authorization: Bearer $TOKEN")
 
-        if echo "$SCRIPT_LIST" | grep -q -E 'breeder|controller|effect|recon'; then
-          echo "✅ Deployed scripts found in workspace"
-          echo "Found scripts: $SCRIPT_LIST"
+        if echo "$GODON_SCRIPTS" | grep -q -E 'breeder|effect|recon|ansible'; then
+          echo "✅ Deployed scripts found in godon workspace"
         else
-          echo "❌ No deployed scripts found"
-          echo "Script list: $SCRIPT_LIST"
+          echo "❌ No deployed scripts found in godon workspace"
+          echo "Script list: $GODON_SCRIPTS"
+          exit 1
+        fi
+
+        # Verify Ansible playbook was deployed with correct language
+        echo "🧪 Verifying Ansible playbook deployment..."
+        ANSIBLE_SCRIPT=$(curl -s "http://localhost:9101/api/w/godon/scripts/get/f/breeder/linux_performance/effectuate_settings" \
+          -H "Authorization: Bearer $TOKEN")
+
+        if echo "$ANSIBLE_SCRIPT" | grep -q '"language":"ansible"'; then
+          echo "✅ Ansible playbook deployed with correct language"
+        else
+          echo "❌ Ansible playbook language incorrect or not found"
+          echo "Script details: $ANSIBLE_SCRIPT"
           exit 1
         fi
 
@@ -154,7 +166,7 @@ jobs:
           -e WINDMILL_EMAIL=admin@windmill.dev \
           -e WINDMILL_PASSWORD=changeme \
           -e CONTROLLER_VERSION=0.20.0 \
-          -e BREEDER_VERSION=0.14.0 \
+          -e BREEDER_VERSION=0.25.0 \
           -e GODON_DIR=/var/lib/godon \
           -e SEEDER_MAX_RETRIES=10 \
           -e SEEDER_RETRY_DELAY=2 \
