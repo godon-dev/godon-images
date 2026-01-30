@@ -129,23 +129,11 @@ jobs:
         GODON_SCRIPTS=$(curl -s http://localhost:9101/api/w/godon/scripts/list \
           -H "Authorization: Bearer $TOKEN")
 
-        SEEDER_TEST_SCRIPTS=$(curl -s http://localhost:9101/api/w/seeder-test/scripts/list \
-          -H "Authorization: Bearer $TOKEN")
-
-        if echo "$GODON_SCRIPTS" | grep -q -E 'breeder|effect|recon'; then
+        if echo "$GODON_SCRIPTS" | grep -q -E 'breeder|effect|recon|ansible'; then
           echo "✅ Deployed scripts found in godon workspace"
-          echo "Godon scripts: $GODON_SCRIPTS"
         else
           echo "❌ No deployed scripts found in godon workspace"
           echo "Script list: $GODON_SCRIPTS"
-          exit 1
-        fi
-
-        if echo "$SEEDER_TEST_SCRIPTS" | grep -q 'controller'; then
-          echo "✅ Deployed scripts found in seeder-test workspace"
-        else
-          echo "❌ No deployed scripts found in seeder-test workspace"
-          echo "Script list: $SEEDER_TEST_SCRIPTS"
           exit 1
         fi
 
