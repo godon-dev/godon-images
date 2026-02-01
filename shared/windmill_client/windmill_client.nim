@@ -300,15 +300,10 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
     "description": ""
   }
 
-  # Add script settings if provided
+   # Add script settings if provided
   if settings != nil:
     for key, value in settings.pairs:
       payload[key] = value
-
-  debug("Deploying to: " & url)
-  debug("Payload language: " & payload["language"].getStr())
-  debug("Payload path: " & payload["path"].getStr())
-  debug("Full payload: " & $payload)
 
   try:
     let originalHeaders = client.http.headers
