@@ -237,8 +237,9 @@ proc deployFlow*(client: WindmillApiClient, workspace: string, flowPath: string,
   client.deployFlow(workspace, flowPath, requestPayload)
   info("✅ Successfully deployed flow: " & flowPath)
 
-proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: ScriptSettings) =
+proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: ScriptSettings, filePath: string = "") =
   ## Deploy a single script to Windmill
+  ## filePath: Original file path with extension (for language detection)
   info("Deploying script: " & scriptPath)
 
   # Convert ScriptSettings object to JSON to pass through all fields
@@ -249,7 +250,7 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
   if scriptSettings.hasKey("description") and scriptSettings["description"].kind == JNull:
     scriptSettings["description"] = %* ""
 
-  client.deployScript(workspace, scriptPath, content, scriptSettings)
+  client.deployScript(workspace, scriptPath, content, scriptSettings, filePath)
   info("✅ Successfully deployed script: " & scriptPath)
 
 proc deployFlowWithRetry*(client: WindmillApiClient, workspace: string, flowPath: string, flowYaml: string, settings: FlowSettings, maxRetries: int, retryDelay: int) =
@@ -284,9 +285,10 @@ proc deployFlowWithRetry*(client: WindmillApiClient, workspace: string, flowPath
   if lastException != nil:
     raise lastException
 
-proc deployScriptWithRetry*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: ScriptSettings, maxRetries: int, retryDelay: int) =
+proc deployScriptWithRetry*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: ScriptSettings, maxRetries: int, retryDelay: int, filePath: string = "") =
   ## Deploy a script with retry logic and linear backoff
   ## Skips deployment if script already exists (idempotent)
+  ## filePath: Original file path with extension (for language detection)
 
   # Check if script already exists
   if client.existsScript(workspace, scriptPath):
@@ -297,7 +299,7 @@ proc deployScriptWithRetry*(client: WindmillApiClient, workspace: string, script
 
   for attempt in 0..maxRetries:
     try:
-      deployScript(client, workspace, scriptPath, content, settings)
+      deployScript(client, workspace, scriptPath, content, settings, filePath)
       return  # Success, exit retry loop
     except CatchableError as e:
       lastException = e
@@ -349,13 +351,14 @@ proc deployComponentScripts*(client: WindmillApiClient, workspace: string, compo
     if scriptSpec.pattern.len > 0:
       # Pattern-based file discovery - treat pattern as relative path from baseDir
       let patternPath = baseDir / scriptSpec.pattern
-      if fileExists(patternPath):
-        # Pattern is actually a specific file path (e.g., "reconnaissance/prometheus.py")
-        scriptFiles = @[patternPath]
-      elif scriptSpec.path.isSome and scriptSpec.path.get().len > 0:
+      
+      if scriptSpec.path.isSome and scriptSpec.path.get().len > 0:
         # Both pattern and path specified - path indicates subdirectory to search (e.g., controller case)
         let searchDir = baseDir / scriptSpec.path.get()
         scriptFiles = findFilesByPattern(searchDir, scriptSpec.pattern)
+      elif fileExists(patternPath):
+        # Pattern is actually a specific file path (e.g., "reconnaissance/prometheus.py" or "effectuate_settings.yml")
+        scriptFiles = @[patternPath]
       else:
         # Pattern is a glob pattern - search in base directory
         scriptFiles = findFilesByPattern(baseDir, scriptSpec.pattern)
@@ -380,7 +383,7 @@ proc deployComponentScripts*(client: WindmillApiClient, workspace: string, compo
 
       try:
         let content = readScriptContent(scriptFile)
-        deployScriptWithRetry(client, workspace, windmillPath, content, scriptSpec.settings, maxRetries, retryDelay)
+        deployScriptWithRetry(client, workspace, windmillPath, content, scriptSpec.settings, maxRetries, retryDelay, scriptFile)
       except CatchableError as e:
         logging.error("Failed to deploy script " & scriptFile & " after retries: " & e.msg)
         inc(failures)
