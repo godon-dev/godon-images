@@ -173,7 +173,6 @@ build-and-test:
           echo "$GODON_SCRIPTS" | jq -r '.[].path'
           exit 1
         fi
-        fi
 
     - name: Test retry mechanism with delayed Windmill start
       run: |
