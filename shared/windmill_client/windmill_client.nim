@@ -268,16 +268,18 @@ proc existsFlow*(client: WindmillApiClient, workspace: string, flowPath: string)
     error("Error checking flow existence: " & e.msg)
     return false
 
-proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: JsonNode = nil) =
-  ## Deploy a script to Windmill using the API
+proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: string, content: string, settings: JsonNode = nil, filePath: string = "") =
+  ## Deploy a script to Windmill using API
+  ## filePath: Original file path with extension (for language detection)
   info("Deploying script: " & scriptPath)
-  
-  # Detect language from file extension
-  let ext = if '.' in scriptPath:
-               let parts = scriptPath.split('.')
-               "." & parts[parts.len - 1]
-             else:
-               ""
+
+  # Detect language from file extension (prefer filePath, fallback to scriptPath)
+  let pathForExt = if filePath.len > 0: filePath else: scriptPath
+  let ext = if '.' in pathForExt:
+                let parts = pathForExt.split('.')
+                "." & parts[parts.len - 1]
+              else:
+                ""
   let language = case ext
     of ".py": "python3"
     of ".js": "deno"
@@ -302,7 +304,12 @@ proc deployScript*(client: WindmillApiClient, workspace: string, scriptPath: str
   if settings != nil:
     for key, value in settings.pairs:
       payload[key] = value
-  
+
+  debug("Deploying to: " & url)
+  debug("Payload language: " & payload["language"].getStr())
+  debug("Payload path: " & payload["path"].getStr())
+  debug("Full payload: " & $payload)
+
   try:
     let originalHeaders = client.http.headers
     client.http.headers = newHttpHeaders({
