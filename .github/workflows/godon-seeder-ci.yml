@@ -105,7 +105,7 @@ jobs:
           -e WINDMILL_EMAIL=admin@windmill.dev \
           -e WINDMILL_PASSWORD=changeme \
           -e CONTROLLER_VERSION=0.20.0 \
-          -e BREEDER_VERSION=0.25.0 \
+          -e BREEDER_VERSION=0.26.0 \
           -e GODON_DIR=/var/lib/godon \
           -e VERBOSE=true \
           godon-seeder-test:test-${{ github.run_number }} \
@@ -166,7 +166,7 @@ jobs:
           -e WINDMILL_EMAIL=admin@windmill.dev \
           -e WINDMILL_PASSWORD=changeme \
           -e CONTROLLER_VERSION=0.20.0 \
-          -e BREEDER_VERSION=0.25.0 \
+          -e BREEDER_VERSION=0.26.0 \
           -e GODON_DIR=/var/lib/godon \
           -e SEEDER_MAX_RETRIES=10 \
           -e SEEDER_RETRY_DELAY=2 \
