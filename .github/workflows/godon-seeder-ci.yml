@@ -93,7 +93,6 @@ build-and-test:
       docker ps
       docker logs godon-seeder-test-windmill_server-1
       exit 1
-
   - name: Run godon-seeder deployment test
     run: |
       echo "🚀 Testing godon-seeder against real Windmill..."
