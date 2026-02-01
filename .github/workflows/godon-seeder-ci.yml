@@ -155,9 +155,9 @@ build-and-test:
           echo "❌ Ansible playbook language incorrect or not found"
         echo "🧪 Verifying Ansible playbook deployment with retry..."
         
-        # Retry with exponential backoff
+        # Retry with simple backoff
         MAX_RETRIES=6
-        RETRY_DELAY=2
+        RETRY_DELAY=5
         ANSIBLE_SCRIPT=""
         
         for i in $(seq 1 $MAX_RETRIES); do
@@ -175,7 +175,6 @@ build-and-test:
             
             if [ $i -lt $MAX_RETRIES ]; then
               sleep $RETRY_DELAY
-              RETRY_DELAY=$((RETRY_DELAY * 2))
             fi
           fi
         done
