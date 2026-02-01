@@ -139,8 +139,7 @@ jobs:
 
         # Verify Ansible playbook was deployed with correct language
         echo "🧪 Verifying Ansible playbook deployment..."
-        ANSIBLE_SCRIPT=$(curl -s "http://localhost:9101/api/w/godon/scripts/get/f/breeder/linux_performance/effectuate_settings" \
-          -H "Authorization: Bearer $TOKEN")
+        ANSIBLE_SCRIPT=$(echo "$GODON_SCRIPTS" | jq -r '.[] | select(.path == "f/breeder/linux_performance/effectuate_settings")')
 
         if echo "$ANSIBLE_SCRIPT" | grep -q '"language":"ansible"'; then
           echo "✅ Ansible playbook deployed with correct language"
