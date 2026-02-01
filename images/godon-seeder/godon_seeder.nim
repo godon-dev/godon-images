@@ -349,13 +349,14 @@ proc deployComponentScripts*(client: WindmillApiClient, workspace: string, compo
     if scriptSpec.pattern.len > 0:
       # Pattern-based file discovery - treat pattern as relative path from baseDir
       let patternPath = baseDir / scriptSpec.pattern
-      if fileExists(patternPath):
-        # Pattern is actually a specific file path (e.g., "reconnaissance/prometheus.py")
-        scriptFiles = @[patternPath]
-      elif scriptSpec.path.isSome and scriptSpec.path.get().len > 0:
+      
+      if scriptSpec.path.isSome and scriptSpec.path.get().len > 0:
         # Both pattern and path specified - path indicates subdirectory to search (e.g., controller case)
         let searchDir = baseDir / scriptSpec.path.get()
         scriptFiles = findFilesByPattern(searchDir, scriptSpec.pattern)
+      elif fileExists(patternPath):
+        # Pattern is actually a specific file path (e.g., "reconnaissance/prometheus.py" or "effectuate_settings.yml")
+        scriptFiles = @[patternPath]
       else:
         # Pattern is a glob pattern - search in base directory
         scriptFiles = findFilesByPattern(baseDir, scriptSpec.pattern)
