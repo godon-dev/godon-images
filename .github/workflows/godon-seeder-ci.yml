@@ -138,21 +138,7 @@ build-and-test:
         exit 1
       fi
 
-      # Verify Ansible playbook was deployed with correct language
-        echo "🧪 Verifying Ansible playbook deployment..."
-
-        echo "⏳ Waiting for scripts to propagate..."
-        sleep 5
-
-        echo "Available script paths:"
-        echo "$GODON_SCRIPTS" | jq -r '.[].path'
-
-        ANSIBLE_SCRIPT=$(echo "$GODON_SCRIPTS" | jq -r '.[] | select(.path == "f/breeder/linux_performance/effectuate_settings")')
-
-        if echo "$ANSIBLE_SCRIPT" | grep -q '"language":"ansible"'; then
-          echo "✅ Ansible playbook deployed with correct language"
-        else
-          echo "❌ Ansible playbook language incorrect or not found"
+        # Verify Ansible playbook was deployed with correct language
         echo "🧪 Verifying Ansible playbook deployment with retry..."
         
         # Retry with simple backoff
@@ -182,11 +168,11 @@ build-and-test:
         # Check if verification succeeded
         if ! echo "$ANSIBLE_SCRIPT" | grep -q '"ansible"'; then
           echo "❌ Ansible playbook language incorrect or not found after $MAX_RETRIES retries"
->>>>>>> 228901c (Add retry mechanism with exponential backoff for script verification)
           echo "Script details: $ANSIBLE_SCRIPT"
           echo "Available scripts:"
           echo "$GODON_SCRIPTS" | jq -r '.[].path'
           exit 1
+        fi
         fi
 
     - name: Test retry mechanism with delayed Windmill start
