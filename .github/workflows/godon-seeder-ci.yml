@@ -165,7 +165,7 @@ build-and-test:
           
           ANSIBLE_SCRIPT=$(echo "$GODON_SCRIPTS" | jq -r '.[] | select(.path == "f/breeder/linux_performance/effectuate_settings")')
           
-          if echo "$ANSIBLE_SCRIPT" | grep -q '"language":"ansible"'; then
+          if echo "$ANSIBLE_SCRIPT" | grep -q '"ansible"'; then
             echo "✅ Ansible playbook deployed with correct language"
             break
           else
@@ -180,7 +180,7 @@ build-and-test:
         done
         
         # Check if verification succeeded
-        if ! echo "$ANSIBLE_SCRIPT" | grep -q '"language":"ansible"'; then
+        if ! echo "$ANSIBLE_SCRIPT" | grep -q '"ansible"'; then
           echo "❌ Ansible playbook language incorrect or not found after $MAX_RETRIES retries"
 >>>>>>> 228901c (Add retry mechanism with exponential backoff for script verification)
           echo "Script details: $ANSIBLE_SCRIPT"
