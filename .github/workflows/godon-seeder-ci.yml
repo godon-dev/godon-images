@@ -1,144 +1,144 @@
 name: Godon Seeder CI
 
 on:
-  pull_request:
-    branches: [ main ]
-    paths:
-      - 'images/godon-seeder/**'
-      - 'shared/windmill_client/**'
-      - 'build/**'
-      - '.github/workflows/godon-seeder-ci.yml'
-  workflow_dispatch:
+pull_request:
+  branches: [ main ]
+  paths:
+    - 'images/godon-seeder/**'
+    - 'shared/windmill_client/**'
+    - 'build/**'
+    - '.github/workflows/godon-seeder-ci.yml'
+workflow_dispatch:
 
 env:
-  NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.05
+NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.05
 
 jobs:
-  build-and-test:
-    name: Build and Test Container
-    runs-on: ubuntu-latest
+build-and-test:
+  name: Build and Test Container
+  runs-on: ubuntu-latest
 
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
+  steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
+    with:
+      fetch-depth: 1
 
-    - name: Setup Nix
-      uses: cachix/install-nix-action@v22
-      with:
-        nix_path: nixpkgs=https://nixos.org/channels/nixos-25.05
+  - name: Setup Nix
+    uses: cachix/install-nix-action@v22
+    with:
+      nix_path: nixpkgs=https://nixos.org/channels/nixos-25.05
 
-    - name: Build godon-seeder container with Nix
-      run: |
-        echo "Building godon-seeder container using established Nix build system..."
-        cd images/godon-seeder
-        VERSION="test-${{ github.run_number }}" \
-        IMAGE_NAME="godon-seeder-test" \
-        PROJECT_ROOT="$(git rev-parse --show-toplevel)" \
-        ../../build/build-container-nix.sh \
-          --version "test-${{ github.run_number }}" \
-          --name "godon-seeder-test" \
-          --builder-file ../../build/Dockerfile.nix-builder
+  - name: Build godon-seeder container with Nix
+    run: |
+      echo "Building godon-seeder container using established Nix build system..."
+      cd images/godon-seeder
+      VERSION="test-${{ github.run_number }}" \
+      IMAGE_NAME="godon-seeder-test" \
+      PROJECT_ROOT="$(git rev-parse --show-toplevel)" \
+      ../../build/build-container-nix.sh \
+        --version "test-${{ github.run_number }}" \
+        --name "godon-seeder-test" \
+        --builder-file ../../build/Dockerfile.nix-builder
 
-    - name: Test container basic functionality
-      run: |
-        echo "Testing container basic functionality..."
-        
-        # Test container help command by overriding entrypoint
-        docker run --rm --entrypoint="/bin/sh" godon-seeder-test:test-${{ github.run_number }} -c "godon_seeder --help"
+  - name: Test container basic functionality
+    run: |
+      echo "Testing container basic functionality..."
+      
+      # Test container help command by overriding entrypoint
+      docker run --rm --entrypoint="/bin/sh" godon-seeder-test:test-${{ github.run_number }} -c "godon_seeder --help"
 
-    - name: Start Windmill docker-compose stack
-      run: |
-        echo "🚀 Starting Windmill 1.601.1 with docker compose..."
-        cd shared/tests
-        docker compose -f docker-compose.windmill.yml -p godon-seeder-test up -d
+  - name: Start Windmill docker-compose stack
+    run: |
+      echo "🚀 Starting Windmill 1.601.1 with docker compose..."
+      cd shared/tests
+      docker compose -f docker-compose.windmill.yml -p godon-seeder-test up -d
 
-        echo "⏳ Waiting for Windmill to be ready..."
-        # Windmill takes about 45-60 seconds to fully start
-        sleep 60
+      echo "⏳ Waiting for Windmill to be ready..."
+      # Windmill takes about 45-60 seconds to fully start
+      sleep 60
 
-        # Verify containers are running
-        if ! docker ps | grep -q "godon-seeder-test-windmill_server-1"; then
-          echo "❌ Windmill server not running"
-          docker ps
-          docker logs godon-seeder-test-windmill_server-1
-          exit 1
-        fi
-        echo "✅ Windmill is running!"
-
-    - name: Verify Windmill is running
-      run: |
-        echo "🧪 Verifying Windmill is running with retry..."
-
-        # Retry with fixed intervals
-        MAX_RETRIES=10
-        RETRY_DELAY=3
-
-        for i in $(seq 1 $MAX_RETRIES); do
-          echo "Attempt $i/$MAX_RETRIES..."
-
-          if curl -s -f http://localhost:9101/ > /dev/null 2>&1; then
-            echo "✅ Windmill server is running and responding"
-            exit 0
-          fi
-
-          if [ $i -lt $MAX_RETRIES ]; then
-            echo "⏳ Windmill not ready, waiting ${RETRY_DELAY}s before retry..."
-            sleep $RETRY_DELAY
-          fi
-        done
-
-        echo "❌ Windmill server failed to respond after $MAX_RETRIES attempts"
+      # Verify containers are running
+      if ! docker ps | grep -q "godon-seeder-test-windmill_server-1"; then
+        echo "❌ Windmill server not running"
         docker ps
         docker logs godon-seeder-test-windmill_server-1
         exit 1
+      fi
+      echo "✅ Windmill is running!"
 
-    - name: Run godon-seeder deployment test
-      run: |
-        echo "🚀 Testing godon-seeder against real Windmill..."
-        cd images/godon-seeder
+  - name: Verify Windmill is running
+    run: |
+      echo "🧪 Verifying Windmill is running with retry..."
 
-        docker run --rm --network godon-seeder-test_default \
-          -e WINDMILL_BASE_URL=http://windmill_server:8000/api \
-          -e WINDMILL_WORKSPACE=seeder-test \
-          -e WINDMILL_EMAIL=admin@windmill.dev \
-          -e WINDMILL_PASSWORD=changeme \
-          -e CONTROLLER_VERSION=0.20.0 \
-          -e BREEDER_VERSION=0.26.0 \
-          -e GODON_DIR=/var/lib/godon \
-          -e VERBOSE=true \
-          godon-seeder-test:test-${{ github.run_number }} \
-          --verbose \
-          2>&1 | tee /tmp/seeder-output.log
+      # Retry with fixed intervals
+      MAX_RETRIES=10
+      RETRY_DELAY=3
 
-        # Verify deployment succeeded
-        if grep -q "✅ Component deployment completed successfully" /tmp/seeder-output.log; then
-          echo "✅ Seeder deployment completed successfully"
-        else
-          echo "❌ Seeder deployment failed"
-          grep -E "(ERROR|error|Error)" /tmp/seeder-output.log || true
-          exit 1
+      for i in $(seq 1 $MAX_RETRIES); do
+        echo "Attempt $i/$MAX_RETRIES..."
+
+        if curl -s -f http://localhost:9101/ > /dev/null 2>&1; then
+          echo "✅ Windmill server is running and responding"
+          exit 0
         fi
 
-        # Verify scripts were created
-        echo "🧪 Verifying deployed scripts..."
-        TOKEN=$(curl -s -X POST http://localhost:9101/api/auth/login \
-          -H "Content-Type: application/json" \
-          -d '{"email":"admin@windmill.dev","password":"changeme"}' | tr -d '"')
-
-        GODON_SCRIPTS=$(curl -s http://localhost:9101/api/w/godon/scripts/list \
-          -H "Authorization: Bearer $TOKEN")
-
-        if echo "$GODON_SCRIPTS" | grep -q -E 'breeder|effect|recon|ansible'; then
-          echo "✅ Deployed scripts found in godon workspace"
-        else
-          echo "❌ No deployed scripts found in godon workspace"
-          echo "Script list: $GODON_SCRIPTS"
-          exit 1
+        if [ $i -lt $MAX_RETRIES ]; then
+          echo "⏳ Windmill not ready, waiting ${RETRY_DELAY}s before retry..."
+          sleep $RETRY_DELAY
         fi
+      done
 
-        # Verify Ansible playbook was deployed with correct language
+      echo "❌ Windmill server failed to respond after $MAX_RETRIES attempts"
+      docker ps
+      docker logs godon-seeder-test-windmill_server-1
+      exit 1
+
+  - name: Run godon-seeder deployment test
+    run: |
+      echo "🚀 Testing godon-seeder against real Windmill..."
+      cd images/godon-seeder
+
+      docker run --rm --network godon-seeder-test_default \
+        -e WINDMILL_BASE_URL=http://windmill_server:8000/api \
+        -e WINDMILL_WORKSPACE=seeder-test \
+        -e WINDMILL_EMAIL=admin@windmill.dev \
+        -e WINDMILL_PASSWORD=changeme \
+        -e CONTROLLER_VERSION=0.20.0 \
+        -e BREEDER_VERSION=0.26.0 \
+        -e GODON_DIR=/var/lib/godon \
+        -e VERBOSE=true \
+        godon-seeder-test:test-${{ github.run_number }} \
+        --verbose \
+        2>&1 | tee /tmp/seeder-output.log
+
+      # Verify deployment succeeded
+      if grep -q "✅ Component deployment completed successfully" /tmp/seeder-output.log; then
+        echo "✅ Seeder deployment completed successfully"
+      else
+        echo "❌ Seeder deployment failed"
+        grep -E "(ERROR|error|Error)" /tmp/seeder-output.log || true
+        exit 1
+      fi
+
+      # Verify scripts were created
+      echo "🧪 Verifying deployed scripts..."
+      TOKEN=$(curl -s -X POST http://localhost:9101/api/auth/login \
+        -H "Content-Type: application/json" \
+        -d '{"email":"admin@windmill.dev","password":"changeme"}' | tr -d '"')
+
+      GODON_SCRIPTS=$(curl -s http://localhost:9101/api/w/godon/scripts/list \
+        -H "Authorization: Bearer $TOKEN")
+
+      if echo "$GODON_SCRIPTS" | grep -q -E 'breeder|effect|recon|ansible'; then
+        echo "✅ Deployed scripts found in godon workspace"
+      else
+        echo "❌ No deployed scripts found in godon workspace"
+        echo "Script list: $GODON_SCRIPTS"
+        exit 1
+      fi
+
+      # Verify Ansible playbook was deployed with correct language
         echo "🧪 Verifying Ansible playbook deployment..."
 
         echo "⏳ Waiting for scripts to propagate..."
@@ -153,7 +153,40 @@ jobs:
           echo "✅ Ansible playbook deployed with correct language"
         else
           echo "❌ Ansible playbook language incorrect or not found"
+        echo "🧪 Verifying Ansible playbook deployment with retry..."
+        
+        # Retry with exponential backoff
+        MAX_RETRIES=6
+        RETRY_DELAY=2
+        ANSIBLE_SCRIPT=""
+        
+        for i in $(seq 1 $MAX_RETRIES); do
+          echo "Attempt $i/$MAX_RETRIES..."
+          
+          ANSIBLE_SCRIPT=$(echo "$GODON_SCRIPTS" | jq -r '.[] | select(.path == "f/breeder/linux_performance/effectuate_settings")')
+          
+          if echo "$ANSIBLE_SCRIPT" | grep -q '"language":"ansible"'; then
+            echo "✅ Ansible playbook deployed with correct language"
+            break
+          else
+            echo "Playbook not found yet, refreshing script list..."
+            GODON_SCRIPTS=$(curl -s http://localhost:9101/api/w/godon/scripts/list \
+              -H "Authorization: Bearer $TOKEN")
+            
+            if [ $i -lt $MAX_RETRIES ]; then
+              sleep $RETRY_DELAY
+              RETRY_DELAY=$((RETRY_DELAY * 2))
+            fi
+          fi
+        done
+        
+        # Check if verification succeeded
+        if ! echo "$ANSIBLE_SCRIPT" | grep -q '"language":"ansible"'; then
+          echo "❌ Ansible playbook language incorrect or not found after $MAX_RETRIES retries"
+>>>>>>> 228901c (Add retry mechanism with exponential backoff for script verification)
           echo "Script details: $ANSIBLE_SCRIPT"
+          echo "Available scripts:"
+          echo "$GODON_SCRIPTS" | jq -r '.[].path'
           exit 1
         fi
 
