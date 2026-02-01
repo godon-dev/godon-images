@@ -109,6 +109,7 @@ jobs:
           -e GODON_DIR=/var/lib/godon \
           -e VERBOSE=true \
           godon-seeder-test:test-${{ github.run_number }} \
+          --verbose \
           2>&1 | tee /tmp/seeder-output.log
 
         # Verify deployment succeeded
@@ -139,6 +140,13 @@ jobs:
 
         # Verify Ansible playbook was deployed with correct language
         echo "🧪 Verifying Ansible playbook deployment..."
+
+        echo "⏳ Waiting for scripts to propagate..."
+        sleep 5
+
+        echo "Available script paths:"
+        echo "$GODON_SCRIPTS" | jq -r '.[].path'
+
         ANSIBLE_SCRIPT=$(echo "$GODON_SCRIPTS" | jq -r '.[] | select(.path == "f/breeder/linux_performance/effectuate_settings")')
 
         if echo "$ANSIBLE_SCRIPT" | grep -q '"language":"ansible"'; then
