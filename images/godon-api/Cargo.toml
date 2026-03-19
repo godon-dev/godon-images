@@ -22,3 +22,4 @@ anyhow = "1.0"
 thiserror = "2.0"
 wmill = "1.659"
 once_cell = "1.19"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
