@@ -1,0 +1,20 @@
+[package]
+name = "godon-seeder"
+version = "0.0.0"
+authors = ["godon-dev Matthias Tafelmeier"]
+edition = "2021"
+description = "Godon Seeder - Deploy Godon optimization components to Windmill"
+license = "AGPL-3.0"
+
+[dependencies]
+anyhow = "1.0"
+env_logger = "0.11"
+log = "0.4"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+wmill = "1.659"
+walkdir = "2.5"
+clap = { version = "4.5", features = ["derive"] }
+glob = "0.3"
