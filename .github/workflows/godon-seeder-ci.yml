@@ -5,7 +5,6 @@ on:
     branches: [ main ]
     paths:
       - 'images/godon-seeder/**'
-      - 'shared/windmill_client/**'
       - 'build/**'
       - '.github/workflows/godon-seeder-ci.yml'
   workflow_dispatch:
@@ -46,7 +45,7 @@ jobs:
         echo "Testing container basic functionality..."
         
         # Test container help command by overriding entrypoint
-        docker run --rm --entrypoint="/bin/sh" godon-seeder-test:test-${{ github.run_number }} -c "godon_seeder --help"
+        docker run --rm --entrypoint="/bin/sh" godon-seeder-test:test-${{ github.run_number }} -c "godon-seeder --help"
 
     - name: Start Windmill docker-compose stack
       run: |
