@@ -12,7 +12,7 @@ let
 
     src = ./.;
 
-    cargoHash = "sha256-UWw5eS0+LlFgQyQc2ryCjGRtxX8rfMojwIfG1V28BSA=";
+    cargoHash = "sha256-ogoeZCr+pKTLOGo0SDyFjtKpwepkNt5QgUWdPFtYJQg=";
 
     nativeBuildInputs = with pkgs; [ cacert pkg-config ];
 
@@ -57,7 +57,8 @@ let
         "WINDMILL_BASE_URL=http://localhost:8000/api"
         "WINDMILL_WORKSPACE=godon"
         "WINDMILL_FOLDER=controller"
-        "WINDMILL_TOKEN=changeme"
+        "WINDMILL_EMAIL=admin@windmill.dev"
+        "WINDMILL_PASSWORD=changeme"
       ];
       WorkingDir = "/app";
       User = "1000:1000";
