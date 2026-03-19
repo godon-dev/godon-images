@@ -175,21 +175,23 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - id
+                  - updated
                 properties:
-                  breeder:
-                    $ref: '#/components/schemas/Breeder'
+                  id:
+                    type: string
+                    format: uuid
+                    description: The ID of the updated breeder
+                  updated:
+                    type: boolean
+                    description: Confirmation that the breeder was updated
               examples:
                 updated:
-                  summary: Updated breeder
+                  summary: Update confirmation
                   value:
-                    breeder:
-                      id: "550e8400-e29b-41d4-a716-446655440000"
-                      name: "updated-genetic-optimizer"
-                      status: "active"
-                      createdAt: "2024-01-15T10:30:00Z"
-                      config:
-                        setting1: "new_value1"
-                        setting2: 200
+                    id: "550e8400-e29b-41d4-a716-446655440000"
+                    updated: true
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
