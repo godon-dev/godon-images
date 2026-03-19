@@ -72,8 +72,7 @@ if [ -n "${SEEDER_RETRY_DELAY:-}" ]; then
 fi
 
 # Call the Rust seeder with the controller and breeder directories
-"${GODON_SEEDER_BIN}" \
-    $CLI_ARGS \
+"$GODON_SEEDER_BIN" $CLI_ARGS \
     "${GODON_DIR}/godon-controller" \
     "${GODON_DIR}/godon-breeders"
 
