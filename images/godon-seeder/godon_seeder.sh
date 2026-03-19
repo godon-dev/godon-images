@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
 # Script that seeds the breeder flows and scripts into the windmill orchestration engine.
-# Now orchestrates the Nim godon-seeder instead of using wmill CLI directly.
+# Now orchestrates the Rust godon-seeder instead of using wmill CLI directly.
 
 set -eEux
 set -o pipefail
@@ -18,8 +18,8 @@ export BREEDER_REPO="${BREEDER_REPO:-https://github.com/godon-dev/godon-breeders
 export BREEDER_VERSION="${BREEDER_VERSION:-0.1.0}"
 export GODON_DIR="${GODON_DIR:-/var/lib/godon}"
 
-# Path to the Nim godon-seeder binary (use PATH to find it)
-GODON_SEEDER_BIN="${GODON_SEEDER_BIN:-godon_seeder}"
+# Path to the godon-seeder binary (use PATH to find it)
+GODON_SEEDER_BIN="${GODON_SEEDER_BIN:-godon-seeder}"
 
 ## Setup repositories using reusable function
 setup_repo() {
@@ -57,7 +57,7 @@ setup_repo "godon-breeders" "${BREEDER_REPO}" "${BREEDER_VERSION}"
 
 echo "✅ All repositories updated successfully"
 
-## Seed Controller and Breeder Logic using Nim seeder
+## Seed Controller and Breeder Logic using godon-seeder
 echo "Starting component deployment with godon-seeder"
 
 # Build CLI args with optional retry settings from env vars
@@ -71,7 +71,7 @@ if [ -n "${SEEDER_RETRY_DELAY:-}" ]; then
     CLI_ARGS="$CLI_ARGS --retry-delay=$SEEDER_RETRY_DELAY"
 fi
 
-# Call the Nim seeder with the controller and breeder directories
+# Call the Rust seeder with the controller and breeder directories
 "${GODON_SEEDER_BIN}" \
     $CLI_ARGS \
     "${GODON_DIR}/godon-controller" \
