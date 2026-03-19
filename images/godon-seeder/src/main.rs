@@ -34,7 +34,7 @@ fn main() {
         .filter_module("godon_seeder", log_level)
         .init();
 
-    if let Err(e) = auth::setup_windmill_env() {
+    if let Err(e) = auth::setup_windmill_env(args.max_retries, args.retry_delay) {
         log::error!("Failed to setup Windmill authentication: {}", e);
         std::process::exit(1);
     }
