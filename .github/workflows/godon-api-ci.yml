@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
 
 env:
-  NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.05
+  NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.11
 
 jobs:
   build-and-test:
@@ -28,7 +28,7 @@ jobs:
     - name: Setup Nix
       uses: cachix/install-nix-action@v22
       with:
-        nix_path: nixpkgs=https://nixos.org/channels/nixos-25.05
+        nix_path: nixpkgs=https://nixos.org/channels/nixos-25.11
 
     - name: Build godon-api container with Nix
       run: |
