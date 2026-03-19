@@ -5,7 +5,6 @@ on:
     branches: [ main ]
     paths:
       - 'images/godon-seeder/**'
-      - 'shared/windmill_client/**'
       - 'build/**'
       - '.github/workflows/godon-seeder-ci.yml'
   workflow_dispatch:
@@ -46,7 +45,7 @@ jobs:
         echo "Testing container basic functionality..."
         
         # Test container help command by overriding entrypoint
-        docker run --rm --entrypoint="/bin/sh" godon-seeder-test:test-${{ github.run_number }} -c "godon_seeder --help"
+        docker run --rm --entrypoint="/bin/sh" godon-seeder-test:test-${{ github.run_number }} -c "godon-seeder --help"
 
     - name: Start Windmill docker-compose stack
       run: |
@@ -99,6 +98,7 @@ jobs:
         echo "🚀 Testing godon-seeder against real Windmill..."
         cd images/godon-seeder
 
+        set -o pipefail
         docker run --rm --network godon-seeder-test_default \
           -e WINDMILL_BASE_URL=http://windmill_server:8000/api \
           -e WINDMILL_WORKSPACE=seeder-test \
@@ -111,14 +111,7 @@ jobs:
           godon-seeder-test:test-${{ github.run_number }} \
           2>&1 | tee /tmp/seeder-output.log
 
-        # Verify deployment succeeded
-        if grep -q "✅ Component deployment completed successfully" /tmp/seeder-output.log; then
-          echo "✅ Seeder deployment completed successfully"
-        else
-          echo "❌ Seeder deployment failed"
-          grep -E "(ERROR|error|Error)" /tmp/seeder-output.log || true
-          exit 1
-        fi
+        echo "✅ Seeder deployment completed successfully"
 
         # Verify scripts were created
         echo "🧪 Verifying deployed scripts..."
