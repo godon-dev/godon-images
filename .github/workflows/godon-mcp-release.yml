@@ -1,0 +1,15 @@
+name: "release godon-mcp image"
+
+on:
+  push:
+    tags:
+      - 'godon-mcp-*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-and-release-image:
+    uses: ./.github/workflows/release-image.yml
+    secrets: inherit
