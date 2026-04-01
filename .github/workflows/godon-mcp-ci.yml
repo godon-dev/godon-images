@@ -1,0 +1,169 @@
+name: Godon MCP CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'images/godon-mcp/**'
+      - 'build/**'
+      - '.github/workflows/godon-mcp-ci.yml'
+  workflow_dispatch:
+
+env:
+  NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.11
+
+jobs:
+  build-and-test:
+    name: Build and Test Container
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Setup Nix
+      uses: cachix/install-nix-action@v22
+      with:
+        nix_path: nixpkgs=https://nixos.org/channels/nixos-25.11
+
+    - name: Build godon-mcp container with Nix
+      run: |
+        echo "Building godon-mcp container using established Nix build system..."
+        cd images/godon-mcp
+        VERSION="test-${{ github.run_number }}" \
+        IMAGE_NAME="godon-mcp-test" \
+        PROJECT_ROOT="$(git rev-parse --show-toplevel)" \
+        ../../build/build-container-nix.sh \
+          --version "test-${{ github.run_number }}" \
+          --name "godon-mcp-test" \
+          --builder-file ../../build/Dockerfile.nix-builder
+
+    - name: Start godon-mcp container
+      run: |
+        echo "Starting godon-mcp container..."
+        docker run -d --name godon-mcp-test \
+          -p 3001:3001 \
+          -e GODON_API_HOSTNAME="localhost" \
+          -e GODON_API_PORT="8080" \
+          godon-mcp-test:test-${{ github.run_number }}
+
+        echo "Waiting for godon-mcp to start..."
+        sleep 5
+
+        if ! docker ps | grep -q "godon-mcp-test"; then
+          echo "godon-mcp container not running"
+          docker logs godon-mcp-test
+          exit 1
+        fi
+        echo "godon-mcp is running!"
+
+    - name: Test SSE endpoint
+      run: |
+        echo "Testing SSE endpoint..."
+        if curl -s -f -N --max-time 5 http://localhost:3001/sse > /dev/null 2>&1; then
+          echo "SSE endpoint responding"
+        else
+          echo "SSE endpoint check (may timeout on empty stream, checking container logs)"
+          docker logs godon-mcp-test
+        fi
+
+    - name: Test MCP initialize via message endpoint
+      run: |
+        echo "Testing MCP initialize..."
+        RESPONSE=$(curl -s -X POST http://localhost:3001/message \
+          -H "Content-Type: application/json" \
+          -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1.0"}}}')
+
+        echo "Response: $RESPONSE"
+
+        if echo "$RESPONSE" | jq -e '.result.serverInfo.name == "godon-mcp"' > /dev/null 2>&1; then
+          echo "MCP initialize successful"
+        else
+          echo "MCP initialize failed"
+          docker logs godon-mcp-test
+          exit 1
+        fi
+
+    - name: Test tools/list
+      run: |
+        echo "Testing tools/list..."
+        RESPONSE=$(curl -s -X POST http://localhost:3001/message \
+          -H "Content-Type: application/json" \
+          -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
+
+        echo "Response: $RESPONSE"
+
+        TOOL_COUNT=$(echo "$RESPONSE" | jq '.result.tools | length')
+        echo "Found $TOOL_COUNT tools"
+
+        if [ "$TOOL_COUNT" -lt 5 ]; then
+          echo "Expected at least 5 tools"
+          exit 1
+        fi
+
+        for tool in breeder_list breeder_create breeder_get breeder_stop breeder_start breeder_delete credential_list health; do
+          if echo "$RESPONSE" | jq -e ".result.tools[] | select(.name == \"$tool\")" > /dev/null; then
+            echo "  Tool found: $tool"
+          else
+            echo "  Tool missing: $tool"
+            exit 1
+          fi
+        done
+
+    - name: Test ping
+      run: |
+        echo "Testing ping..."
+        RESPONSE=$(curl -s -X POST http://localhost:3001/message \
+          -H "Content-Type: application/json" \
+          -d '{"jsonrpc":"2.0","id":3,"method":"ping"}')
+
+        if echo "$RESPONSE" | jq -e '.result' > /dev/null 2>&1; then
+          echo "Ping successful"
+        else
+          echo "Ping failed: $RESPONSE"
+          exit 1
+        fi
+
+    - name: Test unknown method
+      run: |
+        echo "Testing unknown method..."
+        RESPONSE=$(curl -s -X POST http://localhost:3001/message \
+          -H "Content-Type: application/json" \
+          -d '{"jsonrpc":"2.0","id":4,"method":"nonexistent"}')
+
+        if echo "$RESPONSE" | jq -e '.error.code == -32601' > /dev/null 2>&1; then
+          echo "Unknown method correctly rejected"
+        else
+          echo "Unexpected response: $RESPONSE"
+          exit 1
+        fi
+
+    - name: Test tool call without godon-api (connection refused)
+      run: |
+        echo "Testing tool call when godon-api is unreachable..."
+        RESPONSE=$(curl -s -X POST http://localhost:3001/message \
+          -H "Content-Type: application/json" \
+          -d '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"health","arguments":{}}}')
+
+        echo "Response: $RESPONSE"
+
+        if echo "$RESPONSE" | jq -e '.result.isError == true' > /dev/null 2>&1; then
+          echo "Connection error properly surfaced as isError"
+        else
+          echo "Expected isError response"
+          docker logs godon-mcp-test
+          exit 1
+        fi
+
+    - name: Show container logs on failure
+      if: failure()
+      run: |
+        docker logs godon-mcp-test
+
+    - name: Cleanup
+      if: always()
+      run: |
+        docker stop godon-mcp-test 2>/dev/null || true
+        docker rm godon-mcp-test 2>/dev/null || true
