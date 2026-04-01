@@ -38,11 +38,12 @@ cd images/<image-name>
 
 ## Releasing
 
-Push a tag in the format `<image-name>-X.Y.Z` (e.g., `godon-mcp-0.0.1`). The release workflow builds and pushes to `ghcr.io/godon-dev/<image-name>`.
+Push a tag in the format `<image-name>-X.Y.Z` (e.g., `godon-mcp-0.0.1`). GitHub Actions workflows handle the rest — each image has a `<image>-ci.yml` for PR builds and a `<image>-release.yml` triggered by the tag, which delegates to the shared `release-image.yml` to build and push to `ghcr.io/godon-dev/<image-name>`.
 
 ## Architecture
 
-- **Nix-based builds**: Reproducible, minimal container images via `dockerTools.buildLayeredImage`
-- **One image per concern**: Each service is a separate container with its own CI/release pipeline
-- **Shared build system**: All images use the same builder container and build script
+- **Isolated Nix builds**: Each service builds in an isolated container to avoid Nix sandboxing issues
+- **Reproducible containers**: Nix ensures exact same dependencies everywhere
+- **Simple structure**: Focus on container building without unnecessary complexity
+- **Extensible**: Easy to add new services following the same pattern
 
