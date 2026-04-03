@@ -39,6 +39,8 @@ tags:
     description: Operations for managing optimizer breeders
   - name: credentials
     description: Operations for managing credential catalog
+  - name: targets
+    description: Operations for managing target system catalog
 
 paths:
   /breeders:
@@ -516,6 +518,169 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /targets:
+    get:
+      tags:
+        - targets
+      operationId: listTargets
+      summary: List all targets
+      description: Retrieves a list of all target systems in the catalog
+      responses:
+        '200':
+          description: Successfully returned list of targets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Target'
+              examples:
+                targets:
+                  summary: Example targets list
+                  value:
+                    - id: "550e8400-e29b-41d4-a716-446655440020"
+                      name: "production-server-1"
+                      targetType: "ssh"
+                      address: "10.0.5.53"
+                      username: "godon_robot"
+                      credentialName: "godon_ssh_key"
+                      description: "Production server for network optimization"
+                      allowsDowntime: false
+                      createdAt: "2024-01-15T10:30:00Z"
+                    - id: "6ba7b810-9dad-11d1-80b4-00c04fd430ca"
+                      name: "staging-api"
+                      targetType: "http"
+                      address: "https://staging.example.com"
+                      description: "Staging HTTP API"
+                      allowsDowntime: true
+                      createdAt: "2024-01-16T14:20:00Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    post:
+      tags:
+        - targets
+      operationId: createTarget
+      summary: Create a new target
+      description: |
+        Creates a new target system catalog entry. Targets represent remote systems
+        that breeders optimize against. Supported types: ssh, http.
+      requestBody:
+        required: true
+        description: Target system details
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TargetCreate'
+            examples:
+              sshTarget:
+                summary: SSH target system
+                value:
+                  name: "production-server-1"
+                  targetType: "ssh"
+                  address: "10.0.5.53"
+                  username: "godon_robot"
+                  credentialName: "godon_ssh_key"
+                  description: "Production server for network optimization"
+                  allowsDowntime: false
+              httpTarget:
+                summary: HTTP target system
+                value:
+                  name: "staging-api"
+                  targetType: "http"
+                  address: "https://staging.example.com"
+                  description: "Staging HTTP API"
+                  allowsDowntime: true
+      responses:
+        '201':
+          description: Successfully created the target
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Target'
+              examples:
+                created:
+                  summary: Newly created target
+                  value:
+                    id: "550e8400-e29b-41d4-a716-446655440020"
+                    name: "production-server-1"
+                    targetType: "ssh"
+                    address: "10.0.5.53"
+                    username: "godon_robot"
+                    credentialName: "godon_ssh_key"
+                    description: "Production server for network optimization"
+                    allowsDowntime: false
+                    createdAt: "2024-01-15T10:30:00Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /targets/{target_id}:
+    parameters:
+      - $ref: '#/components/parameters/TargetId'
+
+    get:
+      tags:
+        - targets
+      operationId: getTarget
+      summary: Get target by ID
+      description: Retrieves detailed information about a specific target system
+      responses:
+        '200':
+          description: Successfully returned target information
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Target'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags:
+        - targets
+      operationId: deleteTarget
+      summary: Delete a target
+      description: |
+        Permanently removes a target from the catalog.
+        Breeders referencing this target will fail on next effectuation.
+      responses:
+        '200':
+          description: Successfully deleted the target
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - id
+                  - deleted
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                    description: The ID of the deleted target
+                  deleted:
+                    type: boolean
+                    description: Confirmation that the target was deleted
+              examples:
+                deleted:
+                  summary: Deletion confirmation
+                  value:
+                    id: "550e8400-e29b-41d4-a716-446655440020"
+                    deleted: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
 components:
   parameters:
     BreederUuid:
@@ -539,6 +704,17 @@ components:
         format: uuid
         pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
       example: "550e8400-e29b-41d4-a716-446655440001"
+
+    TargetId:
+      name: target_id
+      in: path
+      required: true
+      description: Unique identifier (UUID v4) for the target
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      example: "550e8400-e29b-41d4-a716-446655440020"
 
   schemas:
     Breeder:
@@ -780,6 +956,124 @@ components:
       items:
         $ref: '#/components/schemas/Credential'
       description: Array of credential objects (excluding the actual credential content)
+
+    Target:
+      type: object
+      required:
+        - id
+        - name
+        - targetType
+        - address
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier for the target
+          readOnly: true
+          example: "550e8400-e29b-41d4-a716-446655440020"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: Human-readable name for the target (alphanumeric, hyphens, and underscores only)
+          example: "production-server-1"
+        targetType:
+          type: string
+          enum: ["ssh", "http"]
+          description: Type of target system
+          example: "ssh"
+        address:
+          type: string
+          description: Hostname or IP address (SSH) or base URL (HTTP) of the target system
+          example: "10.0.5.53"
+        username:
+          type: string
+          description: Login username for SSH targets
+          example: "godon_robot"
+        credentialId:
+          type: string
+          format: uuid
+          description: UUID of the credential to use for authentication
+          example: "550e8400-e29b-41d4-a716-446655440001"
+        credentialName:
+          type: string
+          description: Name of the credential to use for authentication
+          example: "godon_ssh_key"
+        description:
+          type: string
+          description: Human-readable description of the target's purpose
+          example: "Production server for network optimization"
+        allowsDowntime:
+          type: boolean
+          description: Whether the target can tolerate downtime during optimization
+          default: false
+          example: false
+        createdAt:
+          type: string
+          format: date-time
+          description: Timestamp when the target was created
+          readOnly: true
+          example: "2024-01-15T10:30:00Z"
+        lastUsedAt:
+          type: string
+          format: date-time
+          description: Timestamp when the target was last used by a breeder
+          readOnly: true
+          example: "2024-01-16T14:20:00Z"
+
+    TargetCreate:
+      type: object
+      required:
+        - name
+        - targetType
+        - address
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: '^[a-zA-Z0-9_-]+$'
+          description: Human-readable name for the target
+          example: "production-server-1"
+        targetType:
+          type: string
+          enum: ["ssh", "http"]
+          description: Type of target system
+          example: "ssh"
+        address:
+          type: string
+          description: Hostname or IP address (SSH) or base URL (HTTP)
+          example: "10.0.5.53"
+        username:
+          type: string
+          description: Login username (required for SSH targets)
+          example: "godon_robot"
+        credentialId:
+          type: string
+          format: uuid
+          description: UUID of the credential to use for authentication
+          example: "550e8400-e29b-41d4-a716-446655440001"
+        credentialName:
+          type: string
+          description: Name of the credential to use for authentication
+          example: "godon_ssh_key"
+        description:
+          type: string
+          description: Human-readable description of the target's purpose
+          example: "Production server for network optimization"
+        allowsDowntime:
+          type: boolean
+          description: Whether the target can tolerate downtime
+          default: false
+          example: false
+
+    TargetList:
+      type: array
+      items:
+        $ref: '#/components/schemas/Target'
+      description: Array of target objects
 
   responses:
     BadRequest:
