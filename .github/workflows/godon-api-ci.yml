@@ -365,14 +365,14 @@ jobs:
         docker run --rm --network godon-api-test_default \
           ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
           --hostname=godon-api-test --port=9090 --insecure \
-          target show --id=550e8400-e29b-41d4-a716-446655440020
+          target show --id=550e8400-e29b-41d4-a716-446655440022
 
         # Test deleting a target
         echo "Testing delete target:"
         docker run --rm --network godon-api-test_default \
           ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
           --hostname=godon-api-test --port=9090 --insecure \
-          target delete --id=550e8400-e29b-41d4-a716-446655440020
+          target delete --id=550e8400-e29b-41d4-a716-446655440022
 
         # Test target error scenarios
         echo "Testing target error scenarios..."
