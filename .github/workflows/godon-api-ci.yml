@@ -330,6 +330,65 @@ jobs:
           --hostname=godon-api-test --port=9090 --insecure \
           credential show --id=00000000-0000-4000-8000-000000000000 || echo "✅ Non-existent credential properly handled"
 
+    - name: Test target operations with godon_cli container
+      run: |
+        echo "Testing target operations via godon_cli container..."
+
+        # List targets (should return stub data)
+        echo "Listing targets:"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure target list
+
+        # Create a test target
+        echo "Creating test target..."
+        echo 'name: "test-web-server"' > target-config.yaml
+        echo 'targetType: "ssh"' >> target-config.yaml
+        echo 'address: "192.168.1.100"' >> target-config.yaml
+        echo 'username: "deploy"' >> target-config.yaml
+        echo 'description: "Test web server for CI"' >> target-config.yaml
+
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/target-config.yaml:/target-config.yaml:ro" \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          target create --file=/target-config.yaml
+
+        # List targets again to see if creation worked
+        echo "Listing targets after creation:"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure target list
+
+        # Test getting a specific target
+        echo "Testing get specific target:"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          target show --id=550e8400-e29b-41d4-a716-446655440022
+
+        # Test deleting a target
+        echo "Testing delete target:"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          target delete --id=550e8400-e29b-41d4-a716-446655440022
+
+        # Test target error scenarios
+        echo "Testing target error scenarios..."
+
+        echo "Testing invalid UUID handling for targets (should fail):"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          target show --id=invalid-uuid-format || echo "✅ Invalid UUID properly rejected"
+
+        echo "Testing non-existent target (should fail):"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          target show --id=00000000-0000-4000-8000-000000000000 || echo "✅ Non-existent target properly handled"
+
     - name: Adversarial API Tests
       run: |
         echo "🚨 Running adversarial API tests..."
@@ -453,6 +512,34 @@ jobs:
           echo "✅ Credential created without content (godon-api stores content in Windmill)"
         else
           echo "Output: $OUTPUT"
+        fi
+
+        # Test 12: Target create with invalid type
+        echo "Test 12: Testing invalid target type..."
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/test-data/target-invalid-type.yaml:/target-config.yaml:ro" \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          target create --file=/target-config.yaml || echo "✅ Invalid target type properly rejected"
+
+        # Test 13: Target create with missing required fields
+        echo "Test 13: Testing missing required fields for target..."
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/test-data/target-missing-fields.yaml:/target-config.yaml:ro" \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          target create --file=/target-config.yaml || echo "✅ Missing target fields properly rejected"
+
+        # Test 14: Target response structure validation
+        echo "Test 14: Validating target list response structure..."
+        TARGET_LIST_OUTPUT=$(docker run --rm --network godon-api-test_default \
+          $CLI_CONTAINER_IMAGE --hostname=godon-api-test --port=9090 --insecure \
+          target list 2>/dev/null)
+
+        if echo "$TARGET_LIST_OUTPUT" | grep -q "ID:" && echo "$TARGET_LIST_OUTPUT" | grep -q "Name:" && echo "$TARGET_LIST_OUTPUT" | grep -q "Type:"; then
+          echo "✅ Target list returns proper structure"
+        else
+          echo "❌ Target list response structure incorrect"
+          echo "Output was: $TARGET_LIST_OUTPUT"
+          exit 1
         fi
 
         echo "✅ All adversarial tests completed"

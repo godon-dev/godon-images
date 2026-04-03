@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::config::Config;
-use crate::types::{Breeder, BreederCreate, BreederSummary, Credential, CredentialCreate, DeleteResponse, ErrorResponse};
+use crate::types::{Breeder, BreederCreate, BreederSummary, Credential, CredentialCreate, DeleteResponse, ErrorResponse, Target, TargetCreate};
 use crate::windmill_adapter::WindmillClient;
 
 static BUILD_VERSION: &str = match option_env!("BUILD_VERSION") {
@@ -409,6 +409,177 @@ pub async fn delete_credential(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
                     format!("Failed to delete credential: {}", e),
+                    "INTERNAL_SERVER_ERROR"
+                ))
+            ))
+    }).await.map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
+    ))?
+}
+
+pub async fn list_targets(
+    State(_config): State<Config>,
+) -> Result<Json<Vec<Target>>, (StatusCode, Json<ErrorResponse>)> {
+    let client = get_client()?;
+
+    tokio::task::spawn_blocking(move || {
+        client.list_targets()
+            .map(Json)
+            .map_err(|e| (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(
+                    format!("Failed to retrieve targets: {}", e),
+                    "INTERNAL_SERVER_ERROR"
+                ))
+            ))
+    }).await.map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
+    ))?
+}
+
+pub async fn create_target(
+    State(_config): State<Config>,
+    Json(payload): Json<TargetCreate>,
+) -> Result<(StatusCode, Json<Target>), (StatusCode, Json<ErrorResponse>)> {
+    let valid_types = ["ssh", "http"];
+    if !valid_types.contains(&payload.target_type.as_str()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::with_details(
+                format!("Invalid targetType: '{}'. Must be one of: {}", payload.target_type, valid_types.join(", ")),
+                "BAD_REQUEST",
+                json!({"targetType": payload.target_type})
+            ))
+        ));
+    }
+
+    if !NAME_REGEX.is_match(&payload.name) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::with_details(
+                format!("Invalid name format: '{}'. Use only alphanumeric characters, hyphens, and underscores", payload.name),
+                "BAD_REQUEST",
+                json!({"name": payload.name})
+            ))
+        ));
+    }
+
+    if payload.address.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "Invalid address: address cannot be empty",
+                "BAD_REQUEST"
+            ))
+        ));
+    }
+
+    let target_data = json!({
+        "name": payload.name,
+        "targetType": payload.target_type,
+        "address": payload.address,
+        "username": payload.username.as_deref().unwrap_or(""),
+        "credentialId": payload.credential_id.as_deref().unwrap_or(""),
+        "credentialName": payload.credential_name.as_deref().unwrap_or(""),
+        "description": payload.description.as_deref().unwrap_or(""),
+        "allowsDowntime": payload.allows_downtime.unwrap_or(false),
+    });
+
+    let client = get_client()?;
+
+    tokio::task::spawn_blocking(move || {
+        client.create_target(target_data)
+            .map(|t| (StatusCode::CREATED, Json(t)))
+            .map_err(|e| {
+                let error_msg = e.to_string().to_lowercase();
+                if error_msg.contains("already exists") || error_msg.contains("400") {
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse::new(
+                            "Target with this name already exists",
+                            "BAD_REQUEST"
+                        ))
+                    )
+                } else {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse::new(
+                            format!("Failed to create target: {}", e),
+                            "INTERNAL_SERVER_ERROR"
+                        ))
+                    )
+                }
+            })
+    }).await.map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
+    ))?
+}
+
+pub async fn get_target(
+    State(_config): State<Config>,
+    Path(id): Path<String>,
+) -> Result<Json<Target>, (StatusCode, Json<ErrorResponse>)> {
+    if !UUID_REGEX.is_match(&id) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::with_details(
+                "Invalid UUID format",
+                "BAD_REQUEST",
+                json!({"target_id": id})
+            ))
+        ));
+    }
+
+    let client = get_client()?;
+
+    tokio::task::spawn_blocking(move || {
+        client.get_target(&id)
+            .map(Json)
+            .map_err(|e| (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(
+                    format!("Failed to retrieve target: {}", e),
+                    "INTERNAL_SERVER_ERROR"
+                ))
+            ))
+    }).await.map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
+    ))?
+}
+
+pub async fn delete_target(
+    State(_config): State<Config>,
+    Path(id): Path<String>,
+) -> Result<Json<DeleteResponse>, (StatusCode, Json<ErrorResponse>)> {
+    if !UUID_REGEX.is_match(&id) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::with_details(
+                "Invalid UUID format",
+                "BAD_REQUEST",
+                json!({"target_id": id})
+            ))
+        ));
+    }
+
+    let client = get_client()?;
+    let id_clone = id.clone();
+
+    tokio::task::spawn_blocking(move || {
+        client.delete_target(&id_clone)
+            .map(|_| Json(DeleteResponse {
+                id: id_clone.clone(),
+                deleted: true,
+                force: None,
+            }))
+            .map_err(|e| (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(
+                    format!("Failed to delete target: {}", e),
                     "INTERNAL_SERVER_ERROR"
                 ))
             ))
