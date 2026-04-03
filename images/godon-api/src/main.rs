@@ -33,6 +33,10 @@ async fn main() {
         .route("/credentials", post(handlers::create_credential))
         .route("/credentials/{id}", get(handlers::get_credential))
         .route("/credentials/{id}", delete(handlers::delete_credential))
+        .route("/targets", get(handlers::list_targets))
+        .route("/targets", post(handlers::create_target))
+        .route("/targets/{id}", get(handlers::get_target))
+        .route("/targets/{id}", delete(handlers::delete_target))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .with_state(cfg.clone());
 
