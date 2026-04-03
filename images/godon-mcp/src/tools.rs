@@ -139,6 +139,58 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
+                name: "target_list",
+                description: "List all registered target systems (servers, APIs) that breeders can optimize against.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
+                name: "target_create",
+                description: "Register a new target system (SSH server or HTTP API) for breeders to optimize against.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "Unique name for this target" },
+                        "target_type": { "type": "string", "enum": ["ssh", "http"], "description": "Type of target system" },
+                        "address": { "type": "string", "description": "Hostname/IP (SSH) or base URL (HTTP)" },
+                        "username": { "type": "string", "description": "Login username (SSH targets)" },
+                        "credential_id": { "type": "string", "description": "UUID of credential to use for authentication" },
+                        "credential_name": { "type": "string", "description": "Name of credential to use for authentication" },
+                        "description": { "type": "string", "description": "Human-readable description" },
+                        "allows_downtime": { "type": "boolean", "description": "Whether target can tolerate downtime" }
+                    },
+                    "required": ["name", "target_type", "address"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
+                name: "target_get",
+                description: "Get details of a specific target system by ID.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "target_id": { "type": "string", "description": "UUID of the target" }
+                    },
+                    "required": ["target_id"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
+                name: "target_delete",
+                description: "Delete a registered target system.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "target_id": { "type": "string", "description": "UUID of the target to delete" }
+                    },
+                    "required": ["target_id"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
                 name: "health",
                 description: "Check the health of the godon platform.",
                 input_schema: serde_json::json!({
@@ -170,6 +222,7 @@ impl ToolRegistry {
         let id = args
             .get("breeder_id")
             .or_else(|| args.get("credential_id"))
+            .or_else(|| args.get("target_id"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
@@ -225,6 +278,20 @@ impl ToolRegistry {
                 require_id(id, "credential_id")?;
                 self.client
                     .delete(&format!("/credentials/{}", urlencoding::encode(id)))
+                    .await
+            }
+            "target_list" => self.client.get("/targets").await,
+            "target_get" => {
+                require_id(id, "target_id")?;
+                self.client
+                    .get(&format!("/targets/{}", urlencoding::encode(id)))
+                    .await
+            }
+            "target_create" => self.client.post("/targets", args).await,
+            "target_delete" => {
+                require_id(id, "target_id")?;
+                self.client
+                    .delete(&format!("/targets/{}", urlencoding::encode(id)))
                     .await
             }
             "health" => self.client.get("/health").await,

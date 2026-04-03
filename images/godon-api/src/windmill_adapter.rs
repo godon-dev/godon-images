@@ -5,7 +5,7 @@ use serde_json::json;
 use std::env;
 use wmill::Windmill;
 
-use crate::types::{Breeder, BreederSummary, Credential};
+use crate::types::{Breeder, BreederSummary, Credential, Target};
 
 fn login_to_windmill(base_url: &str, email: &str, password: &str) -> Result<String> {
     let client = Client::new();
@@ -244,6 +244,43 @@ impl WindmillClient {
 
         let args = json!({ "request_data": { "credentialId": credential_id } });
         self.run_script("credential_delete", args)?;
+        Ok(())
+    }
+
+    pub fn list_targets(&self) -> Result<Vec<Target>> {
+        let response = self.run_script("targets_get", json!({}))?;
+        let data = Self::unwrap_data(response);
+
+        if data.is_array() {
+            let targets: Vec<Target> = serde_json::from_value(data)
+                .context("Failed to parse targets list")?;
+            Ok(targets)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    pub fn create_target(&self, target_data: serde_json::Value) -> Result<Target> {
+        let args = json!({ "request_data": target_data });
+        let response = self.run_script("target_create", args)?;
+        let data = Self::unwrap_data(response);
+
+        serde_json::from_value(data)
+            .context("Failed to parse created target")
+    }
+
+    pub fn get_target(&self, target_id: &str) -> Result<Target> {
+        let args = json!({ "request_data": { "targetId": target_id } });
+        let response = self.run_script("target_get", args)?;
+        let data = Self::unwrap_data(response);
+
+        serde_json::from_value(data)
+            .context("Failed to parse target")
+    }
+
+    pub fn delete_target(&self, target_id: &str) -> Result<()> {
+        let args = json!({ "request_data": { "targetId": target_id } });
+        self.run_script("target_delete", args)?;
         Ok(())
     }
 }

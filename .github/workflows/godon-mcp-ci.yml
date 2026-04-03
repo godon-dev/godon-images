@@ -103,7 +103,7 @@ jobs:
           exit 1
         fi
 
-        for tool in breeder_list breeder_create breeder_get breeder_stop breeder_start breeder_delete credential_list health; do
+        for tool in breeder_list breeder_create breeder_get breeder_stop breeder_start breeder_delete credential_list credential_create credential_get credential_delete target_list target_create target_get target_delete health; do
           if echo "$RESPONSE" | jq -e ".result.tools[] | select(.name == \"$tool\")" > /dev/null; then
             echo "  Tool found: $tool"
           else

@@ -59,6 +59,43 @@ pub struct CredentialCreate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Target {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "targetType")]
+    pub target_type: String,
+    pub address: String,
+    pub username: Option<String>,
+    #[serde(rename = "credentialId", skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
+    #[serde(rename = "credentialName", skip_serializing_if = "Option::is_none")]
+    pub credential_name: Option<String>,
+    pub description: Option<String>,
+    #[serde(rename = "allowsDowntime", skip_serializing_if = "Option::is_none")]
+    pub allows_downtime: Option<bool>,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "lastUsedAt", skip_serializing_if = "Option::is_none")]
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetCreate {
+    pub name: String,
+    #[serde(rename = "targetType")]
+    pub target_type: String,
+    pub address: String,
+    pub username: Option<String>,
+    #[serde(rename = "credentialId", skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
+    #[serde(rename = "credentialName", skip_serializing_if = "Option::is_none")]
+    pub credential_name: Option<String>,
+    pub description: Option<String>,
+    #[serde(rename = "allowsDowntime", skip_serializing_if = "Option::is_none")]
+    pub allows_downtime: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub message: String,
     pub code: String,
