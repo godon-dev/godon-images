@@ -107,6 +107,8 @@ pub struct StatusResponse {
     pub trial_energy_kwh: f64,
     pub trial_water_liters: f64,
     pub params: Option<ParamsSnapshot>,
+    pub weather_mode: String,
+    pub seed: u64,
 }
 
 /// Snapshot of a single zone's state (used in status response).
@@ -135,4 +137,6 @@ pub struct HealthResponse {
     pub status: String,
     pub zones: usize,
     pub tick: u64,
+    pub weather_mode: String,
+    pub seed: u64,
 }

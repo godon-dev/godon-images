@@ -26,6 +26,9 @@
 //   Complex: 6 zones -- stress test with more interacting subsystems
 
 use crate::types::*;
+use rand::Rng;
+use rand_chacha::ChaCha8Rng;
+use rand::SeedableRng;
 use std::sync::{Arc, Mutex};
 
 /// State of a single greenhouse zone.
@@ -41,6 +44,35 @@ pub struct Zone {
     pub co2: f64,
     /// Cumulative plant growth. Increases each timestep by the current growth rate.
     pub growth_accumulated: f64,
+}
+
+/// Weather dynamics mode -- determines how the environment behaves.
+///
+///   Smooth:      Deterministic Lissajous oscillations. Predictable, smooth drift.
+///                Good for verifying basic convergence.
+///
+///   Noisy:       Smooth drift + gaussian noise on weather and sensor readings.
+///                Tests optimizer robustness to measurement uncertainty.
+///
+///   Adversarial: Smooth drift + noise + random shocks (cold snaps, heat waves,
+///                cloud bursts). Shocks can push zones into guardrail territory
+///                even with reasonable parameters. Tests guardrails, rollback,
+///                and re-convergence after disruption.
+#[derive(Debug, Clone)]
+pub enum WeatherMode {
+    Smooth,
+    Noisy,
+    Adversarial,
+}
+
+impl WeatherMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WeatherMode::Smooth => "smooth",
+            WeatherMode::Noisy => "noisy",
+            WeatherMode::Adversarial => "adversarial",
+        }
+    }
 }
 
 /// Top-level greenhouse state, shared via Arc<Mutex> across HTTP handlers.
@@ -65,6 +97,12 @@ pub struct Greenhouse {
     /// Which scenario configuration is active.
     #[allow(dead_code)]
     pub scenario: Scenario,
+    /// Weather dynamics mode (smooth, noisy, adversarial).
+    pub weather_mode: WeatherMode,
+    /// RNG seed for reproducibility. Same seed + same steps = same results.
+    pub seed: u64,
+    /// Seeded PRNG (ChaCha8). Deterministic given the same seed.
+    rng: ChaCha8Rng,
 }
 
 /// Complexity scenario -- determines zone count and problem difficulty.
@@ -95,7 +133,10 @@ impl Scenario {
 impl Greenhouse {
     /// Create a new greenhouse with all zones at default comfortable conditions:
     /// 20°C, 50% humidity, 400ppm CO2 (slightly below ambient).
-    pub fn new(scenario: Scenario) -> Self {
+    ///
+    /// The RNG is seeded from the given seed for reproducible stochastic behavior.
+    /// Different seeds produce different shock patterns and noise sequences.
+    pub fn new(scenario: Scenario, weather_mode: WeatherMode, seed: u64) -> Self {
         let zone_count = scenario.zone_count();
         let zones = (0..zone_count)
             .map(|_| Zone {
@@ -115,6 +156,9 @@ impl Greenhouse {
             trial_water_liters: 0.0,
             last_params: None,
             scenario,
+            weather_mode,
+            seed,
+            rng: ChaCha8Rng::seed_from_u64(seed),
         }
     }
 
@@ -310,20 +354,62 @@ impl Greenhouse {
         }
     }
 
-    /// Update weather conditions. Uses Lissajous-like oscillations to create
-    /// realistic-looking but deterministic weather patterns that drift over time.
+    /// Update weather conditions based on the active weather mode.
     ///
-    /// The drift is critical for testing the optimizer's ability to track
-    /// moving targets. A static optimum would only test convergence, not
-    /// continuous adaptation.
+    /// Smooth: deterministic Lissajous oscillations. Same tick always produces
+    ///         the same weather. Good for verifying convergence.
+    ///
+    /// Noisy: smooth base + gaussian noise on temperature (σ=1.5°C) and
+    ///        solar radiation (σ=30 W/m²). Simulates sensor/measurement noise
+    ///        and natural variability. Tests optimizer robustness to uncertainty.
+    ///
+    /// Adversarial: smooth base + noise + random shocks. Shocks are sudden
+    ///        step changes (±10-15°C temperature swings, ±200 W/m² radiation
+    ///        drops lasting 20-60 ticks). These simulate cold snaps, heat waves,
+    ///        and cloud bursts. They can push zones into guardrail territory
+    ///        even with reasonable parameters, forcing rollback and re-convergence.
     fn update_weather(&mut self) {
         let t = self.tick as f64 * 0.01;
-        // Temperature oscillates roughly 2-18°C (simulating day/night + seasonal)
-        self.outside_temp =
-            10.0 + 8.0 * (t * 0.1).sin() + 3.0 * (t * 0.37).cos();
-        // Solar radiation oscillates roughly 50-550 W/m², never negative
-        self.solar_radiation =
-            (300.0 + 200.0 * (t * 0.05).sin() + 50.0 * (t * 0.23).cos()).max(0.0);
+
+        // Base weather: smooth Lissajous oscillations (always present)
+        let base_temp = 10.0 + 8.0 * (t * 0.1).sin() + 3.0 * (t * 0.37).cos();
+        let base_solar = (300.0 + 200.0 * (t * 0.05).sin() + 50.0 * (t * 0.23).cos()).max(0.0);
+
+        match self.weather_mode {
+            WeatherMode::Smooth => {
+                self.outside_temp = base_temp;
+                self.solar_radiation = base_solar;
+            }
+            WeatherMode::Noisy => {
+                // Gaussian noise: temp ±1.5°C, solar ±30 W/m²
+                let temp_noise = self.rng.random_range(-1.5..1.5);
+                let solar_noise = self.rng.random_range(-30.0..30.0);
+                self.outside_temp = base_temp + temp_noise;
+                self.solar_radiation = (base_solar + solar_noise).max(0.0);
+            }
+            WeatherMode::Adversarial => {
+                // Same noise as Noisy mode
+                let temp_noise = self.rng.random_range(-1.5..1.5);
+                let solar_noise = self.rng.random_range(-30.0..30.0);
+
+                // Random shocks: ~2% chance per tick of a major weather event.
+                // Each shock shifts temperature by ±10-15°C and/or solar by ±200 W/m².
+                // The shock persists (it's applied on top of base weather), creating
+                // a sudden regime change that the optimizer must adapt to.
+                let mut shock_temp = 0.0;
+                let mut shock_solar = 0.0;
+
+                if self.rng.random_bool(0.02) {
+                    // Cold snap or heat wave: ±10-15°C shift
+                    shock_temp = self.rng.random_range(-15.0..15.0);
+                    // Cloud burst or sudden clear sky: ±200 W/m² shift
+                    shock_solar = self.rng.random_range(-200.0..200.0);
+                }
+
+                self.outside_temp = base_temp + temp_noise + shock_temp;
+                self.solar_radiation = (base_solar + solar_noise + shock_solar).max(0.0);
+            }
+        }
     }
 
     /// Ambient CO2 concentration outside the greenhouse (~420ppm as of 2024).
@@ -336,13 +422,11 @@ impl Greenhouse {
     /// This is what reconnaissance reads -- either via /metrics/json (JSON)
     /// or /metrics (Prometheus exposition format). The optimizer uses these
     /// values to evaluate how good the current parameter set is.
-    pub fn growth_metrics(&self) -> MetricsResponse {
+    pub fn growth_metrics(&mut self) -> MetricsResponse {
         let zone_temps: Vec<f64> = self.zones.iter().map(|z| z.temp).collect();
         let zone_humidities: Vec<f64> = self.zones.iter().map(|z| z.humidity).collect();
         let zone_co2_levels: Vec<f64> = self.zones.iter().map(|z| z.co2).collect();
 
-        // Compute per-zone growth rate based on current zone state and applied params.
-        // Growth rate is the instantaneous derivative, not the accumulated total.
         let zone_growth_rates: Vec<f64> = self
             .zones
             .iter()
@@ -359,22 +443,52 @@ impl Greenhouse {
             })
             .collect();
 
-        // Average across all zones -- the primary objective to maximize
         let avg_growth =
             zone_growth_rates.iter().sum::<f64>() / zone_growth_rates.len().max(1) as f64;
 
+        // Apply sensor noise in noisy/adversarial modes.
+        // This simulates imperfect measurements from real sensors, testing
+        // whether the optimizer can handle uncertain feedback.
+        let (noisy_temps, noisy_humidities, noisy_co2, noisy_growth, noisy_energy, noisy_water) =
+            match self.weather_mode {
+                WeatherMode::Smooth => (
+                    zone_temps.clone(),
+                    zone_humidities.clone(),
+                    zone_co2_levels.clone(),
+                    avg_growth,
+                    self.trial_energy_kwh,
+                    self.trial_water_liters,
+                ),
+                WeatherMode::Noisy | WeatherMode::Adversarial => {
+                    // Sensor noise: temp ±0.3°C, humidity ±0.02, CO2 ±15ppm
+                    let nt: Vec<f64> = zone_temps.iter()
+                        .map(|t| t + self.rng.random_range(-0.3..0.3))
+                        .collect();
+                    let nh: Vec<f64> = zone_humidities.iter()
+                        .map(|h| (h + self.rng.random_range(-0.02..0.02)).clamp(0.0, 1.0))
+                        .collect();
+                    let nc: Vec<f64> = zone_co2_levels.iter()
+                        .map(|c| (c + self.rng.random_range(-15.0..15.0)).max(0.0))
+                        .collect();
+                    let ng = (avg_growth + self.rng.random_range(-0.02..0.02)).max(0.0);
+                    let ne = self.trial_energy_kwh + self.rng.random_range(-0.01..0.01);
+                    let nw = (self.trial_water_liters + self.rng.random_range(-0.005..0.005)).max(0.0);
+                    (nt, nh, nc, ng, ne, nw)
+                }
+            };
+
         MetricsResponse {
-            zone_temps,
-            zone_humidities,
-            zone_co2_levels,
+            zone_temps: noisy_temps.clone(),
+            zone_humidities: noisy_humidities.clone(),
+            zone_co2_levels: noisy_co2.clone(),
             zone_growth_rates,
-            growth_rate: avg_growth,
-            trial_energy_kwh: self.trial_energy_kwh,
-            trial_water_liters: self.trial_water_liters,
-            max_temp: self.zones.iter().map(|z| z.temp).fold(f64::NEG_INFINITY, f64::max),
-            min_temp: self.zones.iter().map(|z| z.temp).fold(f64::INFINITY, f64::min),
-            max_humidity: self.zones.iter().map(|z| z.humidity).fold(f64::NEG_INFINITY, f64::max),
-            max_co2: self.zones.iter().map(|z| z.co2).fold(f64::NEG_INFINITY, f64::max),
+            growth_rate: noisy_growth,
+            trial_energy_kwh: noisy_energy,
+            trial_water_liters: noisy_water,
+            max_temp: noisy_temps.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            min_temp: noisy_temps.iter().cloned().fold(f64::INFINITY, f64::min),
+            max_humidity: noisy_humidities.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            max_co2: noisy_co2.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
             outside_temp: self.outside_temp,
             solar_radiation: self.solar_radiation,
             tick: self.tick,

@@ -38,7 +38,7 @@ use axum::{
 };
 use log::info;
 use prometheus::{Gauge, Registry};
-use sim::{Greenhouse, Scenario, SharedGreenhouse};
+use sim::{Greenhouse, Scenario, SharedGreenhouse, WeatherMode};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use types::*;
@@ -212,9 +212,25 @@ async fn main() {
     };
 
     let zone_count = scenario.zone_count();
-    info!("Starting greenhouse bench - scenario: {:?}, zones: {}", scenario, zone_count);
 
-    let greenhouse = Arc::new(std::sync::Mutex::new(Greenhouse::new(scenario)));
+    let weather_mode = match std::env::var("GREENHOUSE_WEATHER")
+        .unwrap_or_else(|_| "smooth".to_string())
+        .as_str()
+    {
+        "noisy" => WeatherMode::Noisy,
+        "adversarial" => WeatherMode::Adversarial,
+        _ => WeatherMode::Smooth,
+    };
+
+    let seed: u64 = std::env::var("GREENHOUSE_SEED")
+        .unwrap_or_else(|_| "42".to_string())
+        .parse()
+        .unwrap();
+
+    info!("Starting greenhouse bench - scenario: {:?}, zones: {}, weather: {:?}, seed: {}",
+          scenario, zone_count, weather_mode, seed);
+
+    let greenhouse = Arc::new(std::sync::Mutex::new(Greenhouse::new(scenario, weather_mode, seed)));
     let metrics = Arc::new(AppMetrics::new(zone_count));
 
     let state = AppState {
@@ -249,6 +265,8 @@ async fn health(State(state): State<Arc<AppState>>) -> axum::Json<HealthResponse
         status: "ok".to_string(),
         zones: gh.zones.len(),
         tick: gh.tick,
+        weather_mode: gh.weather_mode.as_str().to_string(),
+        seed: gh.seed,
     })
 }
 
@@ -275,6 +293,9 @@ async fn status(State(state): State<Arc<AppState>>) -> axum::Json<StatusResponse
         irrigation: p.irrigation,
     });
 
+    let weather_mode = gh.weather_mode.as_str().to_string();
+    let seed = gh.seed;
+
     axum::Json(StatusResponse {
         zones,
         outside_temp: gh.outside_temp,
@@ -283,6 +304,8 @@ async fn status(State(state): State<Arc<AppState>>) -> axum::Json<StatusResponse
         trial_energy_kwh: gh.trial_energy_kwh,
         trial_water_liters: gh.trial_water_liters,
         params,
+        weather_mode,
+        seed,
     })
 }
 
@@ -311,7 +334,7 @@ async fn apply(
 /// GET /metrics/json -- current metrics as JSON.
 /// Alternative to Prometheus format for direct HTTP reconnaissance.
 async fn metrics_json(State(state): State<Arc<AppState>>) -> axum::Json<MetricsResponse> {
-    let gh = state.greenhouse.lock().unwrap();
+    let mut gh = state.greenhouse.lock().unwrap();
     let m = gh.growth_metrics();
     state.metrics.update(&m);
     axum::Json(m)
@@ -322,8 +345,7 @@ async fn metrics_json(State(state): State<Arc<AppState>>) -> axum::Json<MetricsR
 /// This is what godon's existing Prometheus reconnaissance script scrapes.
 /// All metrics are gauges (current state, not counters).
 async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> String {
-    // Update Prometheus gauges from current simulation state
-    let gh = state.greenhouse.lock().unwrap();
+    let mut gh = state.greenhouse.lock().unwrap();
     let m = gh.growth_metrics();
     state.metrics.update(&m);
     drop(gh);
@@ -339,20 +361,26 @@ async fn metrics_endpoint(State(state): State<Arc<AppState>>) -> String {
 /// Used between optimization trials to start fresh. Tick counter resets to 0,
 /// all zones return to default conditions, resource counters zeroed.
 async fn reset(State(state): State<Arc<AppState>>) -> axum::Json<HealthResponse> {
-    let zone_count = state.greenhouse.lock().unwrap().zones.len();
+    let mut gh = state.greenhouse.lock().unwrap();
+    let zone_count = gh.zones.len();
     let scenario = match zone_count {
         4 => Scenario::Medium,
         6 => Scenario::Complex,
         _ => Scenario::Simple,
     };
 
-    let mut gh = state.greenhouse.lock().unwrap();
-    *gh = Greenhouse::new(scenario);
+    // Preserve weather mode and seed across reset for reproducibility
+    let weather_mode = gh.weather_mode.clone();
+    let seed = gh.seed;
+
+    *gh = Greenhouse::new(scenario, weather_mode, seed);
     info!("Reset greenhouse");
 
     axum::Json(HealthResponse {
         status: "reset".to_string(),
         zones: gh.zones.len(),
         tick: gh.tick,
+        weather_mode: gh.weather_mode.as_str().to_string(),
+        seed: gh.seed,
     })
 }

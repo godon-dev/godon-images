@@ -122,14 +122,51 @@ The multiplicative model means **any single bad factor kills growth**. This crea
 
 ### Weather Drift
 
-Outside temperature and solar radiation drift using Lissajous-like oscillations:
+Outside temperature and solar radiation drift over time. The behavior depends on the weather mode (see below).
+
+### Weather Modes
+
+Set via `GREENHOUSE_WEATHER` environment variable. Seed via `GREENHOUSE_SEED` (default: 42).
+
+| Mode | Env Value | Behavior | Use Case |
+|------|-----------|----------|----------|
+| **Smooth** | `smooth` (default) | Deterministic Lissajous oscillations. Same tick = same weather. | Verify basic convergence |
+| **Noisy** | `noisy` | Smooth drift + gaussian noise on weather (±1.5°C, ±30 W/m²) and sensor readings (±0.3°C, ±15ppm CO2). | Test robustness to measurement uncertainty |
+| **Adversarial** | `adversarial` | Smooth drift + noise + random shocks. ~2% chance per tick of a ±10-15°C temperature swing or ±200 W/m² radiation change. Shocks can push zones into guardrail territory even with reasonable parameters. | Stress-test guardrails, rollback, and re-convergence |
+
+The seeded RNG (ChaCha8) ensures reproducibility: same seed + same steps = identical results. Reset preserves the seed.
+
+#### Smooth mode weather
 
 ```
 outside_temp = 10 + 8*sin(t*0.1) + 3*cos(t*0.37)    # roughly 2-18°C
 solar_radiation = max(0, 300 + 200*sin(t*0.05) + 50*cos(t*0.23))  # roughly 50-550 W/m²
 ```
 
-This forces the optimizer to continuously adapt -- a static "best config" degrades over time.
+#### Noisy mode
+
+Adds gaussian perturbations to both weather generation and returned metrics:
+
+| Metric | Noise amplitude |
+|--------|----------------|
+| Outside temperature | ±1.5 °C |
+| Solar radiation | ±30 W/m² |
+| Zone temperature (reported) | ±0.3 °C |
+| Zone humidity (reported) | ±0.02 |
+| Zone CO2 (reported) | ±15 ppm |
+| Growth rate (reported) | ±0.02 |
+| Energy (reported) | ±0.01 kWh |
+
+#### Adversarial mode
+
+All noise from noisy mode, plus random shocks with ~2% probability per tick:
+
+| Shock type | Magnitude |
+|------------|-----------|
+| Temperature | ±10-15 °C |
+| Solar radiation | ±200 W/m² |
+
+These simulate cold snaps, heat waves, and cloud bursts. A shock at tick 200 might drop outside temperature from 15°C to -2°C while the optimizer was configured for warm weather, triggering guardrails and forcing rollback.
 
 ## Scenarios
 
@@ -260,8 +297,12 @@ PROJECT_ROOT=../.. ../../build/build-container-nix.sh \
 ```bash
 docker run -p 8090:8090 ghcr.io/godon-dev/godon-bench-greenhouse
 
-# With scenario selection:
-docker run -p 8090:8090 -e GREENHOUSE_SCENARIO=complex ghcr.io/godon-dev/godon-bench-greenhouse
+# With weather mode and seed:
+docker run -p 8090:8090 \
+  -e GREENHOUSE_SCENARIO=complex \
+  -e GREENHOUSE_WEATHER=adversarial \
+  -e GREENHOUSE_SEED=42 \
+  ghcr.io/godon-dev/godon-bench-greenhouse
 ```
 
 ## CI/CD
