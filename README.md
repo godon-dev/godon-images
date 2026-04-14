@@ -11,6 +11,7 @@ Container images built with Nix for reproducible, isolated builds.
 | `godon-metrics-exporter` | Rust (Hyper) | 8089 | Prometheus metrics proxy from Push Gateway |
 | `godon-seeder` | Rust | - | Deploys controller/breeder scripts to Windmill |
 | `godon-mcp` | Rust (Axum) | 3001 | MCP server exposing godon-api as tool interface for LLM agents |
+| `godon-bench-greenhouse` | Rust (Axum) | 8090 | Multi-zone greenhouse simulation bench for engine verification |
 
 ## Structure
 
@@ -24,7 +25,8 @@ godon-images/
 │   ├── godon-cli/
 │   ├── godon-metrics-exporter/
 │   ├── godon-seeder/
-│   └── godon-mcp/
+│   ├── godon-mcp/
+│   └── godon-bench-greenhouse/
 ├── shared/                          # Shared test infrastructure
 │   └── tests/                       # Windmill test stack, stub scripts, test data
 ```

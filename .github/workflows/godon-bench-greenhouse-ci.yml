@@ -1,0 +1,174 @@
+name: Godon Bench Greenhouse CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'images/godon-bench-greenhouse/**'
+      - 'build/**'
+      - '.github/workflows/godon-bench-greenhouse-ci.yml'
+  workflow_dispatch:
+
+env:
+  NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.11
+
+jobs:
+  build-and-test:
+    name: Build and Test Greenhouse Bench
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Setup Nix
+      uses: cachix/install-nix-action@v22
+      with:
+        nix_path: nixpkgs=${{ env.NIXPKGS_CHANNEL }}
+
+    - name: Build godon-bench-greenhouse container with Nix
+      run: |
+        echo "Building godon-bench-greenhouse container using established Nix build system..."
+        cd images/godon-bench-greenhouse
+        VERSION="test-${{ github.run_number }}" \
+        IMAGE_NAME="godon-bench-greenhouse-test" \
+        PROJECT_ROOT="$(git rev-parse --show-toplevel)" \
+        ../../build/build-container-nix.sh \
+          --version "test-${{ github.run_number }}" \
+          --name "godon-bench-greenhouse-test" \
+          --builder-file ../../build/Dockerfile.nix-builder
+
+    - name: Test container startup and health
+      run: |
+        echo "Starting godon-bench-greenhouse container..."
+
+        docker run -d --name greenhouse-test \
+          -p 8090:8090 \
+          godon-bench-greenhouse-test:test-${{ github.run_number }}
+
+        echo "Waiting for greenhouse bench to start..."
+        sleep 5
+
+        if ! docker ps | grep -q greenhouse-test; then
+          echo "Container failed to start"
+          docker logs greenhouse-test
+          exit 1
+        fi
+        echo "Container started successfully"
+
+        echo "Testing health endpoint..."
+        HEALTH=$(curl -sf http://localhost:8090/health)
+        echo "Health response: $HEALTH"
+
+        if ! echo "$HEALTH" | grep -q '"status":"ok"'; then
+          echo "Health check failed"
+          docker logs greenhouse-test
+          exit 1
+        fi
+        echo "Health check passed"
+
+    - name: Test apply endpoint (simulation)
+      run: |
+        echo "Testing apply endpoint with greenhouse parameters..."
+
+        RESPONSE=$(curl -sf -X POST http://localhost:8090/apply \
+          -H 'Content-Type: application/json' \
+          -d '{
+            "heating_setpoints": [22, 20],
+            "vent_openings": [0.3, 0.2],
+            "shading": 0.1,
+            "co2_injection": 5.0,
+            "light_intensity": 100,
+            "irrigation": 0.5,
+            "sim_steps": 60
+          }')
+
+        echo "Apply response: $RESPONSE"
+
+        echo "Verifying response contains expected fields..."
+        for field in zone_temps growth_rate trial_energy_kwh max_temp min_temp; do
+          if ! echo "$RESPONSE" | grep -q "$field"; then
+            echo "Missing field: $field"
+            exit 1
+          fi
+        done
+        echo "All expected fields present"
+
+        echo "Verifying growth rate is non-negative..."
+        GROWTH=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['growth_rate'])")
+        if [ "$(echo "$GROWTH < 0" | bc -l)" -eq 1 ]; then
+          echo "Growth rate unexpectedly negative: $GROWTH"
+          exit 1
+        fi
+        echo "Growth rate: $GROWTH"
+
+    - name: Test Prometheus metrics endpoint
+      run: |
+        echo "Testing Prometheus /metrics endpoint..."
+
+        METRICS=$(curl -sf http://localhost:8090/metrics)
+        echo "$METRICS"
+
+        for metric in greenhouse_growth_rate greenhouse_energy_kwh greenhouse_zone_0_temp_celsius; do
+          if ! echo "$METRICS" | grep -q "$metric"; then
+            echo "Missing Prometheus metric: $metric"
+            exit 1
+          fi
+        done
+        echo "All Prometheus metrics present"
+
+    - name: Test JSON metrics endpoint
+      run: |
+        echo "Testing /metrics/json endpoint..."
+
+        JSON_METRICS=$(curl -sf http://localhost:8090/metrics/json)
+        echo "JSON metrics response: $JSON_METRICS"
+
+        if ! echo "$JSON_METRICS" | grep -q "zone_temps"; then
+          echo "JSON metrics missing zone_temps"
+          exit 1
+        fi
+        echo "JSON metrics endpoint working"
+
+    - name: Test status endpoint
+      run: |
+        echo "Testing /status endpoint..."
+
+        STATUS=$(curl -sf http://localhost:8090/status)
+        echo "Status response: $STATUS"
+
+        if ! echo "$STATUS" | grep -q "zones"; then
+          echo "Status response missing zones"
+          exit 1
+        fi
+        echo "Status endpoint working"
+
+    - name: Test reset endpoint
+      run: |
+        echo "Testing /reset endpoint..."
+
+        RESET=$(curl -sf -X POST http://localhost:8090/reset)
+        echo "Reset response: $RESET"
+
+        if ! echo "$RESET" | grep -q '"status":"reset"'; then
+          echo "Reset failed"
+          exit 1
+        fi
+
+        HEALTH=$(curl -sf http://localhost:8090/health)
+        TICK=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['tick'])")
+        if [ "$TICK" != "0" ]; then
+          echo "Reset did not reset tick counter: $TICK"
+          exit 1
+        fi
+        echo "Reset successful, tick back to 0"
+
+    - name: Container cleanup
+      if: always()
+      run: |
+        echo "Cleaning up test containers..."
+        docker stop greenhouse-test || true
+        docker rm greenhouse-test || true
+        docker rmi godon-bench-greenhouse-test:test-${{ github.run_number }} || true
