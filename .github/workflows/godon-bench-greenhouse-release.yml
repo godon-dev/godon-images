@@ -1,0 +1,15 @@
+name: "release godon-bench-greenhouse image"
+
+on:
+  push:
+    tags:
+      - 'godon-bench-greenhouse-*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-and-release-image:
+    uses: ./.github/workflows/release-image.yml
+    secrets: inherit
