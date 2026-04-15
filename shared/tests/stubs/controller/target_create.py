@@ -18,9 +18,9 @@ def main(request_data=None):
             "error": f"Invalid targetType. Must be one of: {valid_types}"
         }
 
-    address = request_data.get("address")
-    if not address:
-        return {"result": "FAILURE", "error": "Missing required fields: address"}
+    spec = request_data.get("spec")
+    if not spec:
+        return {"result": "FAILURE", "error": "Missing required fields: spec"}
 
     return {
         "result": "SUCCESS",
@@ -28,12 +28,8 @@ def main(request_data=None):
             "id": "550e8400-e29b-41d4-a716-446655440021",
             "name": name,
             "targetType": target_type,
-            "address": address,
-            "username": request_data.get("username"),
-            "credentialId": request_data.get("credentialId"),
-            "credentialName": request_data.get("credentialName"),
-            "description": request_data.get("description", ""),
-            "allowsDowntime": request_data.get("allowsDowntime", False),
+            "spec": spec,
+            "metadata": request_data.get("metadata"),
             "createdAt": "2024-01-01T00:00:00Z",
             "lastUsedAt": None
         }
