@@ -64,15 +64,9 @@ pub struct Target {
     pub name: String,
     #[serde(rename = "targetType")]
     pub target_type: String,
-    pub address: String,
-    pub username: Option<String>,
-    #[serde(rename = "credentialId", skip_serializing_if = "Option::is_none")]
-    pub credential_id: Option<String>,
-    #[serde(rename = "credentialName", skip_serializing_if = "Option::is_none")]
-    pub credential_name: Option<String>,
-    pub description: Option<String>,
-    #[serde(rename = "allowsDowntime", skip_serializing_if = "Option::is_none")]
-    pub allows_downtime: Option<bool>,
+    pub spec: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
     #[serde(rename = "createdAt")]
     pub created_at: String,
     #[serde(rename = "lastUsedAt", skip_serializing_if = "Option::is_none")]
@@ -84,15 +78,9 @@ pub struct TargetCreate {
     pub name: String,
     #[serde(rename = "targetType")]
     pub target_type: String,
-    pub address: String,
-    pub username: Option<String>,
-    #[serde(rename = "credentialId", skip_serializing_if = "Option::is_none")]
-    pub credential_id: Option<String>,
-    #[serde(rename = "credentialName", skip_serializing_if = "Option::is_none")]
-    pub credential_name: Option<String>,
-    pub description: Option<String>,
-    #[serde(rename = "allowsDowntime", skip_serializing_if = "Option::is_none")]
-    pub allows_downtime: Option<bool>,
+    pub spec: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
