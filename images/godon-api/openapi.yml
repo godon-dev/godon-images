@@ -541,18 +541,22 @@ paths:
                     - id: "550e8400-e29b-41d4-a716-446655440020"
                       name: "production-server-1"
                       targetType: "ssh"
-                      address: "10.0.5.53"
-                      username: "godon_robot"
-                      credentialName: "godon_ssh_key"
-                      description: "Production server for network optimization"
-                      allowsDowntime: false
+                      spec:
+                        address: "10.0.5.53"
+                        username: "godon_robot"
+                        credential_id: "550e8400-e29b-41d4-a716-446655440010"
+                        allows_downtime: false
+                      metadata:
+                        description: "Production server for network optimization"
                       createdAt: "2024-01-15T10:30:00Z"
                     - id: "6ba7b810-9dad-11d1-80b4-00c04fd430ca"
                       name: "staging-api"
                       targetType: "http"
-                      address: "https://staging.example.com"
-                      description: "Staging HTTP API"
-                      allowsDowntime: true
+                      spec:
+                        url: "https://staging.example.com"
+                        auth_type: "none"
+                      metadata:
+                        description: "Staging HTTP API"
                       createdAt: "2024-01-16T14:20:00Z"
         '500':
           $ref: '#/components/responses/InternalServerError'
@@ -578,19 +582,23 @@ paths:
                 value:
                   name: "production-server-1"
                   targetType: "ssh"
-                  address: "10.0.5.53"
-                  username: "godon_robot"
-                  credentialName: "godon_ssh_key"
-                  description: "Production server for network optimization"
-                  allowsDowntime: false
+                  spec:
+                    address: "10.0.5.53"
+                    username: "godon_robot"
+                    credential_id: "550e8400-e29b-41d4-a716-446655440010"
+                    allows_downtime: false
+                  metadata:
+                    description: "Production server for network optimization"
               httpTarget:
                 summary: HTTP target system
                 value:
                   name: "staging-api"
                   targetType: "http"
-                  address: "https://staging.example.com"
-                  description: "Staging HTTP API"
-                  allowsDowntime: true
+                  spec:
+                    url: "https://staging.example.com"
+                    auth_type: "none"
+                  metadata:
+                    description: "Staging HTTP API"
       responses:
         '201':
           description: Successfully created the target
@@ -605,11 +613,13 @@ paths:
                     id: "550e8400-e29b-41d4-a716-446655440020"
                     name: "production-server-1"
                     targetType: "ssh"
-                    address: "10.0.5.53"
-                    username: "godon_robot"
-                    credentialName: "godon_ssh_key"
-                    description: "Production server for network optimization"
-                    allowsDowntime: false
+                    spec:
+                      address: "10.0.5.53"
+                      username: "godon_robot"
+                      credential_id: "550e8400-e29b-41d4-a716-446655440010"
+                      allows_downtime: false
+                    metadata:
+                      description: "Production server for network optimization"
                     createdAt: "2024-01-15T10:30:00Z"
         '400':
           $ref: '#/components/responses/BadRequest'
@@ -963,7 +973,7 @@ components:
         - id
         - name
         - targetType
-        - address
+        - spec
         - createdAt
       properties:
         id:
@@ -984,32 +994,21 @@ components:
           enum: ["ssh", "http"]
           description: Type of target system
           example: "ssh"
-        address:
-          type: string
-          description: Hostname or IP address (SSH) or base URL (HTTP) of the target system
-          example: "10.0.5.53"
-        username:
-          type: string
-          description: Login username for SSH targets
-          example: "godon_robot"
-        credentialId:
-          type: string
-          format: uuid
-          description: UUID of the credential to use for authentication
-          example: "550e8400-e29b-41d4-a716-446655440001"
-        credentialName:
-          type: string
-          description: Name of the credential to use for authentication
-          example: "godon_ssh_key"
-        description:
-          type: string
-          description: Human-readable description of the target's purpose
-          example: "Production server for network optimization"
-        allowsDowntime:
-          type: boolean
-          description: Whether the target can tolerate downtime during optimization
-          default: false
-          example: false
+        spec:
+          type: object
+          description: Type-specific configuration. SSH spec requires {address, username, credential_id, allows_downtime}. HTTP spec requires {url, auth_type}.
+          additionalProperties: true
+          example:
+            address: "10.0.5.53"
+            username: "godon_robot"
+            credential_id: "550e8400-e29b-41d4-a716-446655440001"
+            allows_downtime: false
+        metadata:
+          type: object
+          description: Optional metadata associated with the target
+          additionalProperties: true
+          example:
+            description: "Production server for network optimization"
         createdAt:
           type: string
           format: date-time
@@ -1028,7 +1027,7 @@ components:
       required:
         - name
         - targetType
-        - address
+        - spec
       properties:
         name:
           type: string
@@ -1042,32 +1041,19 @@ components:
           enum: ["ssh", "http"]
           description: Type of target system
           example: "ssh"
-        address:
-          type: string
-          description: Hostname or IP address (SSH) or base URL (HTTP)
-          example: "10.0.5.53"
-        username:
-          type: string
-          description: Login username (required for SSH targets)
-          example: "godon_robot"
-        credentialId:
-          type: string
-          format: uuid
-          description: UUID of the credential to use for authentication
-          example: "550e8400-e29b-41d4-a716-446655440001"
-        credentialName:
-          type: string
-          description: Name of the credential to use for authentication
-          example: "godon_ssh_key"
-        description:
-          type: string
-          description: Human-readable description of the target's purpose
-          example: "Production server for network optimization"
-        allowsDowntime:
-          type: boolean
-          description: Whether the target can tolerate downtime
-          default: false
-          example: false
+        spec:
+          type: object
+          description: Type-specific configuration. SSH spec requires {address, username, credential_id, allows_downtime}. HTTP spec requires {url, auth_type}.
+          additionalProperties: true
+          example:
+            address: "10.0.5.53"
+            username: "godon_robot"
+            credential_id: "550e8400-e29b-41d4-a716-446655440001"
+            allows_downtime: false
+        metadata:
+          type: object
+          description: Optional metadata associated with the target
+          additionalProperties: true
 
     TargetList:
       type: array
