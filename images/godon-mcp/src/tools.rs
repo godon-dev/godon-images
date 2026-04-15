@@ -155,14 +155,10 @@ impl ToolRegistry {
                     "properties": {
                         "name": { "type": "string", "description": "Unique name for this target" },
                         "target_type": { "type": "string", "enum": ["ssh", "http"], "description": "Type of target system" },
-                        "address": { "type": "string", "description": "Hostname/IP (SSH) or base URL (HTTP)" },
-                        "username": { "type": "string", "description": "Login username (SSH targets)" },
-                        "credential_id": { "type": "string", "description": "UUID of credential to use for authentication" },
-                        "credential_name": { "type": "string", "description": "Name of credential to use for authentication" },
-                        "description": { "type": "string", "description": "Human-readable description" },
-                        "allows_downtime": { "type": "boolean", "description": "Whether target can tolerate downtime" }
+                        "spec": { "type": "object", "description": "Type-specific config. SSH: {address, username, credential_id, allows_downtime}. HTTP: {url, auth_type}" },
+                        "metadata": { "type": "object", "description": "Optional metadata for the target" }
                     },
-                    "required": ["name", "target_type", "address"],
+                    "required": ["name", "target_type", "spec"],
                     "additionalProperties": false
                 }),
             },

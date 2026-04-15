@@ -466,11 +466,11 @@ pub async fn create_target(
         ));
     }
 
-    if payload.address.trim().is_empty() {
+    if payload.spec.as_object().map(|o| o.is_empty()).unwrap_or(true) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
-                "Invalid address: address cannot be empty",
+                "Invalid spec: spec must be a non-empty object",
                 "BAD_REQUEST"
             ))
         ));
@@ -479,12 +479,8 @@ pub async fn create_target(
     let target_data = json!({
         "name": payload.name,
         "targetType": payload.target_type,
-        "address": payload.address,
-        "username": payload.username.as_deref().unwrap_or(""),
-        "credentialId": payload.credential_id.as_deref().unwrap_or(""),
-        "credentialName": payload.credential_name.as_deref().unwrap_or(""),
-        "description": payload.description.as_deref().unwrap_or(""),
-        "allowsDowntime": payload.allows_downtime.unwrap_or(false),
+        "spec": payload.spec,
+        "metadata": payload.metadata,
     });
 
     let client = get_client()?;
