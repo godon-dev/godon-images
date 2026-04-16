@@ -544,10 +544,10 @@ paths:
                       spec:
                         address: "10.0.5.53"
                         username: "godon_robot"
-                        credential_id: "550e8400-e29b-41d4-a716-446655440010"
-                        allows_downtime: false
+                        ssh_key_variable_path: "f/vars/prod_ssh_key"
                       metadata:
                         description: "Production server for network optimization"
+                        allows_downtime: false
                       createdAt: "2024-01-15T10:30:00Z"
                     - id: "6ba7b810-9dad-11d1-80b4-00c04fd430ca"
                       name: "staging-api"
@@ -585,10 +585,10 @@ paths:
                   spec:
                     address: "10.0.5.53"
                     username: "godon_robot"
-                    credential_id: "550e8400-e29b-41d4-a716-446655440010"
-                    allows_downtime: false
+                    ssh_key_variable_path: "f/vars/prod_ssh_key"
                   metadata:
                     description: "Production server for network optimization"
+                    allows_downtime: false
               httpTarget:
                 summary: HTTP target system
                 value:
@@ -616,10 +616,10 @@ paths:
                     spec:
                       address: "10.0.5.53"
                       username: "godon_robot"
-                      credential_id: "550e8400-e29b-41d4-a716-446655440010"
-                      allows_downtime: false
+                      ssh_key_variable_path: "f/vars/prod_ssh_key"
                     metadata:
                       description: "Production server for network optimization"
+                      allows_downtime: false
                     createdAt: "2024-01-15T10:30:00Z"
         '400':
           $ref: '#/components/responses/BadRequest'
@@ -996,19 +996,19 @@ components:
           example: "ssh"
         spec:
           type: object
-          description: Type-specific configuration. SSH spec requires {address, username, credential_id, allows_downtime}. HTTP spec requires {url, auth_type}.
+          description: "Type-specific configuration. SSH spec: {address, username, ssh_key_variable_path}. HTTP spec: {url, auth_type}."
           additionalProperties: true
           example:
             address: "10.0.5.53"
             username: "godon_robot"
-            credential_id: "550e8400-e29b-41d4-a716-446655440001"
-            allows_downtime: false
+            ssh_key_variable_path: "f/vars/prod_ssh_key"
         metadata:
           type: object
           description: Optional metadata associated with the target
           additionalProperties: true
           example:
             description: "Production server for network optimization"
+            allows_downtime: false
         createdAt:
           type: string
           format: date-time
@@ -1043,17 +1043,18 @@ components:
           example: "ssh"
         spec:
           type: object
-          description: Type-specific configuration. SSH spec requires {address, username, credential_id, allows_downtime}. HTTP spec requires {url, auth_type}.
+          description: "Type-specific configuration. SSH spec: {address, username, ssh_key_variable_path}. HTTP spec: {url, auth_type}."
           additionalProperties: true
           example:
             address: "10.0.5.53"
             username: "godon_robot"
-            credential_id: "550e8400-e29b-41d4-a716-446655440001"
-            allows_downtime: false
+            ssh_key_variable_path: "f/vars/prod_ssh_key"
         metadata:
           type: object
           description: Optional metadata associated with the target
           additionalProperties: true
+          example:
+            allows_downtime: false
 
     TargetList:
       type: array
