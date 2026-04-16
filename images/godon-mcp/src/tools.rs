@@ -155,7 +155,7 @@ impl ToolRegistry {
                     "properties": {
                         "name": { "type": "string", "description": "Unique name for this target" },
                         "target_type": { "type": "string", "enum": ["ssh", "http"], "description": "Type of target system" },
-                        "spec": { "type": "object", "description": "Type-specific config. SSH: {address, username, credential_id, allows_downtime}. HTTP: {url, auth_type}" },
+                        "spec": { "type": "object", "description": "Type-specific config. SSH: {address, username, ssh_key_variable_path}. HTTP: {url, auth_type}" },
                         "metadata": { "type": "object", "description": "Optional metadata for the target" }
                     },
                     "required": ["name", "target_type", "spec"],

@@ -344,9 +344,11 @@ jobs:
         echo "Creating test target..."
         echo 'name: "test-web-server"' > target-config.yaml
         echo 'targetType: "ssh"' >> target-config.yaml
-        echo 'address: "192.168.1.100"' >> target-config.yaml
-        echo 'username: "deploy"' >> target-config.yaml
-        echo 'description: "Test web server for CI"' >> target-config.yaml
+        echo 'spec:' >> target-config.yaml
+        echo '  address: "192.168.1.100"' >> target-config.yaml
+        echo '  username: "deploy"' >> target-config.yaml
+        echo 'metadata:' >> target-config.yaml
+        echo '  description: "Test web server for CI"' >> target-config.yaml
 
         docker run --rm --network godon-api-test_default \
           -v "$(pwd)/target-config.yaml:/target-config.yaml:ro" \
