@@ -15,15 +15,15 @@ use std::time::Duration;
 #[clap(author, version, about, long_about = None)]
 struct Args {
     /// Bind address
-    #[clap(short, long, default_value = "127.0.0.1")]
+    #[clap(short, long, env = "HOST", default_value = "127.0.0.1")]
     host: String,
 
     /// HTTP server port
-    #[clap(short, long, default_value_t = 8089)]
+    #[clap(short, long, env = "PORT", default_value_t = 8089)]
     port: u16,
 
     /// Push Gateway URL
-    #[clap(long, default_value = "http://pushgateway:9091")]
+    #[clap(long, env = "PUSH_GATEWAY_URL", default_value = "http://pushgateway:9091")]
     push_gateway_url: String,
 
     /// Log level (DEBUG, INFO, WARN, ERROR)
