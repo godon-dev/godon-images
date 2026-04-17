@@ -317,28 +317,13 @@ function renderSpider(){
 
   const sliderRow=el.append('div').attr('class','slider-row');
   sliderRow.append('label').text('trial:');
-  const sliderWrap=sliderRow.append('div').style('position','relative').style('flex','1');
-  const trackCanvas=sliderWrap.append('canvas').attr('height',8)
-    .style('position','absolute').style('top','50%').style('transform','translateY(-50%)')
-    .style('pointer-events','none').style('border-radius','4px').style('width','100%');
-  const slider=sliderWrap.append('input').attr('type','range')
+  const slider=sliderRow.append('input').attr('type','range')
     .attr('min',0).attr('max',trials.length-1).attr('value',trials.length-1)
-    .style('width','100%').style('position','relative').style('z-index','1');
+    .style('flex','1');
   const info=sliderRow.append('span').attr('class','trial-info').text(trials.length+'/'+trials.length);
 
   const svgEl=el.append('svg').attr('width',size).attr('height',size+40);
   const g=svgEl.append('g').attr('transform','translate(0,20)');
-
-  function drawTrack(){
-    const canvas=trackCanvas.node();
-    const w=canvas.parentElement.clientWidth;
-    if(!w) return;
-    canvas.width=w;canvas.height=8;
-    const ctx=canvas.getContext('2d');
-    const bw=w/trials.length;
-    trials.forEach((t,i)=>{ctx.fillStyle=qColor(trialQuality(t));ctx.fillRect(i*bw,0,bw,8)});
-    ctx.fillStyle='#fff';ctx.fillRect(bestI*bw+bw/2-1,0,2,8);
-  }
 
   function draw(){
     const idx=+slider.node().value;
@@ -385,8 +370,12 @@ function renderSpider(){
 
     const bestPts=trialPoints(trials[bestI]);
     g.append('polygon').attr('points',bestPts.map(p=>p.join(',')).join(' '))
-      .attr('fill','none').attr('stroke','#3fb950').attr('stroke-width',2)
+      .attr('fill','rgba(63,185,80,0.1)').attr('stroke','#3fb950').attr('stroke-width',2)
       .attr('stroke-dasharray','4,3');
+    const bestCenter=bestPts.reduce((a,p)=>[a[0]+p[0],a[1]+p[1]],[0,0]);
+    g.append('text').attr('x',bestCenter[0]/bestPts.length).attr('y',bestCenter[1]/bestPts.length+4)
+      .attr('text-anchor','middle').attr('fill','#3fb950').style('font','9px monospace')
+      .text('best #'+(bestI+1));
 
     const t=trials[idx];
     const pts=trialPoints(t);
@@ -402,8 +391,8 @@ function renderSpider(){
       .text(label);
   }
 
-  slider.on('input',()=>{drawTrack();draw()});
-  requestAnimationFrame(()=>{drawTrack();draw()});
+  slider.on('input',draw);
+  requestAnimationFrame(draw);
 }
 
 function renderParallel(){
