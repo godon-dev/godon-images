@@ -127,89 +127,48 @@ fn html_response(body: &str) -> Response<Body> {
         .unwrap()
 }
 
+fn parse_query(uri: &hyper::Uri) -> std::collections::HashMap<String, String> {
+    uri.query()
+        .map(|q| {
+            q.split('&')
+                .filter_map(|pair| {
+                    let mut kv = pair.split('=');
+                    Some((kv.next()?.to_string(), kv.next()?.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result<Response<Body>, hyper::Error> {
     let path = req.uri().path().to_string();
     let path_parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
-    match path.as_str() {
-        "/metrics" => {
-            state.fetch_metrics();
-            let metrics_text = state.get_metrics_text();
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-                .body(Body::from(metrics_text))
-                .unwrap())
-        }
-        "/health" => {
-            let db_ok = state.optuna.health_check().await;
-            let body = if db_ok { "OK" } else { "DEGRADED: db unreachable" };
-            Ok(Response::builder()
-                .status(StatusCode::OK)
-                .body(Body::from(body))
-                .unwrap())
-        }
-        "/dashboard" | "/dashboard/" => {
-            Ok(html_response(DASHBOARD_HTML))
-        }
-        _ => {}
+    if path == "/metrics" {
+        state.fetch_metrics();
+        let metrics_text = state.get_metrics_text();
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            .body(Body::from(metrics_text))
+            .unwrap());
     }
 
-    // /api/breeders/<uuid>/trials?offset=0&limit=100
-    if path_parts.len() >= 4 && path_parts[0] == "api" && path_parts[1] == "breeders" && path_parts[3] == "trials" {
-        let breeder_id = path_parts[2].to_string();
-        let query: std::collections::HashMap<String, String> = req
-            .uri()
-            .query()
-            .map(|q| urlencoding::decode(q).unwrap_or_default().into_owned())
-            .map(|q| {
-                q.split('&')
-                    .filter_map(|pair| {
-                        let mut kv = pair.split('=');
-                        Some((kv.next()?.to_string(), kv.next()?.to_string()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let offset: i64 = query.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
-        let limit: i64 = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
-
-        let study_name = format!("{}_study", breeder_id);
-
-        match state.optuna.get_trials(&breeder_id, &study_name, offset, limit).await {
-            Ok(trials) => {
-                let json = serde_json::json!({
-                    "breeder_id": breeder_id,
-                    "study_name": study_name,
-                    "offset": offset,
-                    "limit": limit,
-                    "trials": trials,
-                });
-                Ok(json_response(StatusCode::OK, &serde_json::to_string(&json).unwrap()))
-            }
-            Err(e) => {
-                error!("Failed to load trials: {}", e);
-                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{{\"error\": \"{}\"}}", e)))
-            }
-        }
+    if path == "/health" {
+        let db_ok = state.optuna.health_check().await;
+        let body = if db_ok { "OK" } else { "DEGRADED: db unreachable" };
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .body(Body::from(body))
+            .unwrap());
     }
-    // /api/breeders/<uuid>/studies
-    else if path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "breeders" && path_parts[3] == "studies" {
-        let breeder_id = path_parts[2].to_string();
-        match state.optuna.list_studies(&breeder_id).await {
-            Ok(studies) => {
-                let json = serde_json::json!({"breeder_id": breeder_id, "studies": studies});
-                Ok(json_response(StatusCode::OK, &serde_json::to_string(&json).unwrap()))
-            }
-            Err(e) => {
-                error!("Failed to list studies: {}", e);
-                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{{\"error\": \"{}\"}}", e)))
-            }
-        }
+
+    if path == "/dashboard" || path == "/dashboard/" {
+        return Ok(html_response(DASHBOARD_HTML));
     }
+
     // /api/breeders/<uuid>/summary
-    else if path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "breeders" && path_parts[3] == "summary" {
+    if path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "breeders" && path_parts[3] == "summary" {
         let breeder_id = path_parts[2].to_string();
         let study_name = format!("{}_study", breeder_id);
 
@@ -222,30 +181,33 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
             "total_trials": count,
             "study_user_attributes": attrs,
         });
-        Ok(json_response(StatusCode::OK, &serde_json::to_string(&json).unwrap()))
+        return Ok(json_response(StatusCode::OK, &serde_json::to_string(&json).unwrap()));
     }
-    // /api/breeders/<uuid>/trials/<study_name>/...
-    else if path_parts.len() >= 5 && path_parts[0] == "api" && path_parts[1] == "breeders" && path_parts[3] == "trials" {
+
+    // /api/breeders/<uuid>/studies
+    if path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "breeders" && path_parts[3] == "studies" {
+        let breeder_id = path_parts[2].to_string();
+        return match state.optuna.list_studies(&breeder_id).await {
+            Ok(studies) => {
+                let json = serde_json::json!({"breeder_id": breeder_id, "studies": studies});
+                Ok(json_response(StatusCode::OK, &serde_json::to_string(&json).unwrap()))
+            }
+            Err(e) => {
+                error!("Failed to list studies: {}", e);
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{{\"error\": \"{}\"}}", e)))
+            }
+        };
+    }
+
+    // /api/breeders/<uuid>/trials/<study_name>
+    if path_parts.len() >= 5 && path_parts[0] == "api" && path_parts[1] == "breeders" && path_parts[3] == "trials" {
         let breeder_id = path_parts[2].to_string();
         let study_name = path_parts[4].to_string();
-
-        let query: std::collections::HashMap<String, String> = req
-            .uri()
-            .query()
-            .map(|q| {
-                q.split('&')
-                    .filter_map(|pair| {
-                        let mut kv = pair.split('=');
-                        Some((kv.next()?.to_string(), kv.next()?.to_string()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
+        let query = parse_query(req.uri());
         let offset: i64 = query.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
         let limit: i64 = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
 
-        match state.optuna.get_trials(&breeder_id, &study_name, offset, limit).await {
+        return match state.optuna.get_trials(&breeder_id, &study_name, offset, limit).await {
             Ok(trials) => {
                 let json = serde_json::json!({
                     "breeder_id": breeder_id,
@@ -260,13 +222,39 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
                 error!("Failed to load trials: {}", e);
                 Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{{\"error\": \"{}\"}}", e)))
             }
-        }
-    } else {
-        Ok(Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::from("godon observer: try /metrics, /dashboard, /api/breeders/<uuid>/trials"))
-            .unwrap())
+        };
     }
+
+    // /api/breeders/<uuid>/trials (auto-detect study name)
+    if path_parts.len() >= 4 && path_parts[0] == "api" && path_parts[1] == "breeders" && path_parts[3] == "trials" {
+        let breeder_id = path_parts[2].to_string();
+        let study_name = format!("{}_study", breeder_id);
+        let query = parse_query(req.uri());
+        let offset: i64 = query.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
+        let limit: i64 = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
+
+        return match state.optuna.get_trials(&breeder_id, &study_name, offset, limit).await {
+            Ok(trials) => {
+                let json = serde_json::json!({
+                    "breeder_id": breeder_id,
+                    "study_name": study_name,
+                    "offset": offset,
+                    "limit": limit,
+                    "trials": trials,
+                });
+                Ok(json_response(StatusCode::OK, &serde_json::to_string(&json).unwrap()))
+            }
+            Err(e) => {
+                error!("Failed to load trials: {}", e);
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{{\"error\": \"{}\"}}", e)))
+            }
+        };
+    }
+
+    Ok(Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::from("godon observer: try /metrics, /dashboard, /api/breeders/<uuid>/trials"))
+        .unwrap())
 }
 
 const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
