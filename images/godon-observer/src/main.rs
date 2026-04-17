@@ -174,7 +174,7 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
 
     // /api-proxy/breeders/<uuid> — proxy to godon-api for breeder config
     if path_parts.len() >= 3 && path_parts[0] == "api-proxy" && path_parts[1] == "breeders" {
-        let api_path = format!("/api/breeders/{}", path_parts[2]);
+        let api_path = format!("/breeders/{}", path_parts[2]);
         let url = format!("{}{}", state.api_url, api_path);
         return match state.http_client.get(&url).send() {
             Ok(response) if response.status().is_success() => {
