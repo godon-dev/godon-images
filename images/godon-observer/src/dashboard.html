@@ -220,7 +220,6 @@ function renderHeatmap(el){
   el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>good</span><span><div class="dot" style="background:#f85149"></div>bad</span><span><div class="dot" style="background:#30363d"></div>missing</span><span><div class="dot" style="background:rgba(255,255,255,0.15);border:1px solid #fff"></div>best trial</span><span style="color:#8b949e">hover for params</span></div><div class="heatmap-wrap"><canvas id="hm" width="'+w+'" height="'+h+'"></canvas></div>';
   const c=$('hm').getContext('2d');
   c.fillStyle='#0d1117';c.fillRect(0,0,w,h);
-  c.fillStyle='rgba(255,255,255,0.08)';c.fillRect(padL+bestTi*colW,padT,colW,rows.length*rowH);
   c.fillStyle='#8b949e';c.font='11px monospace';c.textAlign='right';
   const objRanges=rows.map(r=>{
     const vs=trials.map(t=>trialValue(t,r.idx)).filter(v=>v!==null&&v!==undefined);
@@ -253,6 +252,7 @@ function renderHeatmap(el){
       c.fillText(g.hard_limit.toFixed(1),gx+2,y+10);
     }
   });
+  c.strokeStyle='#fff';c.lineWidth=2;c.strokeRect(padL+bestTi*colW,padT,colW,rows.length*rowH);
   c.fillStyle='#3fb950';c.font='9px monospace';c.textAlign='center';
   trials.forEach((t,i)=>{c.fillStyle=i===bestTi?'#3fb950':'#8b949e';c.fillText('#'+(i+1),padL+i*colW+colW/2,padT+rows.length*rowH+14)});
   $('hm').onmousemove=e=>{
@@ -338,7 +338,7 @@ function renderParallel(el){
   const bestTi=trials.reduce((bi,t,i)=>trialQuality(t)>trialQuality(trials[bi])?i:bi,0);
   trials.forEach((t,ti)=>{
     if(ti===bestTi) return;
-    const q=trialQuality(t);c.strokeStyle=qualityColor(q)+'88';c.lineWidth=q>0.7?1.5:1;
+    const q=trialQuality(t);c.strokeStyle=qualityColor(q);c.lineWidth=q>0.7?1.5:1;c.globalAlpha=0.5;
     c.beginPath();
     const pts=[];
     axes.forEach((ax,ai)=>{
@@ -349,10 +349,10 @@ function renderParallel(el){
       const x=left+ai*spacing;
       pts.push({x,y});
       ai===0?c.moveTo(x,y):c.lineTo(x,y);
-    });c.stroke();
+    });c.stroke();c.globalAlpha=1;
     t._pcPts=pts;
   });
-  const bt=trials[bestTi];c.strokeStyle='#3fb950';c.lineWidth=3;c.beginPath();
+  const bt=trials[bestTi];c.strokeStyle='#3fb950';c.lineWidth=3;c.globalAlpha=1;c.beginPath();
   axes.forEach((ax,ai)=>{
     const val=bt.params[ax.label];
     if(val===null||val===undefined) return;
