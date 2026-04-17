@@ -192,15 +192,7 @@ async function loadBreeder(){
 function renderTopInfo(){
   if(!breederConfig) return;
   const el=$('topInfo');
-  const objTags=(breederConfig.objectives||[]).map((o,i)=>{
-    const best=trials.reduce((b,t)=>{const v=trialValue(t,i);return v!==null&&(b===null||(o.direction==='maximize'?v>b:v<b))?v:b},null);
-    return '<span class="tag tag-blue">'+o.name+': '+(best!==null?best.toFixed(4):'-')+' ('+o.direction+')</span>';
-  }).join('');
-  const grTags=(breederConfig.guardrails||[]).map(g=>{
-    const hit=trials.some(t=>{const v=t.params[g.name];return v!==undefined&&v>g.hard_limit});
-    return '<span class="guardrail-tag '+(hit?'tag-red':'tag-green')+'">'+g.name+(hit?' VIOLATED':' ok')+' &le; '+g.hard_limit+'</span>';
-  }).join('');
-  el.innerHTML=objTags+' <span style="color:#484f58">|</span> '+grTags;
+  el.innerHTML='';
 }
 
 function renderView(){
@@ -224,10 +216,16 @@ function renderHeatmap(el){
   const rowH=28,colW=36,padL=140,padT=30;
   const w=padL+trials.length*colW+40;
   const h=padT+rows.length*rowH+30;
-  el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>good</span><span><div class="dot" style="background:#f85149"></div>bad</span><span><div class="dot" style="background:#30363d"></div>missing</span><span style="color:#8b949e">hover for params</span></div><div class="heatmap-wrap"><canvas id="hm" width="'+w+'" height="'+h+'"></canvas></div>';
+  const bestTi=trials.reduce((bi,t,i)=>trialQuality(t)>trialQuality(trials[bi])?i:bi,0);
+  el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>good</span><span><div class="dot" style="background:#f85149"></div>bad</span><span><div class="dot" style="background:#30363d"></div>missing</span><span><div class="dot" style="background:rgba(255,255,255,0.15);border:1px solid #fff"></div>best trial</span><span style="color:#8b949e">hover for params</span></div><div class="heatmap-wrap"><canvas id="hm" width="'+w+'" height="'+h+'"></canvas></div>';
   const c=$('hm').getContext('2d');
   c.fillStyle='#0d1117';c.fillRect(0,0,w,h);
+  c.fillStyle='rgba(255,255,255,0.08)';c.fillRect(padL+bestTi*colW,padT,colW,rows.length*rowH);
   c.fillStyle='#8b949e';c.font='11px monospace';c.textAlign='right';
+  const objRanges=rows.map(r=>{
+    const vs=trials.map(t=>trialValue(t,r.idx)).filter(v=>v!==null&&v!==undefined);
+    return{min:Math.min(...vs),max:Math.max(...vs)};
+  });
   rows.forEach((r,i)=>{
     const y=padT+i*rowH;
     const lbl=r.label.length>18?r.label.substring(0,16)+'..':r.label;
@@ -244,9 +242,19 @@ function renderHeatmap(el){
         c.fillText(val.toFixed(2),x+colW/2,y+rowH/2+3);
       }
     });
+    const g=breederConfig.guardrails?.find(g=>g.name===rows[i].label);
+    if(g&&objRanges[i]){
+      const range=objRanges[i].max-objRanges[i].min||1;
+      const gx=padL+((g.hard_limit-objRanges[i].min)/range)*trials.length*colW;
+      c.strokeStyle='#f85149';c.lineWidth=1;c.setLineDash([4,2]);
+      c.beginPath();c.moveTo(gx,y+1);c.lineTo(gx,y+rowH-2);c.stroke();
+      c.setLineDash([]);
+      c.fillStyle='#f85149';c.font='8px monospace';c.textAlign='left';
+      c.fillText(g.hard_limit.toFixed(1),gx+2,y+10);
+    }
   });
-  c.fillStyle='#8b949e';c.font='9px monospace';c.textAlign='center';
-  trials.forEach((t,i)=>{c.fillText('#'+(i+1),padL+i*colW+colW/2,padT+rows.length*rowH+14)});
+  c.fillStyle='#3fb950';c.font='9px monospace';c.textAlign='center';
+  trials.forEach((t,i)=>{c.fillStyle=i===bestTi?'#3fb950':'#8b949e';c.fillText('#'+(i+1),padL+i*colW+colW/2,padT+rows.length*rowH+14)});
   $('hm').onmousemove=e=>{
     const scaleX=$('hm').width/$('hm').clientWidth;
     const scaleY=$('hm').height/$('hm').clientHeight;
@@ -274,7 +282,7 @@ function renderSpider(el){
   if(axes.length<3){el.innerHTML='<div class="info">need 3+ objectives for spider</div>';return}
   const qColors=trials.map(t=>qualityColor(trialQuality(t)));
   const bestIdx=trials.reduce((bi,t,i)=>trialQuality(t)>trialQuality(trials[bi])?i:bi,0);
-  el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>best</span><span style="color:#8b949e">background: all trials colored by quality</span></div><div class="slider-row"><label>trial:</label><div style="position:relative;flex:1"><canvas id="spTrack" height="8" style="position:absolute;top:50%;transform:translateY(-50%);pointer-events:none;border-radius:4px"></canvas><input type="range" id="spSlider" min="0" max="'+(trials.length-1)+'" value="'+(trials.length-1)+'" style="width:100%;position:relative;z-index:1"></div><span class="trial-info" id="spInfo">'+trials.length+'/'+trials.length+'</span></div><canvas id="sp" width="600" height="500"></canvas>';
+  el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>best</span><span><div class="dot" style="background:#3fb950;border:2px solid #fff"></div>best trial</span><span style="color:#8b949e">background: all trials colored by quality</span></div><div class="slider-row"><label>trial:</label><div style="position:relative;flex:1"><canvas id="spTrack" height="8" style="position:absolute;top:50%;transform:translateY(-50%);pointer-events:none;border-radius:4px"></canvas><input type="range" id="spSlider" min="0" max="'+(trials.length-1)+'" value="'+(trials.length-1)+'" style="width:100%;position:relative;z-index:1"></div><span class="trial-info" id="spInfo">'+trials.length+'/'+trials.length+'</span></div><canvas id="sp" width="600" height="500"></canvas>';
   const slider=$('spSlider');
   const track=$('spTrack');
   const sliderW=slider.offsetWidth||300;
@@ -297,6 +305,9 @@ function renderSpider(el){
       c.strokeStyle=qColors[ti]+'44';c.lineWidth=1;c.beginPath();
       axes.forEach((ax,ai)=>{const val=trialValue(t,ax.idx);const maxVal=Math.max(...trials.map(tt=>{const v=trialValue(tt,ax.idx);return v!==null?Math.abs(v):0}))||1;const norm=val!==null&&val!==undefined?Math.min(Math.abs(val)/maxVal,1.2):0;const ang=Math.PI*2*ai/n-Math.PI/2;c.lineTo(cx+Math.cos(ang)*R*norm,cy+Math.sin(ang)*R*norm)});c.closePath();c.stroke()
     });
+    const bestT=trials[bestIdx];
+    c.strokeStyle='#3fb950';c.lineWidth=2;c.setLineDash([4,3]);c.beginPath();
+    axes.forEach((ax,ai)=>{const val=trialValue(bestT,ax.idx);const maxVal=Math.max(...trials.map(tt=>{const v=trialValue(tt,ax.idx);return v!==null?Math.abs(v):0}))||1;const norm=val!==null&&val!==undefined?Math.min(Math.abs(val)/maxVal,1.2):0;const ang=Math.PI*2*ai/n-Math.PI/2;ai===0?c.moveTo(cx+Math.cos(ang)*R*norm,cy+Math.sin(ang)*R*norm):c.lineTo(cx+Math.cos(ang)*R*norm,cy+Math.sin(ang)*R*norm)});c.closePath();c.stroke();c.setLineDash([]);
     const t=trials[idx];c.strokeStyle=qColors[idx];c.lineWidth=2;c.beginPath();
     axes.forEach((ax,ai)=>{const val=trialValue(t,ax.idx);const maxVal=Math.max(...trials.map(tt=>{const v=trialValue(tt,ax.idx);return v!==null?Math.abs(v):0}))||1;const norm=val!==null&&val!==undefined?Math.min(Math.abs(val)/maxVal,1.2):0;const ang=Math.PI*2*ai/n-Math.PI/2;c.lineTo(cx+Math.cos(ang)*R*norm,cy+Math.sin(ang)*R*norm)});c.closePath();c.stroke();c.fillStyle=qColors[idx]+'33';c.fill();
     const gv=checkGuardrails(t);const gvText=Object.keys(gv).length?' | <span style="color:#f85149">VIOLATED: '+Object.keys(gv).join(', ')+'</span>':'';
@@ -324,8 +335,10 @@ function renderParallel(el){
     const g=breederConfig.guardrails?.find(g=>g.name===ax.label);
     if(g){const range=ranges[i].max-ranges[i].min||1;const gy=bottom-((g.hard_limit-ranges[i].min)/range)*(bottom-top);c.strokeStyle='#f85149';c.lineWidth=1;c.setLineDash([3,2]);c.beginPath();c.moveTo(x-10,gy);c.lineTo(x+10,gy);c.stroke();c.setLineDash([])}
   });
+  const bestTi=trials.reduce((bi,t,i)=>trialQuality(t)>trialQuality(trials[bi])?i:bi,0);
   trials.forEach((t,ti)=>{
-    const q=trialQuality(t);c.strokeStyle=qualityColor(q);c.lineWidth=q>0.7?2:1;
+    if(ti===bestTi) return;
+    const q=trialQuality(t);c.strokeStyle=qualityColor(q)+'88';c.lineWidth=q>0.7?1.5:1;
     c.beginPath();
     const pts=[];
     axes.forEach((ax,ai)=>{
@@ -339,6 +352,15 @@ function renderParallel(el){
     });c.stroke();
     t._pcPts=pts;
   });
+  const bt=trials[bestTi];c.strokeStyle='#3fb950';c.lineWidth=3;c.beginPath();
+  axes.forEach((ax,ai)=>{
+    const val=bt.params[ax.label];
+    if(val===null||val===undefined) return;
+    const range=ranges[ai].max-ranges[ai].min||1;
+    const y=bottom-((val-ranges[ai].min)/range)*(bottom-top);
+    const x=left+ai*spacing;
+    ai===0?c.moveTo(x,y):c.lineTo(x,y);
+  });c.stroke();
   $('pc').onmousemove=e=>{
     const scaleX=$('pc').width/$('pc').clientWidth;
     const scaleY=$('pc').height/$('pc').clientHeight;
