@@ -246,7 +246,9 @@ function renderHeatmap(el){
   c.fillStyle='#8b949e';c.font='9px monospace';c.textAlign='center';
   trials.forEach((t,i)=>{c.fillText('#'+(i+1),padL+i*colW+colW/2,padT+rows.length*rowH+14)});
   $('hm').onmousemove=e=>{
-    const mx=e.offsetX,my=e.offsetY;
+    const scaleX=$('hm').width/$('hm').clientWidth;
+    const scaleY=$('hm').height/$('hm').clientHeight;
+    const mx=e.offsetX*scaleX,my=e.offsetY*scaleY;
     const ti=Math.floor((mx-padL)/colW),ri=Math.floor((my-padT)/rowH);
     if(ti>=0&&ti<trials.length&&ri>=0&&ri<rows.length){
       const t=trials[ti],r=rows[ri];
@@ -336,7 +338,9 @@ function renderParallel(el){
     t._pcPts=pts;
   });
   $('pc').onmousemove=e=>{
-    const mx=e.offsetX,my=e.offsetY;
+    const scaleX=$('pc').width/$('pc').clientWidth;
+    const scaleY=$('pc').height/$('pc').clientHeight;
+    const mx=e.offsetX*scaleX,my=e.offsetY*scaleY;
     let best=-1,bestDist=20;
     trials.forEach((t,ti)=>{
       if(!t._pcPts) return;
