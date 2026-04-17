@@ -36,9 +36,9 @@ canvas{border-radius:4px}
 .slider-row input[type="range"]::-webkit-slider-runnable-track{background:#21262d;height:8px;border-radius:4px}
 .slider-row input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:4px;height:14px;background:#e6edf3;border-radius:2px;margin-top:-3px}
 .heatmap-wrap{overflow-x:auto;padding-bottom:8px}
-.heatmap-wrap canvas{min-width:100%}
+.heatmap-wrap canvas{display:block}
 .parcel-wrap{overflow:auto;padding-bottom:8px;position:relative}
-.parcel-wrap canvas{min-width:100%}
+.parcel-wrap canvas{display:block}
 .tooltip{position:fixed;background:#1c2128;border:1px solid #30363d;border-radius:6px;padding:8px 12px;font-size:11px;pointer-events:none;z-index:100;max-width:300px;display:none}
 .error{background:#2a1a1a;border:1px solid #da3633;border-radius:4px;padding:8px;color:#f85149;margin:8px 0}
 .info{background:#1a2a1a;border:1px solid #238636;border-radius:4px;padding:8px;color:#3fb950;margin:8px 0}
@@ -82,11 +82,12 @@ const DEMO_CONFIG={objectives:[
 const DEMO_TRIALS=(function(){
   const params=['co2_injection','heating_setpoints','irrigation','light_intensity','shading','vent_openings'];
   const out=[];
-  for(let i=0;i<20;i++){
+  for(let i=0;i<100;i++){
     const p={};params.forEach(k=>{p[k]=+(Math.random()*10).toFixed(2)});
+    const h=Math.floor(i/6),m=i%6;
     out.push({
       number:i,state:'COMPLETE',
-      datetime_start:'2026-04-17 20:'+(10+i%6).toString().padStart(2,'0')+':00',
+      datetime_start:'2026-04-17 '+(20+h).toString().padStart(2,'0')+':'+m+'0:00',
       params:p,
       values:[+(0.1+Math.random()*0.5).toFixed(4),+(Math.random()*50).toFixed(4),+(Math.random()*15).toFixed(4)]
     });
@@ -307,7 +308,7 @@ function renderSpider(el){
 function renderParallel(el){
   if(!breederConfig||!trials.length){el.innerHTML='<div class="info">no data</div>';return}
   const axes=Object.keys(trials[0].params).map(p=>({label:p,type:'param'}));
-  const pw=Math.max(900,axes.length*100);
+  const pw=Math.max(900,axes.length*120);
   el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>good trial</span><span><div class="dot" style="background:#f85149"></div>bad trial</span><span style="color:#8b949e">axes: parameters, color: objective quality | scroll to pan</span></div><div class="parcel-wrap"><canvas id="pc" width="'+pw+'" height="460"></canvas></div>';
   const c=$('pc').getContext('2d');c.fillStyle='#0d1117';c.fillRect(0,0,pw,460);
   const left=80,top=40,right=pw-80,bottom=400;
