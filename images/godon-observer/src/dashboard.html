@@ -29,6 +29,8 @@ nav button:hover{color:#c9d1d9}
 .slider-row input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:4px;height:14px;background:#e6edf3;border-radius:2px;margin-top:-3px}
 .slider-row input[type="range"]::-moz-range-track{background:#21262d;height:8px;border-radius:4px}
 .slider-row input[type="range"]::-moz-range-thumb{width:4px;height:14px;background:#e6edf3;border-radius:2px;border:none}
+.slider-row input[type="range"].quality-track::-webkit-slider-runnable-track{background:transparent}
+.slider-row input[type="range"].quality-track::-moz-range-track{background:transparent}
 .slider-row .trial-info{color:#e6edf3;min-width:180px}
 .chart-wrap{overflow-x:auto;padding-bottom:8px}
 .tooltip{position:fixed;background:#1c2128;border:1px solid #30363d;border-radius:6px;padding:8px 12px;font-size:11px;pointer-events:none;z-index:100;max-width:300px;display:none}
@@ -317,9 +319,20 @@ function renderSpider(){
 
   const sliderRow=el.append('div').attr('class','slider-row');
   sliderRow.append('label').text('trial:');
-  const slider=sliderRow.append('input').attr('type','range')
+  const sliderWrap=sliderRow.append('div').style('display','flex').style('flex','1').style('position','relative');
+  const trackDiv=sliderWrap.append('div').style('position','absolute').style('top','50%').style('transform','translateY(-50%)')
+    .style('width','100%').style('height','8px').style('border-radius','4px').style('overflow','hidden').style('display','flex').style('pointer-events','none');
+  trials.forEach((t,i)=>{
+    trackDiv.append('div').style('flex','1').style('background',qColor(trialQuality(t)));
+  });
+  sliderWrap.append('div').style('position','absolute')
+    .style('left',(bestI/Math.max(trials.length-1,1)*100)+'%').style('top','calc(50% - 6px)')
+    .style('width','2px').style('height','12px').style('background','#fff')
+    .style('pointer-events','none').style('z-index','0');
+  const slider=sliderWrap.append('input').attr('type','range')
     .attr('min',0).attr('max',trials.length-1).attr('value',trials.length-1)
-    .style('flex','1');
+    .attr('class','quality-track')
+    .style('width','100%').style('position','relative').style('z-index','1');
   const info=sliderRow.append('span').attr('class','trial-info').text(trials.length+'/'+trials.length);
 
   const svgEl=el.append('svg').attr('width',size).attr('height',size+40);
