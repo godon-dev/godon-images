@@ -8,7 +8,7 @@ Container images built with Nix for reproducible, isolated builds.
 |-------|----------|------|---------|
 | `godon-api` | Rust (Axum) | 8080 | REST API for managing optimizer breeders and credentials |
 | `godon-cli` | Rust | - | CLI tool for interacting with godon-api |
-| `godon-metrics-exporter` | Rust (Hyper) | 8089 | Prometheus metrics proxy from Push Gateway |
+| `godon-observer` | Rust (Hyper) | 8089 | Optimization observability: Prometheus metrics, trial history from Optuna storage, visualization dashboard |
 | `godon-seeder` | Rust | - | Deploys controller/breeder scripts to Windmill |
 | `godon-mcp` | Rust (Axum) | 3001 | MCP server exposing godon-api as tool interface for LLM agents |
 | `godon-bench-greenhouse` | Rust (Axum) | 8090 | Multi-zone greenhouse simulation bench for engine verification |
@@ -24,6 +24,7 @@ godon-images/
 │   ├── godon-api/
 │   ├── godon-cli/
 │   ├── godon-metrics-exporter/
+│   ├── godon-observer/
 │   ├── godon-seeder/
 │   ├── godon-mcp/
 │   └── godon-bench-greenhouse/
