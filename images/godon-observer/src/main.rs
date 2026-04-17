@@ -460,12 +460,11 @@ function qualityColor(q){
 function renderHeatmap(el){
   if(!breederConfig){el.innerHTML='<div class="info">no config</div>';return}
   const objs=breederConfig.objectives||[];
-  const params=trials.length?Object.keys(trials[0].params):[];
-  const rows=[...objs.map(o=>({label:o.name,type:'obj',idx:objs.indexOf(o)})),...params.map(p=>({label:p,type:'param'}))];
+  const rows=objs.map(o=>({label:o.name,type:'obj',idx:objs.indexOf(o)}));
   const rowH=28,colW=36,padL=140,padT=30;
   const w=padL+trials.length*colW+40;
   const h=padT+rows.length*rowH+30;
-  el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>good</span><span><div class="dot" style="background:#f85149"></div>bad</span><span><div class="dot" style="background:#30363d"></div>missing</span><span style="color:#8b949e">hover for details</span></div><div class="heatmap-wrap"><canvas id="hm" width="'+w+'" height="'+h+'"></canvas></div>';
+  el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>good</span><span><div class="dot" style="background:#f85149"></div>bad</span><span><div class="dot" style="background:#30363d"></div>missing</span><span style="color:#8b949e">hover for params</span></div><div class="heatmap-wrap"><canvas id="hm" width="'+w+'" height="'+h+'"></canvas></div>';
   const c=$('hm').getContext('2d');
   c.fillStyle='#0d1117';c.fillRect(0,0,w,h);
   c.fillStyle='#8b949e';c.font='11px monospace';c.textAlign='right';
@@ -475,14 +474,8 @@ function renderHeatmap(el){
     c.fillText(lbl,padL-6,y+rowH/2+4);
     trials.forEach((t,ti)=>{
       const x=padL+ti*colW;
-      let val,q;
-      if(r.type==='obj'){
-        val=trialValue(t,r.idx);
-        q=valueQuality(val,r.idx);
-      }else{
-        val=t.params[r.label];
-        q=trialQuality(t);
-      }
+      const val=trialValue(t,r.idx);
+      const q=valueQuality(val,r.idx);
       c.fillStyle=(val===null||val===undefined)?'#30363d':qualityColor(q);
       c.fillRect(x+1,y+1,colW-2,rowH-2);
       if(val!==null&&val!==undefined){
@@ -493,16 +486,6 @@ function renderHeatmap(el){
   });
   c.fillStyle='#8b949e';c.font='9px monospace';c.textAlign='center';
   trials.forEach((t,i)=>{c.fillText('T'+t.number,padL+i*colW+colW/2,padT+rows.length*rowH+14)});
-  if(breederConfig.guardrails){
-    breederConfig.guardrails.forEach(g=>{
-      const pi=params.indexOf(g.name);
-      if(pi<0) return;
-      const y=padT+(objs.length+pi)*rowH+rowH/2;
-      c.strokeStyle='#f85149';c.lineWidth=1;c.setLineDash([3,2]);
-      c.beginPath();c.moveTo(padL,y);c.lineTo(padL+trials.length*colW,y);c.stroke();
-      c.setLineDash([]);
-    });
-  }
   $('hm').onmousemove=e=>{
     const rect=$('hm').getBoundingClientRect();
     const mx=e.clientX-rect.left,my=e.clientY-rect.top;
@@ -511,9 +494,7 @@ function renderHeatmap(el){
       const t=trials[ti],r=rows[ri];
       const tip=$('tooltip');
       let html='<b>T'+t.number+'</b> ('+t.datetime_start?.substring(11,19)+')<br>';
-      if(r.type==='obj'){
-        const v=trialValue(t,r.idx);html+=r.label+': '+(v!==null?v.toFixed(4):'-')+'<br>';
-      }
+      objs.forEach((o,oi)=>{const v=trialValue(t,oi);html+=o.name+': '+(v!==null?v.toFixed(4):'-')+'<br>'});
       html+='<br><b>params:</b>';
       Object.entries(t.params).forEach(([k,v])=>{html+='<br>'+k+': '+v.toFixed(3)});
       const gv=checkGuardrails(t);
@@ -527,11 +508,10 @@ function renderHeatmap(el){
 
 function renderSpider(el){
   if(!breederConfig||!trials.length){el.innerHTML='<div class="info">no data</div>';return}
-  const objs=breederConfig.objectives.map((o,i)=>({label:o.name,type:'obj',idx:i}));
-  const params=Object.keys(trials[0].params).map(p=>({label:p,type:'param'}));
-  const axes=[...objs,...params];
-  if(axes.length<3){el.innerHTML='<div class="info">need 3+ axes</div>';return}
+  const axes=breederConfig.objectives.map((o,i)=>({label:o.name,type:'obj',idx:i}));
+  if(axes.length<3){el.innerHTML='<div class="info">need 3+ objectives for spider</div>';return}
   const qColors=trials.map(t=>qualityColor(trialQuality(t)));
+  const bestIdx=trials.reduce((bi,t,i)=>trialQuality(t)>trialQuality(trials[bi])?i:bi,0);
   el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>best</span><span style="color:#8b949e">background: all trials colored by quality</span></div><div class="slider-row"><label>trial:</label><input type="range" id="spSlider" min="0" max="'+(trials.length-1)+'" value="'+(trials.length-1)+'"><span class="trial-info" id="spInfo">'+trials.length+'/'+trials.length+'</span></div><canvas id="sp" width="600" height="500"></canvas>';
   const slider=$('spSlider');
   const draw=()=>{
@@ -545,10 +525,10 @@ function renderSpider(el){
     trials.forEach((t,ti)=>{
       if(ti===idx) return;
       c.strokeStyle=qColors[ti]+'44';c.lineWidth=1;c.beginPath();
-      axes.forEach((ax,ai)=>{let val;if(ax.type==='obj'){val=trialValue(t,ax.idx)}else{val=t.params[ax.label]}const maxVal=Math.max(...trials.map(tt=>{if(ax.type==='obj'){const v=trialValue(tt,ax.idx);return v!==null?Math.abs(v):0}else{return Math.abs(tt.params[ax.label]||0)}}))||1;const norm=val!==null&&val!==undefined?Math.min(Math.abs(val)/maxVal,1.2):0;const ang=Math.PI*2*ai/n-Math.PI/2;c.lineTo(cx+Math.cos(ang)*R*norm,cy+Math.sin(ang)*R*norm)});c.closePath();c.stroke()
+      axes.forEach((ax,ai)=>{const val=trialValue(t,ax.idx);const maxVal=Math.max(...trials.map(tt=>{const v=trialValue(tt,ax.idx);return v!==null?Math.abs(v):0}))||1;const norm=val!==null&&val!==undefined?Math.min(Math.abs(val)/maxVal,1.2):0;const ang=Math.PI*2*ai/n-Math.PI/2;c.lineTo(cx+Math.cos(ang)*R*norm,cy+Math.sin(ang)*R*norm)});c.closePath();c.stroke()
     });
     const t=trials[idx];c.strokeStyle=qColors[idx];c.lineWidth=2;c.beginPath();
-    axes.forEach((ax,ai)=>{let val;if(ax.type==='obj'){val=trialValue(t,ax.idx)}else{val=t.params[ax.label]}const maxVal=Math.max(...trials.map(tt=>{if(ax.type==='obj'){const v=trialValue(tt,ax.idx);return v!==null?Math.abs(v):0}else{return Math.abs(tt.params[ax.label]||0)}}))||1;const norm=val!==null&&val!==undefined?Math.min(Math.abs(val)/maxVal,1.2):0;const ang=Math.PI*2*ai/n-Math.PI/2;c.lineTo(cx+Math.cos(ang)*R*norm,cy+Math.sin(ang)*R*norm)});c.closePath();c.stroke();c.fillStyle=qColors[idx]+'33';c.fill();
+    axes.forEach((ax,ai)=>{const val=trialValue(t,ax.idx);const maxVal=Math.max(...trials.map(tt=>{const v=trialValue(tt,ax.idx);return v!==null?Math.abs(v):0}))||1;const norm=val!==null&&val!==undefined?Math.min(Math.abs(val)/maxVal,1.2):0;const ang=Math.PI*2*ai/n-Math.PI/2;c.lineTo(cx+Math.cos(ang)*R*norm,cy+Math.sin(ang)*R*norm)});c.closePath();c.stroke();c.fillStyle=qColors[idx]+'33';c.fill();
     const gv=checkGuardrails(t);const gvText=Object.keys(gv).length?' | <span style="color:#f85149">VIOLATED: '+Object.keys(gv).join(', ')+'</span>':'';
     c.fillStyle='#e6edf3';c.font='12px monospace';c.textAlign='center';
     c.fillText('T'+t.number+' — '+t.datetime_start?.substring(11,19)+gvText,cx,20);
@@ -558,38 +538,29 @@ function renderSpider(el){
 
 function renderParallel(el){
   if(!breederConfig||!trials.length){el.innerHTML='<div class="info">no data</div>';return}
-  const objs=breederConfig.objectives.map((o,i)=>({label:o.name,type:'obj',idx:i}));
-  const params=Object.keys(trials[0].params).map(p=>({label:p,type:'param'}));
-  const axes=[...objs,...params];
+  const axes=Object.keys(trials[0].params).map(p=>({label:p,type:'param'}));
   const left=100,top=40,right=780,bottom=400;
-  const spacing=(right-left)/(axes.length-1);
-  el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>good trial</span><span><div class="dot" style="background:#f85149"></div>bad trial</span></div><canvas id="pc" width="900" height="460"></canvas>';
+  const spacing=(right-left)/(axes.length-1||1);
+  el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>good trial</span><span><div class="dot" style="background:#f85149"></div>bad trial</span><span style="color:#8b949e">axes: parameters, color: objective quality</span></div><canvas id="pc" width="900" height="460"></canvas>';
   const c=$('pc').getContext('2d');c.fillStyle='#0d1117';c.fillRect(0,0,900,460);
+  const ranges=axes.map(ax=>{const vs=trials.map(t=>t.params[ax.label]||0);return{min:Math.min(...vs),max:Math.max(...vs)}});
   axes.forEach((ax,i)=>{
     const x=left+i*spacing;
     c.strokeStyle='#30363d';c.lineWidth=1;c.beginPath();c.moveTo(x,top);c.lineTo(x,bottom);c.stroke();
     c.fillStyle='#c9d1d9';c.font='10px monospace';c.textAlign='center';
     c.fillText(ax.label.length>16?ax.label.substring(0,14)+'..':ax.label,x,bottom+16);
-    const vals=trials.map(t=>{if(ax.type==='obj'){const v=trialValue(t,ax.idx);return v!==null?v:NaN}else return t.params[ax.label]||0}).filter(v=>!isNaN(v));
-    if(vals.length){
-      const mn=Math.min(...vals),mx=Math.max(...vals);
-      c.fillStyle='#484f58';c.fillText(mx.toFixed(2),x,top-8);c.fillText(mn.toFixed(2),x,bottom+30);
-    }
-    if(ax.type==='param'){
-      const g=breederConfig.guardrails?.find(g=>g.name===ax.label);
-      if(g){const gy=bottom-((g.hard_limit-mn)/(mx-mn))*(bottom-top);c.strokeStyle='#f85149';c.lineWidth=1;c.setLineDash([3,2]);c.beginPath();c.moveTo(x-10,gy);c.lineTo(x+10,gy);c.stroke();c.setLineDash([])}
-    }
+    c.fillStyle='#484f58';c.fillText(ranges[i].max.toFixed(2),x,top-8);c.fillText(ranges[i].min.toFixed(2),x,bottom+30);
+    const g=breederConfig.guardrails?.find(g=>g.name===ax.label);
+    if(g){const range=ranges[i].max-ranges[i].min||1;const gy=bottom-((g.hard_limit-ranges[i].min)/range)*(bottom-top);c.strokeStyle='#f85149';c.lineWidth=1;c.setLineDash([3,2]);c.beginPath();c.moveTo(x-10,gy);c.lineTo(x+10,gy);c.stroke();c.setLineDash([])}
   });
-  const mn=axes.map(ax=>{const vs=trials.map(t=>{if(ax.type==='obj'){const v=trialValue(t,ax.idx);return v!==null?v:NaN}else return t.params[ax.label]||0}).filter(v=>!isNaN(v));return Math.min(...vs)});
-  const mx=axes.map(ax=>{const vs=trials.map(t=>{if(ax.type==='obj'){const v=trialValue(t,ax.idx);return v!==null?v:NaN}else return t.params[ax.label]||0}).filter(v=>!isNaN(v));return Math.max(...vs)});
   trials.forEach((t,ti)=>{
     const q=trialQuality(t);c.strokeStyle=qualityColor(q);c.lineWidth=q>0.7?2:1;
     c.beginPath();
     axes.forEach((ax,ai)=>{
-      let val;if(ax.type==='obj') val=trialValue(t,ax.idx);else val=t.params[ax.label];
+      const val=t.params[ax.label];
       if(val===null||val===undefined) return;
-      const range=mx[ai]-mn[ai]||1;
-      const y=bottom-((val-mn[ai])/range)*(bottom-top);
+      const range=ranges[ai].max-ranges[ai].min||1;
+      const y=bottom-((val-ranges[ai].min)/range)*(bottom-top);
       const x=left+ai*spacing;
       ai===0?c.moveTo(x,y):c.lineTo(x,y);
     });c.stroke()
