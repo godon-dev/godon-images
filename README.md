@@ -23,7 +23,6 @@ godon-images/
 ├── images/                          # Service images (one directory per image)
 │   ├── godon-api/
 │   ├── godon-cli/
-│   ├── godon-metrics-exporter/
 │   ├── godon-observer/
 │   ├── godon-seeder/
 │   ├── godon-mcp/
