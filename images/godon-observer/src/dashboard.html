@@ -242,7 +242,7 @@ function renderHeatmap(el){
     });
   });
   c.fillStyle='#8b949e';c.font='9px monospace';c.textAlign='center';
-  trials.forEach((t,i)=>{c.fillText('T'+t.number,padL+i*colW+colW/2,padT+rows.length*rowH+14)});
+  trials.forEach((t,i)=>{c.fillText(t.datetime_start?.substring(11,19)||('T'+t.number),padL+i*colW+colW/2,padT+rows.length*rowH+14)});
   $('hm').onmousemove=e=>{
     const rect=$('hm').getBoundingClientRect();
     const mx=e.clientX-rect.left,my=e.clientY-rect.top;
@@ -321,15 +321,48 @@ function renderParallel(el){
   trials.forEach((t,ti)=>{
     const q=trialQuality(t);c.strokeStyle=qualityColor(q);c.lineWidth=q>0.7?2:1;
     c.beginPath();
+    const pts=[];
     axes.forEach((ax,ai)=>{
       const val=t.params[ax.label];
-      if(val===null||val===undefined) return;
+      if(val===null||val===undefined){pts.push(null);return}
       const range=ranges[ai].max-ranges[ai].min||1;
       const y=bottom-((val-ranges[ai].min)/range)*(bottom-top);
       const x=left+ai*spacing;
+      pts.push({x,y});
       ai===0?c.moveTo(x,y):c.lineTo(x,y);
-    });c.stroke()
+    });c.stroke();
+    t._pcPts=pts;
   });
+  $('pc').onmousemove=e=>{
+    const rect=$('pc').getBoundingClientRect();
+    const mx=e.clientX-rect.left,my=e.clientY-rect.top;
+    let best=-1,bestDist=20;
+    trials.forEach((t,ti)=>{
+      if(!t._pcPts) return;
+      for(let i=0;i<t._pcPts.length-1;i++){
+        const a=t._pcPts[i],b=t._pcPts[i+1];
+        if(!a||!b) continue;
+        const dx=b.x-a.x,dy=b.y-a.y;
+        const len2=dx*dx+dy*dy;
+        let t2=len2>0?((mx-a.x)*dx+(my-a.y)*dy)/len2:-1;
+        t2=Math.max(0,Math.min(1,t2));
+        const px=a.x+t2*dx,py=a.y+t2*dy;
+        const d=Math.sqrt((mx-px)*(mx-px)+(my-py)*(my-py));
+        if(d<bestDist){bestDist=d;best=ti}
+      }
+    });
+    if(best>=0){
+      const t=trials[best];const tip=$('tooltip');
+      let html='<b>T'+t.number+'</b> ('+t.datetime_start?.substring(11,19)+')<br>';
+      html+='<b>objectives:</b>';
+      breederConfig.objectives.forEach((o,oi)=>{const v=trialValue(t,oi);html+='<br>'+o.name+': '+(v!==null?v.toFixed(4):'-')});
+      html+='<br><br><b>params:</b>';
+      Object.entries(t.params).forEach(([k,v])=>{html+='<br>'+k+': '+v.toFixed(3)});
+      tip.innerHTML=html;tip.style.display='block';
+      tip.style.left=(e.clientX+12)+'px';tip.style.top=(e.clientY+12)+'px';
+    }else{$('tooltip').style.display='none'}
+  };
+  $('pc').onmouseleave=()=>{$('tooltip').style.display='none'};
 }
 
 $('loadBtn').onclick=loadBreeder;
