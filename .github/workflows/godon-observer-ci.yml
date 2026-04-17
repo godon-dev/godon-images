@@ -43,7 +43,7 @@ jobs:
       run: |
         docker run --rm godon-observer-test:test-${{ github.run_number }} --help
 
-    - name: Test container startup and endpoints
+    - name: Start container for endpoint tests
       run: |
         docker run -d --name observer-test \
           -p 8089:8089 \
@@ -59,17 +59,29 @@ jobs:
           exit 1
         fi
 
-        echo "Testing /health endpoint..."
-        curl -sf http://localhost:8089/health || { echo "/health failed"; docker logs observer-test; exit 1; }
+    - name: Test /health endpoint
+      run: curl -sf http://localhost:8089/health || { echo "/health failed"; docker logs observer-test; exit 1; }
 
-        echo "Testing /metrics endpoint..."
-        curl -sf http://localhost:8089/metrics | head -5 || { echo "/metrics failed"; docker logs observer-test; exit 1; }
+    - name: Test /metrics endpoint
+      run: curl -sf http://localhost:8089/metrics | head -5 || { echo "/metrics failed"; docker logs observer-test; exit 1; }
 
-        echo "Testing /dashboard endpoint..."
-        curl -sf http://localhost:8089/dashboard | grep -q "godon observer" || { echo "/dashboard failed"; docker logs observer-test; exit 1; }
+    - name: Test /dashboard endpoint
+      run: curl -sf http://localhost:8089/dashboard | grep -q "godon observer" || { echo "/dashboard failed"; docker logs observer-test; exit 1; }
 
-        echo "All endpoint tests passed"
-        docker logs observer-test
+    - name: Validate dashboard JS syntax
+      run: |
+        curl -sf http://localhost:8089/dashboard -o /tmp/dashboard.html
+        python3 -c "
+        import re, sys
+        html = open('/tmp/dashboard.html').read()
+        m = re.search(r'<script>(.*?)</script>', html, re.DOTALL)
+        if m:
+            open('/tmp/dashboard.js','w').write(m.group(1))
+        else:
+            print('no script tag found'); sys.exit(1)
+        "
+        node --check /tmp/dashboard.js
+        echo "JS syntax check passed"
 
     - name: Container cleanup
       if: always()
