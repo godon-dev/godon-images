@@ -1,0 +1,79 @@
+name: Godon Observer CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'images/godon-observer/**'
+      - 'build/**'
+      - '.github/workflows/godon-observer-ci.yml'
+  workflow_dispatch:
+
+env:
+  NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.05
+
+jobs:
+  build-and-test:
+    name: Build and Test Container
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Setup Nix
+      uses: cachix/install-nix-action@v22
+      with:
+        nix_path: nixpkgs=https://nixos.org/channels/nixos-25.05
+
+    - name: Build godon-observer container with Nix
+      run: |
+        cd images/godon-observer
+        VERSION="test-${{ github.run_number }}" \
+        IMAGE_NAME="godon-observer-test" \
+        PROJECT_ROOT="$(git rev-parse --show-toplevel)" \
+        ../../build/build-container-nix.sh \
+          --version "test-${{ github.run_number }}" \
+          --name "godon-observer-test" \
+          --builder-file ../../build/Dockerfile.nix-builder
+
+    - name: Test container basic functionality
+      run: |
+        docker run --rm godon-observer-test:test-${{ github.run_number }} --help
+
+    - name: Test container startup and endpoints
+      run: |
+        docker run -d --name observer-test \
+          -p 8089:8089 \
+          -e HOST=0.0.0.0 \
+          -e PORT=8089 \
+          godon-observer-test:test-${{ github.run_number }} --port=8089
+
+        sleep 5
+
+        if ! docker ps | grep observer-test; then
+          echo "Container failed to start"
+          docker logs observer-test
+          exit 1
+        fi
+
+        echo "Testing /health endpoint..."
+        curl -sf http://localhost:8089/health || { echo "/health failed"; docker logs observer-test; exit 1; }
+
+        echo "Testing /metrics endpoint..."
+        curl -sf http://localhost:8089/metrics | head -5 || { echo "/metrics failed"; docker logs observer-test; exit 1; }
+
+        echo "Testing /dashboard endpoint..."
+        curl -sf http://localhost:8089/dashboard | grep -q "godon observer" || { echo "/dashboard failed"; docker logs observer-test; exit 1; }
+
+        echo "All endpoint tests passed"
+        docker logs observer-test
+
+    - name: Container cleanup
+      if: always()
+      run: |
+        docker stop observer-test || true
+        docker rm observer-test || true
+        docker rmi godon-observer-test:test-${{ github.run_number }} || true
