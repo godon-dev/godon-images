@@ -112,7 +112,7 @@ impl OptunaReader {
 
         let trial_rows = client
             .query(
-                "SELECT t.trial_id, t.number, t.state, t.datetime_start, t.datetime_complete \
+                "SELECT t.trial_id, t.number, t.state, CAST(t.datetime_start AS TEXT), CAST(t.datetime_complete AS TEXT) \
                  FROM trials t \
                  JOIN studies s ON t.study_id = s.study_id \
                  WHERE s.study_name = $1 \
