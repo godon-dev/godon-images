@@ -116,8 +116,11 @@ function valueQuality(val,objIdx){
   if(!breederConfig) return 0.5;
   const obj=breederConfig.objectives[objIdx];
   if(!obj) return 0.5;
-  if(obj.direction==='maximize') return val;
-  return 1-val;
+  const vals=trials.map(t=>trialValue(t,objIdx)).filter(v=>v!==null&&v!==undefined);
+  const mn=Math.min(...vals),mx=Math.max(...vals);
+  const range=mx-mn||1;
+  const norm=(val-mn)/range;
+  return obj.direction==='maximize'?norm:(1-norm);
 }
 
 function trialQuality(t){
