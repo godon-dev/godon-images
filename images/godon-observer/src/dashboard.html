@@ -37,6 +37,8 @@ canvas{border-radius:4px}
 .slider-row input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:4px;height:14px;background:#e6edf3;border-radius:2px;margin-top:-3px}
 .heatmap-wrap{overflow-x:auto;padding-bottom:8px}
 .heatmap-wrap canvas{min-width:100%}
+.parcel-wrap{overflow:auto;padding-bottom:8px;position:relative}
+.parcel-wrap canvas{min-width:100%}
 .tooltip{position:fixed;background:#1c2128;border:1px solid #30363d;border-radius:6px;padding:8px 12px;font-size:11px;pointer-events:none;z-index:100;max-width:300px;display:none}
 .error{background:#2a1a1a;border:1px solid #da3633;border-radius:4px;padding:8px;color:#f85149;margin:8px 0}
 .info{background:#1a2a1a;border:1px solid #238636;border-radius:4px;padding:8px;color:#3fb950;margin:8px 0}
@@ -242,10 +244,12 @@ function renderHeatmap(el){
     });
   });
   c.fillStyle='#8b949e';c.font='9px monospace';c.textAlign='center';
-  trials.forEach((t,i)=>{c.fillText(t.datetime_start?.substring(11,19)||('T'+t.number),padL+i*colW+colW/2,padT+rows.length*rowH+14)});
+  trials.forEach((t,i)=>{c.fillText('#'+(i+1),padL+i*colW+colW/2,padT+rows.length*rowH+14)});
   $('hm').onmousemove=e=>{
     const rect=$('hm').getBoundingClientRect();
-    const mx=e.clientX-rect.left,my=e.clientY-rect.top;
+    const wrap=$('hm').parentElement;
+    const scrollX=wrap.scrollLeft;
+    const mx=e.clientX-rect.left+scrollX,my=e.clientY-rect.top;
     const ti=Math.floor((mx-padL)/colW),ri=Math.floor((my-padT)/rowH);
     if(ti>=0&&ti<trials.length&&ri>=0&&ri<rows.length){
       const t=trials[ti],r=rows[ri];
@@ -304,10 +308,11 @@ function renderSpider(el){
 function renderParallel(el){
   if(!breederConfig||!trials.length){el.innerHTML='<div class="info">no data</div>';return}
   const axes=Object.keys(trials[0].params).map(p=>({label:p,type:'param'}));
-  const left=100,top=40,right=780,bottom=400;
+  const pw=Math.max(900,axes.length*100);
+  el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>good trial</span><span><div class="dot" style="background:#f85149"></div>bad trial</span><span style="color:#8b949e">axes: parameters, color: objective quality | scroll to pan</span></div><div class="parcel-wrap"><canvas id="pc" width="'+pw+'" height="460"></canvas></div>';
+  const c=$('pc').getContext('2d');c.fillStyle='#0d1117';c.fillRect(0,0,pw,460);
+  const left=80,top=40,right=pw-80,bottom=400;
   const spacing=(right-left)/(axes.length-1||1);
-  el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>good trial</span><span><div class="dot" style="background:#f85149"></div>bad trial</span><span style="color:#8b949e">axes: parameters, color: objective quality</span></div><canvas id="pc" width="900" height="460"></canvas>';
-  const c=$('pc').getContext('2d');c.fillStyle='#0d1117';c.fillRect(0,0,900,460);
   const ranges=axes.map(ax=>{const vs=trials.map(t=>t.params[ax.label]||0);return{min:Math.min(...vs),max:Math.max(...vs)}});
   axes.forEach((ax,i)=>{
     const x=left+i*spacing;
@@ -335,7 +340,9 @@ function renderParallel(el){
   });
   $('pc').onmousemove=e=>{
     const rect=$('pc').getBoundingClientRect();
-    const mx=e.clientX-rect.left,my=e.clientY-rect.top;
+    const wrap=$('pc').parentElement;
+    const scrollX=wrap.scrollLeft;
+    const mx=e.clientX-rect.left+scrollX,my=e.clientY-rect.top;
     let best=-1,bestDist=20;
     trials.forEach((t,ti)=>{
       if(!t._pcPts) return;
