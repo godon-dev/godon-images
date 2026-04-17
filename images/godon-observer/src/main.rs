@@ -544,10 +544,10 @@ function renderSpider(el){
     trials.forEach((t,ti)=>{
       if(ti===idx) return;
       c.strokeStyle=qColors[ti]+'44';c.lineWidth=1;c.beginPath();
-      axes.forEach((ax,ai)=>{let val;if(ax.type==='obj') val=trialValue(t,ax.idx);else val=t.params[ax.label];const norm=val!==null&&val!==undefined?Math.min(Math.abs(val)/(Math.max(...trials.map(tt=>{if(ax.type==='obj'){const v=trialValue(tt,ax.idx);return v!==null?Math.abs(v):0}else return Math.abs(tt.params[ax.label]||0)}))||1,1.2):0;const ang=Math.PI*2*ai/n-Math.PI/2;c.lineTo(cx+Math.cos(ang)*R*norm,cy+Math.sin(ang)*R*norm)});c.closePath();c.stroke()
+      axes.forEach((ax,ai)=>{let val;if(ax.type==='obj'){val=trialValue(t,ax.idx)}else{val=t.params[ax.label]}const maxVal=Math.max(...trials.map(tt=>{if(ax.type==='obj'){const v=trialValue(tt,ax.idx);return v!==null?Math.abs(v):0}else{return Math.abs(tt.params[ax.label]||0)}}))||1;const norm=val!==null&&val!==undefined?Math.min(Math.abs(val)/maxVal,1.2):0;const ang=Math.PI*2*ai/n-Math.PI/2;c.lineTo(cx+Math.cos(ang)*R*norm,cy+Math.sin(ang)*R*norm)});c.closePath();c.stroke()
     });
     const t=trials[idx];c.strokeStyle=qColors[idx];c.lineWidth=2;c.beginPath();
-    axes.forEach((ax,ai)=>{let val;if(ax.type==='obj') val=trialValue(t,ax.idx);else val=t.params[ax.label];const norm=val!==null&&val!==undefined?Math.min(Math.abs(val)/(Math.max(...trials.map(tt=>{if(ax.type==='obj'){const v=trialValue(tt,ax.idx);return v!==null?Math.abs(v):0}else return Math.abs(tt.params[ax.label]||0)}))||1,1.2):0;const ang=Math.PI*2*ai/n-Math.PI/2;c.lineTo(cx+Math.cos(ang)*R*norm,cy+Math.sin(ang)*R*norm)});c.closePath();c.stroke();c.fillStyle=qColors[idx]+'33';c.fill();
+    axes.forEach((ax,ai)=>{let val;if(ax.type==='obj'){val=trialValue(t,ax.idx)}else{val=t.params[ax.label]}const maxVal=Math.max(...trials.map(tt=>{if(ax.type==='obj'){const v=trialValue(tt,ax.idx);return v!==null?Math.abs(v):0}else{return Math.abs(tt.params[ax.label]||0)}}))||1;const norm=val!==null&&val!==undefined?Math.min(Math.abs(val)/maxVal,1.2):0;const ang=Math.PI*2*ai/n-Math.PI/2;c.lineTo(cx+Math.cos(ang)*R*norm,cy+Math.sin(ang)*R*norm)});c.closePath();c.stroke();c.fillStyle=qColors[idx]+'33';c.fill();
     const gv=checkGuardrails(t);const gvText=Object.keys(gv).length?' | <span style="color:#f85149">VIOLATED: '+Object.keys(gv).join(', ')+'</span>':'';
     c.fillStyle='#e6edf3';c.font='12px monospace';c.textAlign='center';
     c.fillText('T'+t.number+' — '+t.datetime_start?.substring(11,19)+gvText,cx,20);
