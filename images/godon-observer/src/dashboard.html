@@ -231,6 +231,7 @@ function renderHeatmap(el){
   rows.forEach((r,i)=>{
     const y=padT+i*rowH;
     const lbl=r.label.length>18?r.label.substring(0,16)+'..':r.label;
+    c.fillStyle='#8b949e';c.font='11px monospace';c.textAlign='right';
     c.fillText(lbl,padL-6,y+rowH/2+4);
     trials.forEach((t,ti)=>{
       const x=padL+ti*colW;
