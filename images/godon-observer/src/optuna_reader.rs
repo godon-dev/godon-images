@@ -92,7 +92,7 @@ impl OptunaReader {
     async fn get_directions(&self, client: &tokio_postgres::Client, study_name: &str) -> Result<Vec<String>, Error> {
         let rows = client
             .query(
-                "SELECT sd.direction FROM study_directions sd JOIN studies s ON sd.study_id = s.study_id WHERE s.study_name = $1 ORDER BY sd.objective",
+                "SELECT CAST(sd.direction AS TEXT) FROM study_directions sd JOIN studies s ON sd.study_id = s.study_id WHERE s.study_name = $1 ORDER BY sd.objective",
                 &[&study_name],
             )
             .await?;
@@ -112,7 +112,7 @@ impl OptunaReader {
 
         let trial_rows = client
             .query(
-                "SELECT t.trial_id, t.number, t.state, CAST(t.datetime_start AS TEXT), CAST(t.datetime_complete AS TEXT) \
+                "SELECT t.trial_id, t.number, CAST(t.state AS TEXT), CAST(t.datetime_start AS TEXT), CAST(t.datetime_complete AS TEXT) \
                  FROM trials t \
                  JOIN studies s ON t.study_id = s.study_id \
                  WHERE s.study_name = $1 \
@@ -179,7 +179,7 @@ impl OptunaReader {
 
         let value_rows = client
             .query(
-                "SELECT objective, value, value_type FROM trial_values WHERE trial_id = $1 ORDER BY objective",
+                "SELECT objective, value, CAST(value_type AS TEXT) FROM trial_values WHERE trial_id = $1 ORDER BY objective",
                 &[&trial_id],
             )
             .await?;
