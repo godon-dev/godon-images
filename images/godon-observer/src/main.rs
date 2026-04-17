@@ -401,6 +401,7 @@ async function loadBreeder(){
   $('topInfo').innerHTML='';
   try{
     breederConfig=await api('/api-proxy/breeders/'+bid);
+    if(breederConfig.config){Object.keys(breederConfig.config).forEach(k=>{if(!breederConfig[k])breederConfig[k]=breederConfig.config[k]})}
     const studies=await api('/api/breeders/'+bid+'/studies');
     if(!studies.studies||!studies.studies.length){throw new Error('no studies found for breeder')}
     const studyName=studies.studies[0].study_name;
