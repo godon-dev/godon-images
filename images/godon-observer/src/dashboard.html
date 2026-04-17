@@ -331,7 +331,8 @@ function renderSpider(){
 
   function drawTrack(){
     const canvas=trackCanvas.node();
-    const w=canvas.clientWidth;
+    const w=canvas.parentElement.clientWidth;
+    if(!w) return;
     canvas.width=w;canvas.height=8;
     const ctx=canvas.getContext('2d');
     const bw=w/trials.length;
@@ -401,7 +402,7 @@ function renderSpider(){
       .text(label);
   }
 
-  slider.on('input',draw);
+  slider.on('input',()=>{drawTrack();draw()});
   requestAnimationFrame(()=>{drawTrack();draw()});
 }
 
