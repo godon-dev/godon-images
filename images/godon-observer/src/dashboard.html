@@ -53,6 +53,8 @@ nav button:hover{color:#c9d1d9}
 <button class="active" data-view="heatmap">heatmap</button>
 <button data-view="spider">spider web</button>
 <button data-view="parallel">parallel coordinates</button>
+<button data-view="convergence">convergence</button>
+<button data-view="ridgeline">ridgeline</button>
 </nav>
 <div class="content" id="content"><div class="info">paste a breeder UUID and click load</div></div>
 <div class="tooltip" id="tooltip"></div>
@@ -198,6 +200,8 @@ function renderView(){
   if(currentView==='heatmap') renderHeatmap();
   else if(currentView==='spider') renderSpider();
   else if(currentView==='parallel') renderParallel();
+  else if(currentView==='convergence') renderConvergence();
+  else if(currentView==='ridgeline') renderRidgeline();
 }
 
 function renderHeatmap(){
@@ -477,6 +481,144 @@ function renderParallel(){
 
   g.append('path').attr('d',linePath(trials[bestI]))
     .attr('fill','none').attr('stroke','#3fb950').attr('stroke-width',3);
+}
+
+function renderConvergence(){
+  const el=d3.select('#content');
+  const objs=breederConfig.objectives||[];
+  const margin={top:40,right:30,bottom:40,left:60};
+  const width=900-margin.left-margin.right;
+  const height=400-margin.top-margin.bottom;
+
+  el.append('div').attr('class','legend').html(
+    '<span style="color:#8b949e">dots: raw trial values | solid line: running best | dashed: rolling avg (window 10)</span>'
+  );
+  const svg=el.append('svg').attr('width',900).attr('height',400);
+  const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
+
+  const x=d3.scaleLinear().domain([0,trials.length-1]).range([0,width]);
+  g.append('g').attr('transform','translate(0,'+height+')').call(d3.axisBottom(x).ticks(10).tickFormat(d=>'#'+(d+1)))
+    .selectAll('text').attr('fill','#8b949e').style('font','9px monospace');
+  g.selectAll('.domain').attr('stroke','#30363d');
+  g.selectAll('.tick line').attr('stroke','#30363d');
+  g.append('text').attr('x',width/2).attr('y',height+35).attr('text-anchor','middle')
+    .attr('fill','#8b949e').style('font','10px monospace').text('trial');
+  g.append('text').attr('x',-height/2).attr('y',-45).attr('text-anchor','middle')
+    .attr('fill','#8b949e').style('font','10px monospace').attr('transform','rotate(-90)').text('normalized quality');
+
+  const y=d3.scaleLinear().domain([0,1]).range([height,0]);
+  g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.0%')))
+    .selectAll('text').attr('fill','#8b949e').style('font','9px monospace');
+
+  const colors=['#58a6ff','#f0883e','#bc8cff','#3fb950','#f85149'];
+  const line=d3.line().x((d,i)=>x(i)).y(d=>y(d)).curve(d3.curveMonotoneX);
+
+  objs.forEach((obj,oi)=>{
+    const rawValues=trials.map(t=>valueQuality(trialValue(t,oi),oi));
+    const runningBest=rawValues.reduce((acc,v)=>{
+      acc.push(acc.length?Math.max(acc[acc.length-1],v):v);
+      return acc;
+    },[]);
+    const rollingAvg=rawValues.map((_,i)=>{
+      const start=Math.max(0,i-9);
+      const window=rawValues.slice(start,i+1);
+      return window.reduce((a,b)=>a+b,0)/window.length;
+    });
+
+    const c=colors[oi%colors.length];
+
+    g.selectAll('.dot-oi'+oi).data(rawValues).join('circle')
+      .attr('cx',(d,i)=>x(i)).attr('cy',d=>y(d)).attr('r',2)
+      .attr('fill',c).attr('opacity',0.4);
+
+    g.append('path').datum(runningBest).attr('d',line)
+      .attr('fill','none').attr('stroke',c).attr('stroke-width',2);
+
+    g.append('path').datum(rollingAvg).attr('d',line)
+      .attr('fill','none').attr('stroke',c).attr('stroke-width',1).attr('stroke-dasharray','4,2');
+
+    g.append('text').attr('x',width+5).attr('y',y(runningBest[runningBest.length-1]))
+      .attr('fill',c).style('font','9px monospace').text(obj.name);
+  });
+
+  const bestI=bestTrialIdx();
+  g.append('line').attr('x1',x(bestI)).attr('y1',0).attr('x2',x(bestI)).attr('y2',height)
+    .attr('stroke','#fff').attr('stroke-width',1).attr('stroke-dasharray','2,4').attr('opacity',0.5);
+  g.append('text').attr('x',x(bestI)).attr('y',-5).attr('text-anchor','middle')
+    .attr('fill','#fff').style('font','8px monospace').attr('opacity',0.7).text('best #'+(bestI+1));
+}
+
+function renderRidgeline(){
+  const el=d3.select('#content');
+  const objs=breederConfig.objectives||[];
+  const margin={top:30,right:30,bottom:40,left:60};
+  const bandH=120,bandGap=30;
+  const width=900-margin.left-margin.right;
+  const totalH=margin.top+objs.length*(bandH+bandGap)+margin.bottom;
+
+  el.append('div').attr('class','legend').html(
+    '<span style="color:#8b949e">each band: objective value density over trial windows | color: quality</span>'
+  );
+  const svg=el.append('svg').attr('width',900).attr('height',totalH);
+  const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
+
+  const x=d3.scaleLinear().domain([0,trials.length-1]).range([0,width]);
+
+  objs.forEach((obj,oi)=>{
+    const bandY=oi*(bandH+bandGap);
+    const vals=objValues(oi);
+    const mn=d3.min(vals),mx=d3.max(vals);
+    const range=mx-mn||1;
+
+    const y=d3.scaleLinear().domain([mn,mx]).range([bandH,0]);
+
+    g.append('rect').attr('x',0).attr('y',bandY).attr('width',width).attr('height',bandH)
+      .attr('fill','#0d1117').attr('stroke','#21262d');
+
+    g.append('text').attr('x',-5).attr('y',bandY+bandH/2+4).attr('text-anchor','end')
+      .attr('fill','#8b949e').style('font','10px monospace')
+      .text(obj.name.length>12?obj.name.substring(0,10)+'..':obj.name);
+
+    g.append('text').attr('x',-5).attr('y',bandY+12).attr('text-anchor','end')
+      .attr('fill','#484f58').style('font','8px monospace').text(mx.toFixed(2));
+    g.append('text').attr('x',-5).attr('y',bandY+bandH-4).attr('text-anchor','end')
+      .attr('fill','#484f58').style('font','8px monospace').text(mn.toFixed(2));
+
+    const areaGen=d3.area()
+      .x((d,i)=>x(i))
+      .y0(bandY+bandH)
+      .y1(d=>bandY+y(d))
+      .curve(d3.curveBasis);
+
+    const rawVals=trials.map(t=>trialValue(t,oi));
+
+    const fillGrad=svg.append('defs').append('linearGradient')
+      .attr('id','rg-'+oi).attr('x1','0').attr('y1','0').attr('x2','0').attr('y2','1');
+    fillGrad.append('stop').attr('offset','0%').attr('stop-color','#3fb950').attr('stop-opacity',0.6);
+    fillGrad.append('stop').attr('offset','100%').attr('stop-color','#f85149').attr('stop-opacity',0.6);
+
+    g.append('path').datum(rawVals)
+      .attr('d',areaGen)
+      .attr('fill','url(#rg-'+oi+')')
+      .attr('stroke','#8b949e').attr('stroke-width',1);
+
+    const guard=breederConfig.guardrails?.find(g=>g.name===obj.name);
+    if(guard){
+      const gy=bandY+y(guard.hard_limit);
+      if(gy>=bandY&&gy<=bandY+bandH){
+        g.append('line').attr('x1',0).attr('y1',gy).attr('x2',width).attr('y2',gy)
+          .attr('stroke','#f85149').attr('stroke-width',1).attr('stroke-dasharray','6,3');
+        g.append('text').attr('x',width-5).attr('y',gy-4).attr('text-anchor','end')
+          .attr('fill','#f85149').style('font','8px monospace').text(guard.name+' ≤ '+guard.hard_limit);
+      }
+    }
+  });
+
+  g.append('g').attr('transform','translate(0,'+(objs.length*(bandH+bandGap))+')')
+    .call(d3.axisBottom(x).ticks(10).tickFormat(d=>'#'+(d+1)))
+    .selectAll('text').attr('fill','#8b949e').style('font','9px monospace');
+  g.selectAll('.domain').attr('stroke','#30363d');
+  g.selectAll('.tick line').attr('stroke','#30363d');
 }
 
 $('loadBtn').onclick=loadBreeder;
