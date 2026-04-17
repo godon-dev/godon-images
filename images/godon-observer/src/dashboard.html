@@ -32,6 +32,9 @@ canvas{border-radius:4px}
 .slider-row{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:12px;color:#8b949e}
 .slider-row input[type="range"]{flex:1}
 .slider-row .trial-info{color:#e6edf3;min-width:180px}
+.slider-row input[type="range"]{position:relative;height:8px;-webkit-appearance:none;appearance:none;background:transparent}
+.slider-row input[type="range"]::-webkit-slider-runnable-track{background:#21262d;height:8px;border-radius:4px}
+.slider-row input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:4px;height:14px;background:#e6edf3;border-radius:2px;margin-top:-3px}
 .heatmap-wrap{overflow-x:auto;padding-bottom:8px}
 .heatmap-wrap canvas{min-width:100%}
 .tooltip{position:fixed;background:#1c2128;border:1px solid #30363d;border-radius:6px;padding:8px 12px;font-size:11px;pointer-events:none;z-index:100;max-width:300px;display:none}
@@ -165,6 +168,7 @@ async function loadBreeder(){
       offset+=limit;
     }
     trials=all.filter(t=>t.state==='COMPLETE');
+    trials.sort((a,b)=>a.datetime_start<b.datetime_start?-1:a.datetime_start>b.datetime_start?1:0);
     breederConfig.objectives.forEach((obj,i)=>{
       if(breederConfig._directions&&breederConfig._directions[i]) obj.direction=breederConfig._directions[i].toLowerCase();
     });
@@ -262,8 +266,16 @@ function renderSpider(el){
   if(axes.length<3){el.innerHTML='<div class="info">need 3+ objectives for spider</div>';return}
   const qColors=trials.map(t=>qualityColor(trialQuality(t)));
   const bestIdx=trials.reduce((bi,t,i)=>trialQuality(t)>trialQuality(trials[bi])?i:bi,0);
-  el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>best</span><span style="color:#8b949e">background: all trials colored by quality</span></div><div class="slider-row"><label>trial:</label><input type="range" id="spSlider" min="0" max="'+(trials.length-1)+'" value="'+(trials.length-1)+'"><span class="trial-info" id="spInfo">'+trials.length+'/'+trials.length+'</span></div><canvas id="sp" width="600" height="500"></canvas>';
+  el.innerHTML='<div class="legend"><span><div class="dot" style="background:#3fb950"></div>best</span><span style="color:#8b949e">background: all trials colored by quality</span></div><div class="slider-row"><label>trial:</label><div style="position:relative;flex:1"><canvas id="spTrack" height="8" style="position:absolute;top:50%;transform:translateY(-50%);pointer-events:none;border-radius:4px"></canvas><input type="range" id="spSlider" min="0" max="'+(trials.length-1)+'" value="'+(trials.length-1)+'" style="width:100%;position:relative;z-index:1"></div><span class="trial-info" id="spInfo">'+trials.length+'/'+trials.length+'</span></div><canvas id="sp" width="600" height="500"></canvas>';
   const slider=$('spSlider');
+  const track=$('spTrack');
+  const sliderW=slider.offsetWidth||300;
+  track.width=sliderW;track.height=8;
+  const tc=track.getContext('2d');
+  const barW=sliderW/trials.length;
+  trials.forEach((t,i)=>{tc.fillStyle=qualityColor(trialQuality(t));tc.fillRect(i*barW,0,barW,8)});
+  const bestI=trials.reduce((bi,t,i)=>trialQuality(t)>trialQuality(trials[bi])?i:bi,0);
+  tc.fillStyle='#fff';tc.fillRect(bestI*barW+barW/2-1,0,2,8);
   const draw=()=>{
     const idx=parseInt(slider.value);
     $('spInfo').textContent=(idx+1)+'/'+trials.length;
