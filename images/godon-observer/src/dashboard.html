@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>godon observer</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'SF Mono','Fira Code','Consolas',monospace;background:#0d1117;color:#c9d1d9;font-size:13px}
+header{background:#161b22;border-bottom:1px solid #30363d;padding:10px 20px;display:flex;align-items:center;justify-content:space-between}
+header h1{font-size:16px;color:#e6edf3}header h1 span{color:#3fb950}
+.bar{background:#161b22;border-bottom:1px solid #30363d;padding:8px 20px;display:flex;align-items:center;gap:12px}
+.bar label{color:#8b949e;min-width:50px}
+.bar input[type="text"]{background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:3px 8px;border-radius:3px;font-family:inherit;width:280px}
+.bar button{background:#238636;color:#fff;border:none;padding:3px 10px;border-radius:3px;cursor:pointer;font-family:inherit}
+.bar button:hover{background:#2ea043}
+nav{background:#161b22;border-bottom:1px solid #30363d;padding:0 20px;display:flex}
+nav button{background:none;border:none;border-bottom:2px solid transparent;color:#8b949e;padding:8px 14px;cursor:pointer;font-family:inherit;font-size:12px}
+nav button.active{color:#e6edf3;border-bottom-color:#3fb950}
+nav button:hover{color:#c9d1d9}
+.content{padding:16px 20px;overflow-y:auto;height:calc(100vh - 120px)}
+.legend{display:flex;gap:16px;margin-bottom:10px;font-size:11px}
+.legend span{display:flex;align-items:center;gap:4px}
+.legend .dot{width:10px;height:10px;border-radius:2px}
+.slider-row{display:flex;align-items:center;gap:8px;margin:8px 0;font-size:12px;color:#8b949e}
+.slider-row input[type="range"]{flex:1;position:relative;height:8px;-webkit-appearance:none;appearance:none;background:transparent}
+.slider-row input[type="range"]::-webkit-slider-runnable-track{background:#21262d;height:8px;border-radius:4px}
+.slider-row input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:4px;height:14px;background:#e6edf3;border-radius:2px;margin-top:-3px}
+.slider-row input[type="range"]::-moz-range-track{background:#21262d;height:8px;border-radius:4px}
+.slider-row input[type="range"]::-moz-range-thumb{width:4px;height:14px;background:#e6edf3;border-radius:2px;border:none}
+.slider-row input[type="range"].quality-track::-webkit-slider-runnable-track{background:transparent}
+.slider-row input[type="range"].quality-track::-moz-range-track{background:transparent}
+.slider-row .trial-info{color:#e6edf3;min-width:180px}
+.chart-wrap{overflow-x:auto;padding-bottom:8px}
+.tooltip{position:fixed;background:#1c2128;border:1px solid #30363d;border-radius:6px;padding:8px 12px;font-size:11px;pointer-events:none;z-index:100;max-width:300px;display:none}
+.error{background:#2a1a1a;border:1px solid #da3633;border-radius:4px;padding:8px;color:#f85149;margin:8px 0}
+.info{background:#1a2a1a;border:1px solid #238636;border-radius:4px;padding:8px;color:#3fb950;margin:8px 0}
+.status{position:fixed;bottom:0;left:0;right:0;background:#161b22;border-top:1px solid #30363d;padding:4px 20px;font-size:10px;color:#8b949e;display:flex;justify-content:space-between}
+.hm-cell{cursor:pointer}
+.hm-cell:hover{stroke:#fff;stroke-width:2}
+.pc-line{fill:none;cursor:pointer}
+.pc-line:hover{stroke-width:3!important;opacity:1!important}
+.sp-line{fill:none;stroke-linejoin:round}
+</style>
+</head>
+<body>
+<header><h1>godon <span>observer</span></h1><span id="clock" style="font-size:11px;color:#8b949e"></span></header>
+<div class="bar">
+<label>breeder:</label><input type="text" id="breederId" placeholder="paste breeder UUID">
+<button id="loadBtn">load</button>
+<span id="loadStatus" style="color:#8b949e;font-size:11px"></span>
+</div>
+<nav>
+<button class="active" data-view="heatmap">heatmap</button>
+<button data-view="spider">spider web</button>
+<button data-view="parallel">parallel coordinates</button>
+<button data-view="convergence">convergence</button>
+</nav>
+<div class="content" id="content"><div class="info">paste a breeder UUID and click load</div></div>
+<div class="tooltip" id="tooltip"></div>
+<div class="status"><span id="statusL">ready</span><span id="statusR"></span></div>
+<script>
+const $=id=>document.getElementById(id);
+let breederConfig=null,trials=[],currentView='heatmap',baseUrl='';
+
+const DEMO=!window.location.protocol.startsWith('http');
+function status(m){$('statusL').textContent=m}
+
+const DEMO_CONFIG={objectives:[
+  {name:'growth_rate',direction:'maximize'},
+  {name:'energy_kwh',direction:'minimize'},
+  {name:'water_liters',direction:'minimize'}
+],guardrails:[
+  {name:'max_temp',hard_limit:40},
+  {name:'max_humidity',hard_limit:0.9},
+  {name:'max_co2',hard_limit:1500}
+]};
+const DEMO_TRIALS=(function(){
+  const params=['co2_injection','heating_setpoints','irrigation','light_intensity','shading','vent_openings'];
+  const out=[];
+  for(let i=0;i<100;i++){
+    const p={};params.forEach(k=>{p[k]=+(Math.random()*10).toFixed(2)});
+    const h=Math.floor(i/6),m=i%6;
+    out.push({
+      number:i,state:'COMPLETE',
+      datetime_start:'2026-04-17 '+(20+h).toString().padStart(2,'0')+':'+m+'0:00',
+      params:p,
+      values:[+(0.1+Math.random()*0.5).toFixed(4),+(Math.random()*50).toFixed(4),+(Math.random()*15).toFixed(4)]
+    });
+  }
+  return out;
+})();
+
+async function api(path){
+  if(DEMO){throw new Error('no api in demo mode')}
+  const r=await fetch(baseUrl+path);
+  if(!r.ok) throw new Error(r.status+' '+await r.text());
+  return r.json();
+}
+
+function trialValue(t,objIdx){
+  if(!t.values||t.state!=='COMPLETE') return null;
+  const v=t.values[objIdx];
+  return v===null||v===undefined?null:v;
+}
+
+function objValues(objIdx){
+  return trials.map(t=>trialValue(t,objIdx)).filter(v=>v!==null&&v!==undefined);
+}
+
+function valueQuality(val,objIdx){
+  if(val===null||val===undefined) return 0;
+  if(!breederConfig) return 0.5;
+  const obj=breederConfig.objectives[objIdx];
+  if(!obj) return 0.5;
+  const vals=objValues(objIdx);
+  const mn=d3.min(vals),mx=d3.max(vals);
+  const range=mx-mn||1;
+  const norm=(val-mn)/range;
+  return obj.direction==='maximize'?norm:(1-norm);
+}
+
+function trialQuality(t){
+  if(!breederConfig) return 0;
+  let sum=0,cnt=0;
+  breederConfig.objectives.forEach((_,i)=>{const v=trialValue(t,i);if(v!==null&&v!==undefined){sum+=valueQuality(v,i);cnt++}});
+  return cnt?sum/cnt:0;
+}
+
+function checkGuardrails(t){
+  if(!breederConfig||!breederConfig.guardrails) return{};
+  const violated={};
+  breederConfig.guardrails.forEach(g=>{
+    const param=t.params[g.name];
+    if(param!==undefined&&g.hard_limit!==undefined&&param>g.hard_limit) violated[g.name]={value:param,limit:g.hard_limit};
+  });
+  return violated;
+}
+
+const qualityScale=d3.scaleLinear().domain([0,0.5,1]).range(['#f85149','#8b8000','#3fb950']).interpolate(d3.interpolateRgb);
+function qColor(q){return q===null||q===undefined?'#30363d':qualityScale(q)}
+
+function bestTrialIdx(){return trials.reduce((bi,t,i)=>trialQuality(t)>trialQuality(trials[bi])?i:bi,0)}
+
+function showTip(html,x,y){
+  const tip=$('tooltip');
+  tip.innerHTML=html;tip.style.display='block';
+  tip.style.left=(x+12)+'px';tip.style.top=(y+12)+'px';
+}
+function hideTip(){$('tooltip').style.display='none'}
+
+async function loadBreeder(){
+  if(DEMO){
+    breederConfig=DEMO_CONFIG;
+    breederConfig._directions=['MAXIMIZE','MINIMIZE','MINIMIZE'];
+    trials=DEMO_TRIALS;
+    renderView();
+    $('loadStatus').textContent=trials.length+' demo trials loaded';
+    status('demo mode');
+    return;
+  }
+  const bid=$('breederId').value.trim();
+  if(!bid){alert('enter a breeder UUID');return}
+  baseUrl=window.location.origin;
+  $('loadStatus').textContent='loading...';
+  try{
+    breederConfig=await api('/api-proxy/breeders/'+bid);
+    if(breederConfig.config){Object.keys(breederConfig.config).forEach(k=>{if(!breederConfig[k])breederConfig[k]=breederConfig.config[k]})}
+    const studies=await api('/api/breeders/'+bid+'/studies');
+    if(!studies.studies||!studies.studies.length){throw new Error('no studies found for breeder')}
+    const studyName=studies.studies[0].study_name;
+    breederConfig._studyName=studyName;
+    breederConfig._directions=studies.studies[0].directions;
+    let all=[],offset=0,limit=500;
+    while(true){
+      const batch=await api('/api/breeders/'+bid+'/trials/'+encodeURIComponent(studyName)+'?offset='+offset+'&limit='+limit);
+      all=all.concat(batch.trials);
+      if(batch.trials.length<limit) break;
+      offset+=limit;
+    }
+    trials=all.filter(t=>t.state==='COMPLETE');
+    trials.sort((a,b)=>a.datetime_start<b.datetime_start?-1:a.datetime_start>b.datetime_start?1:0);
+    breederConfig.objectives.forEach((obj,i)=>{
+      if(breederConfig._directions&&breederConfig._directions[i]) obj.direction=breederConfig._directions[i].toLowerCase();
+    });
+    renderView();
+    $('loadStatus').textContent=trials.length+' trials loaded';
+    status('loaded');
+  }catch(e){
+    $('loadStatus').textContent='';
+    $('content').innerHTML='<div class="error">'+e.message+'</div>';
+    status('error: '+e.message);
+  }
+}
+
+function renderView(){
+  const el=$('content');
+  if(!trials.length){el.innerHTML='<div class="info">no completed trials</div>';return}
+  d3.select('#content').html('');
+  if(currentView==='heatmap') renderHeatmap();
+  else if(currentView==='spider') renderSpider();
+  else if(currentView==='parallel') renderParallel();
+  else if(currentView==='convergence') renderConvergence();
+}
+
+function renderHeatmap(){
+  const el=d3.select('#content');
+  const objs=breederConfig.objectives||[];
+  const bestI=bestTrialIdx();
+  const margin={top:30,right:20,bottom:30,left:150};
+  const cellW=36,cellH=28;
+  const width=margin.left+trials.length*cellW+margin.right;
+  const height=margin.top+objs.length*cellH+margin.bottom;
+
+  el.append('div').attr('class','legend').html(
+    '<span><div class="dot" style="background:#3fb950"></div>good</span>'+
+    '<span><div class="dot" style="background:#f85149"></div>bad</span>'+
+    '<span><div class="dot" style="background:#30363d"></div>missing</span>'+
+    '<span style="color:#8b949e">hover for params | white border = best trial</span>'
+  );
+  const wrap=el.append('div').attr('class','chart-wrap');
+  const svg=wrap.append('svg').attr('width',width).attr('height',height);
+
+  const objScales=objs.map((o,i)=>{
+    const vals=objValues(i);
+    return d3.scaleLinear().domain([d3.min(vals),d3.max(vals)]);
+  });
+
+  const cells=[];
+  objs.forEach((o,oi)=>{
+    trials.forEach((t,ti)=>{
+      const val=trialValue(t,oi);
+      cells.push({obj:oi,trial:ti,val,q:valueQuality(val,oi),t,o});
+    });
+  });
+
+  svg.selectAll('.hm-cell').data(cells).join('rect')
+    .attr('class','hm-cell')
+    .attr('x',d=>margin.left+d.trial*cellW)
+    .attr('y',d=>margin.top+d.obj*cellH)
+    .attr('width',cellW-2).attr('height',cellH-2)
+    .attr('fill',d=>qColor(d.q))
+    .attr('rx',2)
+    .on('mouseenter',function(event,d){
+      d3.select(this).attr('stroke','#fff').attr('stroke-width',2);
+      const t=d.t;
+      let html='<b>T'+t.number+'</b> ('+t.datetime_start?.substring(11,19)+')<br>';
+      objs.forEach((o,oi)=>{const v=trialValue(t,oi);html+=o.name+': '+(v!==null?v.toFixed(4):'-')+'<br>'});
+      html+='<br><b>params:</b>';
+      Object.entries(t.params).forEach(([k,v])=>{html+='<br>'+k+': '+v.toFixed(3)});
+      const gv=checkGuardrails(t);
+      if(Object.keys(gv).length){html+='<br><br><b style="color:#f85149">violations:</b>';Object.entries(gv).forEach(([k,v])=>{html+='<br>'+k+': '+v.value.toFixed(2)+' > '+v.limit})}
+      showTip(html,event.clientX,event.clientY);
+    })
+    .on('mouseleave',function(){d3.select(this).attr('stroke',null);hideTip()});
+
+  svg.selectAll('.hm-val').data(cells.filter(d=>d.val!==null&&d.val!==undefined)).join('text')
+    .attr('x',d=>margin.left+d.trial*cellW+cellW/2)
+    .attr('y',d=>margin.top+d.obj*cellH+cellH/2+3)
+    .attr('text-anchor','middle').attr('fill','rgba(0,0,0,0.7)')
+    .style('font','8px monospace').style('pointer-events','none')
+    .text(d=>d.val.toFixed(2));
+
+  svg.selectAll('.hm-row-label').data(objs).join('text')
+    .attr('x',margin.left-6).attr('y',(d,i)=>margin.top+i*cellH+cellH/2+4)
+    .attr('text-anchor','end').attr('fill','#8b949e')
+    .style('font','11px monospace')
+    .text(d=>d.name.length>18?d.name.substring(0,16)+'..':d.name);
+
+  svg.selectAll('.hm-col-label').data(trials).join('text')
+    .attr('x',(d,i)=>margin.left+i*cellW+cellW/2)
+    .attr('y',margin.top+objs.length*cellH+14)
+    .attr('text-anchor','middle')
+    .attr('fill',(d,i)=>i===bestI?'#3fb950':'#8b949e')
+    .style('font','9px monospace')
+    .text((d,i)=>'#'+(i+1));
+
+  svg.append('rect')
+    .attr('x',margin.left+bestI*cellW).attr('y',margin.top)
+    .attr('width',cellW).attr('height',objs.length*cellH)
+    .attr('fill','none').attr('stroke','#fff').attr('stroke-width',2).attr('rx',2);
+
+  objs.forEach((o,oi)=>{
+    const g=breederConfig.guardrails?.find(g=>g.name===o.name);
+    if(g&&objScales[oi]){
+      const vals=objValues(oi);
+      const mn=d3.min(vals),mx=d3.max(vals);
+      const range=mx-mn||1;
+      const normX=(g.hard_limit-mn)/range;
+      const gx=margin.left+normX*trials.length*cellW;
+      const gy=margin.top+oi*cellH;
+      svg.append('line').attr('x1',gx).attr('y1',gy+2).attr('x2',gx).attr('y2',gy+cellH-2)
+        .attr('stroke','#f85149').attr('stroke-width',1).attr('stroke-dasharray','4,2');
+      svg.append('text').attr('x',gx+2).attr('y',gy+10)
+        .attr('fill','#f85149').style('font','8px monospace').text(g.hard_limit.toFixed(1));
+    }
+  });
+}
+
+function renderSpider(){
+  const el=d3.select('#content');
+  const axes=breederConfig.objectives.map((o,i)=>({label:o.name,idx:i}));
+  if(axes.length<3){el.html('<div class="info">need 3+ objectives for spider</div>');return}
+  const bestI=bestTrialIdx();
+  const qColors=trials.map(t=>qColor(trialQuality(t)));
+  const size=500,center=size/2,R=200;
+  const n=axes.length;
+  const angle=d3.scaleLinear().domain([0,n]).range([-Math.PI/2,Math.PI*3/2]);
+
+  const axisMaxes=axes.map(ax=>d3.max(trials,t=>{const v=trialValue(t,ax.idx);return v!==null?Math.abs(v):0})||1);
+  const radScale=axes.map((ax,i)=>d3.scaleLinear().domain([0,axisMaxes[i]]).range([0,R]));
+
+  el.append('div').attr('class','legend').html(
+    '<span><div class="dot" style="background:#3fb950"></div>good</span>'+
+    '<span><div class="dot" style="background:#3fb950;border:2px solid #fff"></div>best trial</span>'+
+    '<span style="color:#8b949e">background: all trials | slider to inspect</span>'
+  );
+
+  const sliderRow=el.append('div').attr('class','slider-row');
+  sliderRow.append('label').text('trial:');
+  const sliderWrap=sliderRow.append('div').style('display','flex').style('flex','1').style('position','relative');
+  const trackDiv=sliderWrap.append('div').style('position','absolute').style('top','50%').style('transform','translateY(-50%)')
+    .style('width','100%').style('height','8px').style('border-radius','4px').style('overflow','hidden').style('display','flex').style('pointer-events','none');
+  trials.forEach((t,i)=>{
+    trackDiv.append('div').style('flex','1').style('background',qColor(trialQuality(t)));
+  });
+  sliderWrap.append('div').style('position','absolute')
+    .style('left',(bestI/Math.max(trials.length-1,1)*100)+'%').style('top','calc(50% - 6px)')
+    .style('width','2px').style('height','12px').style('background','#fff')
+    .style('pointer-events','none').style('z-index','0');
+  const slider=sliderWrap.append('input').attr('type','range')
+    .attr('min',0).attr('max',trials.length-1).attr('value',trials.length-1)
+    .attr('class','quality-track')
+    .style('width','100%').style('position','relative').style('z-index','1');
+  const info=sliderRow.append('span').attr('class','trial-info').text(trials.length+'/'+trials.length);
+
+  const svgEl=el.append('svg').attr('width',size).attr('height',size+40);
+  const g=svgEl.append('g').attr('transform','translate(0,20)');
+
+  function draw(){
+    const idx=+slider.node().value;
+    info.text((idx+1)+'/'+trials.length);
+    g.html('');
+
+    for(let ring=1;ring<=4;ring++){
+      const r=R*ring/4;
+      const pts=d3.range(n+1).map(i=>{
+        const a=angle(i);
+        return[center+Math.cos(a)*r,center+Math.sin(a)*r];
+      });
+      g.append('polygon').attr('points',pts.map(p=>p.join(',')).join(' '))
+        .attr('fill','none').attr('stroke','#21262d');
+    }
+
+    axes.forEach((ax,i)=>{
+      const a=angle(i);
+      const x2=center+Math.cos(a)*R,y2=center+Math.sin(a)*R;
+      g.append('line').attr('x1',center).attr('y1',center).attr('x2',x2).attr('y2',y2).attr('stroke','#30363d');
+      const lx=center+Math.cos(a)*(R+20),ly=center+Math.sin(a)*(R+20)+4;
+      g.append('text').attr('x',lx).attr('y',ly).attr('text-anchor','middle')
+        .attr('fill','#c9d1d9').style('font','10px monospace')
+        .text(ax.label.length>14?ax.label.substring(0,12)+'..':ax.label);
+    });
+
+    function trialPoints(t){
+      return axes.map((ax,ai)=>{
+        const val=trialValue(t,ax.idx);
+        const norm=val!==null&&val!==undefined?Math.min(Math.abs(val)/axisMaxes[ai],1.2):0;
+        const r=radScale[ai](val!==null?Math.abs(val):0);
+        const a=angle(ai);
+        return[center+Math.cos(a)*r,center+Math.sin(a)*r];
+      });
+    }
+
+    trials.forEach((t,ti)=>{
+      if(ti===idx) return;
+      const pts=trialPoints(t);
+      g.append('polygon').attr('points',pts.map(p=>p.join(',')).join(' '))
+        .attr('class','sp-line')
+        .attr('fill','none').attr('stroke',qColors[ti]).attr('opacity',0.25).attr('stroke-width',1);
+    });
+
+    const bestPts=trialPoints(trials[bestI]);
+    g.append('polygon').attr('points',bestPts.map(p=>p.join(',')).join(' '))
+      .attr('fill','rgba(63,185,80,0.1)').attr('stroke','#3fb950').attr('stroke-width',2)
+      .attr('stroke-dasharray','4,3');
+    const bestCenter=bestPts.reduce((a,p)=>[a[0]+p[0],a[1]+p[1]],[0,0]);
+    g.append('text').attr('x',bestCenter[0]/bestPts.length).attr('y',bestCenter[1]/bestPts.length+4)
+      .attr('text-anchor','middle').attr('fill','#3fb950').style('font','9px monospace')
+      .text('best #'+(bestI+1));
+
+    const t=trials[idx];
+    const pts=trialPoints(t);
+    g.append('polygon').attr('points',pts.map(p=>p.join(',')).join(' '))
+      .attr('fill',qColors[idx]).attr('fill-opacity',0.2)
+      .attr('stroke',qColors[idx]).attr('stroke-width',2);
+
+    const gv=checkGuardrails(t);
+    let label='T'+t.number+' — '+(t.datetime_start?.substring(11,19)||'');
+    if(Object.keys(gv).length) label+=' | VIOLATED: '+Object.keys(gv).join(', ');
+    g.append('text').attr('x',center).attr('y',12).attr('text-anchor','middle')
+      .attr('fill',Object.keys(gv).length?'#f85149':'#e6edf3').style('font','12px monospace')
+      .text(label);
+  }
+
+  slider.on('input',draw);
+  requestAnimationFrame(draw);
+}
+
+function renderParallel(){
+  const el=d3.select('#content');
+  const params=Object.keys(trials[0].params);
+  const bestI=bestTrialIdx();
+  const margin={top:50,right:30,bottom:50,left:30};
+  const axisSpacing=120;
+  const width=margin.left+params.length*axisSpacing+margin.right;
+  const height=460;
+  const innerH=height-margin.top-margin.bottom;
+
+  el.append('div').attr('class','legend').html(
+    '<span><div class="dot" style="background:#3fb950"></div>good trial</span>'+
+    '<span><div class="dot" style="background:#f85149"></div>bad trial</span>'+
+    '<span><div class="dot" style="background:#3fb950;border:2px solid #fff"></div>best trial</span>'+
+    '<span style="color:#8b949e">axes: parameters, color: objective quality</span>'
+  );
+  const wrap=el.append('div').attr('class','chart-wrap');
+  const svg=wrap.append('svg').attr('width',width).attr('height',height);
+  const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
+
+  const scales=params.map(p=>{
+    const vals=trials.map(t=>t.params[p]||0);
+    return d3.scaleLinear().domain([d3.min(vals),d3.max(vals)]).range([innerH,0]);
+  });
+
+  params.forEach((p,i)=>{
+    const x=i*axisSpacing;
+    const axis=d3.axisRight(scales[i]).ticks(5).tickSize(4);
+    g.append('g').attr('transform','translate('+x+',0)').call(axis)
+      .selectAll('text').attr('fill','#484f58').style('font','9px monospace');
+    g.selectAll('.domain').attr('stroke','#30363d');
+    g.selectAll('.tick line').attr('stroke','#30363d');
+
+    g.append('text').attr('x',x).attr('y',-10).attr('text-anchor','middle')
+      .attr('fill','#c9d1d9').style('font','10px monospace')
+      .text(p.length>16?p.substring(0,14)+'..':p);
+
+    const guard=breederConfig.guardrails?.find(g=>g.name===p);
+    if(guard){
+      const gy=scales[i](guard.hard_limit);
+      g.append('line').attr('x1',x-15).attr('y1',gy).attr('x2',x+15).attr('y2',gy)
+        .attr('stroke','#f85149').attr('stroke-width',1).attr('stroke-dasharray','4,2');
+      g.append('text').attr('x',x+18).attr('y',gy+3).attr('fill','#f85149')
+        .style('font','8px monospace').text(guard.hard_limit.toFixed(1));
+    }
+  });
+
+  function linePath(t){
+    return d3.line()(params.map((p,i)=>{
+      const x=i*axisSpacing;
+      const y=scales[i](t.params[p]||0);
+      return[x,y];
+    }));
+  }
+
+  g.selectAll('.pc-line-bg').data(trials.filter((_,i)=>i!==bestI)).join('path')
+    .attr('class','pc-line')
+    .attr('d',linePath)
+    .attr('stroke',d=>qColor(trialQuality(d)))
+    .attr('stroke-width',d=>trialQuality(d)>0.7?1.5:1)
+    .attr('opacity',0.5)
+    .on('mouseenter',function(event,d){
+      d3.select(this).attr('stroke-width',3).attr('opacity',1);
+      let html='<b>T'+d.number+'</b> ('+d.datetime_start?.substring(11,19)+')<br>';
+      html+='<b>objectives:</b>';
+      breederConfig.objectives.forEach((o,oi)=>{const v=trialValue(d,oi);html+='<br>'+o.name+': '+(v!==null?v.toFixed(4):'-')});
+      html+='<br><br><b>params:</b>';
+      Object.entries(d.params).forEach(([k,v])=>{html+='<br>'+k+': '+v.toFixed(3)});
+      showTip(html,event.clientX,event.clientY);
+    })
+    .on('mouseleave',function(){d3.select(this).attr('stroke-width',d=>trialQuality(d)>0.7?1.5:1).attr('opacity',0.5);hideTip()});
+
+  g.append('path').attr('d',linePath(trials[bestI]))
+    .attr('fill','none').attr('stroke','#3fb950').attr('stroke-width',3);
+}
+
+function renderConvergence(){
+  const el=d3.select('#content');
+  const objs=breederConfig.objectives||[];
+  const margin={top:40,right:80,bottom:40,left:60};
+  const width=900-margin.left-margin.right;
+  const height=400-margin.top-margin.bottom;
+  const windowSize=Math.max(5,Math.floor(trials.length/10));
+
+  el.append('div').attr('class','legend').html(
+    '<span style="color:#8b949e">solid: running best | shaded: P25-P75 | dashed: median (window '+windowSize+')</span>'
+  );
+  const svg=el.append('svg').attr('width',900).attr('height',400);
+  const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
+
+  const x=d3.scaleLinear().domain([0,trials.length-1]).range([0,width]);
+  g.append('g').attr('transform','translate(0,'+height+')').call(d3.axisBottom(x).ticks(10).tickFormat(d=>'#'+(d+1)))
+    .selectAll('text').attr('fill','#8b949e').style('font','9px monospace');
+  g.selectAll('.domain').attr('stroke','#30363d');
+  g.selectAll('.tick line').attr('stroke','#30363d');
+  g.append('text').attr('x',width/2).attr('y',height+35).attr('text-anchor','middle')
+    .attr('fill','#8b949e').style('font','10px monospace').text('trial');
+
+  const y=d3.scaleLinear().domain([0,1]).range([height,0]);
+  g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.0%')))
+    .selectAll('text').attr('fill','#8b949e').style('font','9px monospace');
+  g.append('text').attr('x',-height/2).attr('y',-45).attr('text-anchor','middle')
+    .attr('fill','#8b949e').style('font','10px monospace').attr('transform','rotate(-90)').text('normalized quality');
+
+  const colors=['#58a6ff','#f0883e','#bc8cff','#3fb950','#f85149'];
+  const line=d3.line().x((d,i)=>x(i)).y(d=>y(d)).curve(d3.curveMonotoneX);
+  const area=d3.area().x((d,i)=>x(i)).y0(d=>y(d[0])).y1(d=>y(d[1])).curve(d3.curveMonotoneX);
+
+  objs.forEach((obj,oi)=>{
+    const rawValues=trials.map(t=>valueQuality(trialValue(t,oi),oi));
+    const runningBest=rawValues.reduce((acc,v)=>{
+      acc.push(acc.length?Math.max(acc[acc.length-1],v):v);
+      return acc;
+    },[]);
+
+    const rollingP=rawValues.map((_,i)=>{
+      const start=Math.max(0,i-windowSize+1);
+      const w=rawValues.slice(start,i+1).slice().sort((a,b)=>a-b);
+      const p25=w[Math.floor(w.length*0.25)];
+      const p75=w[Math.floor(w.length*0.75)];
+      const median=w[Math.floor(w.length*0.5)];
+      return[p25,median,p75];
+    });
+    const p25=rollingP.map(d=>d[0]);
+    const median=rollingP.map(d=>d[1]);
+    const p75=rollingP.map(d=>d[2]);
+    const bandData=rawValues.map((_,i)=>[p25[i],p75[i]]);
+    const c=colors[oi%colors.length];
+
+    g.append('path').datum(bandData).attr('d',area)
+      .attr('fill',c).attr('opacity',0.15);
+
+    g.append('path').datum(runningBest).attr('d',line)
+      .attr('fill','none').attr('stroke',c).attr('stroke-width',2);
+
+    g.append('path').datum(median).attr('d',line)
+      .attr('fill','none').attr('stroke',c).attr('stroke-width',1).attr('stroke-dasharray','4,2');
+
+    g.append('text').attr('x',width+5).attr('y',y(runningBest[runningBest.length-1]))
+      .attr('fill',c).style('font','9px monospace').text(obj.name);
+  });
+
+  const bestI=bestTrialIdx();
+  g.append('line').attr('x1',x(bestI)).attr('y1',0).attr('x2',x(bestI)).attr('y2',height)
+    .attr('stroke','#fff').attr('stroke-width',1).attr('stroke-dasharray','2,4').attr('opacity',0.5);
+  g.append('text').attr('x',x(bestI)).attr('y',-5).attr('text-anchor','middle')
+    .attr('fill','#fff').style('font','8px monospace').attr('opacity',0.7).text('best #'+(bestI+1));
+}
+
+
+$('loadBtn').onclick=loadBreeder;
+document.querySelectorAll('nav button').forEach(btn=>{btn.onclick=()=>{
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');currentView=btn.dataset.view;renderView();
+}});
+setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString()},1000);
+</script>
+</body>
+</html>
