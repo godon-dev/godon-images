@@ -58,9 +58,16 @@ fn default_sim_steps() -> u64 {
 
 /// Response from GET /metrics/json and the inner return of POST /apply.
 ///
-/// Contains the full simulation state after applying parameters. The optimizer
+/// Contains the simulation state after applying parameters. The optimizer
 /// uses specific fields as objectives (growth_rate) and guardrails (max_temp,
-/// max_humidity, max_co2).
+/// max_humidity, max_co2, min_damage).
+///
+/// Additional observable metrics:
+///   - zone_damage: per-zone survival rates (0.3-1.0). Observable like wilting
+///     plants. Usable as guardrail: min_damage < 0.7 triggers rollback.
+///   - coupling_delta_*: hidden coupling channel magnitudes. Not directly
+///     actionable by the optimizer but valuable for post-hoc causality analysis
+///     (cross-correlation, Granger causality between breeder time series).
 #[derive(Debug, Clone, Serialize)]
 pub struct MetricsResponse {
     /// Current temperature per zone (°C).
@@ -71,37 +78,60 @@ pub struct MetricsResponse {
     pub zone_co2_levels: Vec<f64>,
     /// Instantaneous growth rate per zone (0-1 range).
     pub zone_growth_rates: Vec<f64>,
+    /// Per-zone damage/survival factor (0.3-1.0). Slowly accumulates under
+    /// extreme temps, slowly recovers under normal conditions. Observable
+    /// metric -- usable as guardrail (min_damage < 0.7 = rollback trigger).
+    pub zone_damage: Vec<f64>,
 
     /// Average growth rate across all zones. **Primary objective to maximize.**
     pub growth_rate: f64,
-
     /// Cumulative energy consumed this trial (kWh). **Objective to minimize.**
     pub trial_energy_kwh: f64,
     /// Cumulative water consumed this trial (liters). **Objective to minimize.**
     pub trial_water_liters: f64,
 
-    /// Highest temperature across all zones. Use as guardrail (>40°C = plant death).
+    /// Highest temperature across all zones. Guardrail (>40°C = plant death).
     pub max_temp: f64,
-    /// Lowest temperature across all zones. Use as guardrail (<5°C = plant death).
+    /// Lowest temperature across all zones. Guardrail (<5°C = plant death).
     pub min_temp: f64,
-    /// Highest humidity across all zones. Use as guardrail (>0.9 = disease risk).
+    /// Highest humidity across all zones. Guardrail (>0.9 = disease risk).
     pub max_humidity: f64,
-    /// Highest CO2 across all zones. Use as guardrail (>1500ppm = waste/unsafe).
+    /// Highest CO2 across all zones. Guardrail (>1500ppm = waste/unsafe).
     pub max_co2: f64,
 
-    /// Current outside temperature (°C). Drifts with weather model.
+    /// Current outside temperature (°C). Includes coupling waste heat.
     pub outside_temp: f64,
+    /// Current outside CO2 (ppm). Includes coupling exhaust delta.
+    pub outside_co2: f64,
+    /// Current outside humidity (ratio). Includes coupling drift delta.
+    pub outside_humidity: f64,
     /// Current solar radiation (W/m²). Drifts with weather model.
     pub solar_radiation: f64,
     /// Simulation tick counter.
     pub tick: u64,
+    /// Current crop developmental phase: "seedling", "vegetative", "flowering", "fruiting".
+    pub crop_phase: String,
+
+    /// Coupling waste heat delta (°C). Neighbor excess temp × factor.
+    pub coupling_delta_temp: f64,
+    /// Coupling CO2 exhaust delta (ppm). Neighbor energy × factor.
+    pub coupling_delta_co2: f64,
+    /// Coupling power sag delta (fraction). Reduces effective light intensity.
+    pub coupling_delta_light: f64,
+    /// Coupling humidity drift delta (ratio). Neighbor moisture migration.
+    pub coupling_delta_humidity: f64,
 }
 
-/// Response from GET /status -- full greenhouse state including applied params.
-#[derive(Debug, Clone, Serialize)]
+/// Response from GET /status -- full greenhouse state including applied params
+/// and coupling configuration. Used by neighbor greenhouses for coupling fetch.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct StatusResponse {
     pub zones: Vec<ZoneSnapshot>,
     pub outside_temp: f64,
+    /// Outside CO2 (ppm). Includes coupling exhaust delta from neighbors.
+    pub outside_co2: f64,
+    /// Outside humidity (ratio). Includes coupling drift delta from neighbors.
+    pub outside_humidity: f64,
     pub solar_radiation: f64,
     pub tick: u64,
     pub trial_energy_kwh: f64,
@@ -109,19 +139,34 @@ pub struct StatusResponse {
     pub params: Option<ParamsSnapshot>,
     pub weather_mode: String,
     pub seed: u64,
+    /// Current crop developmental phase name.
+    pub crop_phase: String,
+    /// Coupling strength factor (0.0 = uncoupled).
+    pub coupling_factor: f64,
+    /// URLs of coupled neighbor greenhouses.
+    pub coupling_neighbors: Vec<String>,
 }
 
-/// Snapshot of a single zone's state (used in status response).
-#[derive(Debug, Clone, Serialize)]
+/// Snapshot of a single zone's state. Used in status response and coupling fetch.
+/// damage_factor has a serde default of 1.0 for backward compatibility with
+/// neighbors running older greenhouse versions.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct ZoneSnapshot {
     pub temp: f64,
     pub humidity: f64,
     pub co2: f64,
     pub growth_rate: f64,
+    /// Irreversible damage factor (0.3-1.0). Default 1.0 for backward compat.
+    #[serde(default = "default_damage")]
+    pub damage_factor: f64,
+}
+
+fn default_damage() -> f64 {
+    1.0
 }
 
 /// Snapshot of the currently applied parameters.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct ParamsSnapshot {
     pub heating_setpoints: Vec<f64>,
     pub vent_openings: Vec<f64>,

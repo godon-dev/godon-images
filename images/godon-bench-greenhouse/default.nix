@@ -8,6 +8,10 @@
 # environment variables:
 #   PORT=8090                 HTTP listen port
 #   GREENHOUSE_SCENARIO=simple  simple (2 zones), medium (4), complex (6)
+#   GREENHOUSE_WEATHER=smooth   smooth, noisy, adversarial
+#   GREENHOUSE_SEED=42          RNG seed for reproducibility
+#   COUPLING_NEIGHBORS=         Comma-separated neighbor URLs
+#   COUPLING_FACTOR=0.0         Coupling strength (0=none, 0.05=weak, 0.2=strong)
 #
 # CI: .github/workflows/godon-bench-greenhouse-ci.yml
 # Release: .github/workflows/godon-bench-greenhouse-release.yml
@@ -25,7 +29,7 @@ let
 
     src = ./.;
 
-    cargoHash = "sha256-LvDxQSffGp5089pQ2npPp20jBP8flzF9ILv16OlX6kI=";
+    cargoHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
     nativeBuildInputs = with pkgs; [ cacert pkg-config ];
 
@@ -64,6 +68,10 @@ let
         "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
         "PORT=8090"
         "GREENHOUSE_SCENARIO=simple"
+        "GREENHOUSE_WEATHER=smooth"
+        "GREENHOUSE_SEED=42"
+        "COUPLING_NEIGHBORS="
+        "COUPLING_FACTOR=0.0"
       ];
       WorkingDir = "/app";
       User = "1000:1000";
