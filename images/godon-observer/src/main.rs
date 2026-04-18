@@ -172,6 +172,14 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
         return Ok(html_response(DASHBOARD_HTML));
     }
 
+    if path == "/d3.js" {
+        return Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/javascript; charset=utf-8")
+            .body(Body::from(D3_JS))
+            .unwrap());
+    }
+
     // /api-proxy/breeders/<uuid> — proxy to godon-api for breeder config
     if path_parts.len() >= 3 && path_parts[0] == "api-proxy" && path_parts[1] == "breeders" {
         let api_path = format!("/breeders/{}", path_parts[2]);
@@ -284,6 +292,7 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
 }
 
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
+const D3_JS: &str = include_str!("d3.min.js");
 
 #[tokio::main]
 async fn main() {
