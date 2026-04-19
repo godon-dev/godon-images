@@ -155,20 +155,33 @@ paths:
       description: Updates the configuration of an existing breeder
       requestBody:
         required: true
-        description: Updated breeder configuration
+        description: New breeder configuration. Trial data is preserved unless the config is incompatible.
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/BreederUpdate'
             examples:
               update:
-                summary: Updated breeder configuration
+                summary: Update breeder config
                 value:
-                  name: "updated-genetic-optimizer"
-                  description: "Updated optimizer configuration"
                   config:
-                    setting1: "new_value1"
-                    setting2: 200
+                    breeder:
+                      type: "linux_performance"
+                    objectives:
+                      - name: "latency"
+                        goal: "MINIMIZE"
+              force_update:
+                summary: Force update with incompatible config (clears trial history)
+                value:
+                  config:
+                    breeder:
+                      type: "linux_performance"
+                    objectives:
+                      - name: "latency"
+                        goal: "MINIMIZE"
+                      - name: "throughput"
+                        goal: "MAXIMIZE"
+                  force: true
 
       responses:
         '200':
@@ -177,23 +190,37 @@ paths:
             application/json:
               schema:
                 type: object
-                required:
-                  - id
-                  - updated
                 properties:
-                  id:
+                  result:
                     type: string
-                    format: uuid
-                    description: The ID of the updated breeder
-                  updated:
-                    type: boolean
-                    description: Confirmation that the breeder was updated
+                  data:
+                    type: object
+                    properties:
+                      breeder_id:
+                        type: string
+                        format: uuid
+                      name:
+                        type: string
+                      status:
+                        type: string
+                      workers_started:
+                        type: integer
+                      trials_cleared:
+                        type: boolean
+                      config_history_entries:
+                        type: integer
               examples:
                 updated:
                   summary: Update confirmation
                   value:
-                    id: "550e8400-e29b-41d4-a716-446655440000"
-                    updated: true
+                    result: "SUCCESS"
+                    data:
+                      breeder_id: "550e8400-e29b-41d4-a716-446655440000"
+                      name: "my-breeder"
+                      status: "active"
+                      workers_started: 2
+                      trials_cleared: false
+                      config_history_entries: 1
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -825,20 +852,14 @@ components:
         - description
         - config
       properties:
-        name:
-          type: string
-          minLength: 1
-          maxLength: 255
-          description: Human-readable name for the breeder
-          example: "updated-genetic-optimizer"
-        description:
-          type: string
-          description: Description of the breeder updates
-          example: "Updated optimizer configuration"
         config:
           type: object
-          description: Updated configuration object for the breeder
+          description: New breeder configuration (replaces existing config entirely)
           additionalProperties: true
+        force:
+          type: boolean
+          default: false
+          description: If true, clear trial history when config is incompatible with existing trial data (e.g. changed parameter or objective count)
 
     BreederList:
       type: array

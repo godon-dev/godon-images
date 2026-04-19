@@ -195,23 +195,26 @@ jobs:
 
         # Test updating a breeder
         echo "Testing update breeder:"
-        # Fetch example config for update test
         curl -s https://raw.githubusercontent.com/godon-dev/godon/refs/heads/master/examples/network.yml -o update-config.yaml
 
-        # Modify the config slightly to verify CLI reads it
         sed -i 's/parallel: 1/parallel: 2/' update-config.yaml
 
         echo "Update config file contents:"
         cat update-config.yaml
 
-        # Test breeder update - should return NOT_IMPLEMENTED
-        echo "Testing update breeder (should return NOT_IMPLEMENTED):"
+        echo "Testing update breeder:"
         docker run --rm --network godon-api-test_default \
           -v "$(pwd)/update-config.yaml:/update-config.yaml:ro" \
           ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
           --hostname=godon-api-test --port=9090 --insecure \
-          breeder update --file=/update-config.yaml \
-          || echo "✅ Update correctly returned NOT_IMPLEMENTED as expected"
+          breeder update --id=550e8400-e29b-41d4-a716-446655440000 --file=/update-config.yaml
+
+        echo "Testing update breeder with force flag:"
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/update-config.yaml:/update-config.yaml:ro" \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          breeder update --id=550e8400-e29b-41d4-a716-446655440000 --file=/update-config.yaml --force
 
         # Test deleting a breeder (safe mode without workers)
         echo "Testing delete breeder (safe mode):"
