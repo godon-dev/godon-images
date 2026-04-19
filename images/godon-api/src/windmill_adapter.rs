@@ -165,6 +165,16 @@ impl WindmillClient {
         Ok(Self::unwrap_data(response))
     }
 
+    pub fn update_breeder(&self, breeder_id: &str, config: serde_json::Value, force: bool) -> Result<serde_json::Value> {
+        let mut request_data = json!({ "breeder_id": breeder_id, "config": config });
+        if force {
+            request_data["force"] = json!(force);
+        }
+        let args = json!({ "request_data": request_data });
+        let response = self.run_script("breeder_update", args)?;
+        Ok(Self::unwrap_data(response))
+    }
+
     pub fn start_breeder(&self, breeder_id: &str) -> Result<serde_json::Value> {
         let args = json!({ "request_data": { "breeder_id": breeder_id } });
         let response = self.run_script("breeder_start", args)?;
