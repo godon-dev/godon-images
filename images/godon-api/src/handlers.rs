@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::config::Config;
-use crate::types::{Breeder, BreederCreate, BreederSummary, Credential, CredentialCreate, DeleteResponse, ErrorResponse, Target, TargetCreate};
+use crate::types::{Breeder, BreederCreate, BreederUpdate, BreederSummary, Credential, CredentialCreate, DeleteResponse, ErrorResponse, Target, TargetCreate};
 use crate::windmill_adapter::WindmillClient;
 
 static BUILD_VERSION: &str = match option_env!("BUILD_VERSION") {
@@ -126,14 +126,49 @@ pub async fn get_breeder(
     ))?
 }
 
-pub async fn update_breeder() -> (StatusCode, Json<ErrorResponse>) {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ErrorResponse::new(
-            "Update breeder functionality not implemented",
-            "NOT_IMPLEMENTED"
-        ))
-    )
+pub async fn update_breeder(
+    State(_config): State<Config>,
+    Path(id): Path<String>,
+    Json(payload): Json<BreederUpdate>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    if !UUID_REGEX.is_match(&id) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::with_details(
+                "Invalid UUID format",
+                "BAD_REQUEST",
+                json!({"uuid": id})
+            ))
+        ));
+    }
+
+    if payload.config.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "Invalid config: config must be a non-empty object",
+                "BAD_REQUEST"
+            ))
+        ));
+    }
+
+    let client = get_client()?;
+    let force = payload.force.unwrap_or(false);
+
+    tokio::task::spawn_blocking(move || {
+        client.update_breeder(&id, payload.config, force)
+            .map(Json)
+            .map_err(|e| (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(
+                    format!("Failed to update breeder: {}", e),
+                    "INTERNAL_SERVER_ERROR"
+                ))
+            ))
+    }).await.map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
+    ))?
 }
 
 #[derive(Debug, Deserialize)]

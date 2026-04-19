@@ -27,9 +27,9 @@ pub struct BreederCreate {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BreederUpdate {
-    pub name: String,
-    pub description: String,
     pub config: serde_json::Value,
+    #[serde(default)]
+    pub force: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
