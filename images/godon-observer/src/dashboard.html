@@ -53,16 +53,43 @@ nav button:hover{color:#c9d1d9}
 .pc-line{fill:none;cursor:pointer}
 .pc-line:hover{stroke-width:3!important;opacity:1!important}
 .sp-line{fill:none;stroke-linejoin:round}
+.ov-list{list-style:none;padding:0;margin:0}
+.ov-row{display:flex;align-items:center;gap:16px;padding:10px 24px;border-bottom:1px solid #21262d;cursor:pointer;transition:background 0.15s}
+.ov-row:hover{background:#161b22}
+.ov-row:hover .ov-name{color:#e6edf3}
+.ov-row.selected{background:#1c2128;border-left:3px solid #3fb950;padding-left:21px}
+.ov-name{flex:1;font-size:13px;color:#c9d1d9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:120px}
+.ov-trials{width:60px;text-align:right;font-size:12px;color:#8b949e;flex-shrink:0}
+.ov-created{width:130px;text-align:right;font-size:11px;color:#6e7681;flex-shrink:0}
+.ov-loading{text-align:center;padding:40px;color:#6e7681;font-size:12px}
+.ov-cross-bar{display:none;align-items:center;gap:12px;padding:8px 24px;background:#161b22;border-bottom:1px solid #30363d}
+.ov-cross-bar.show{display:flex}
+.ov-cross-btn{background:#238636;color:#fff;border:none;padding:5px 14px;border-radius:3px;cursor:pointer;font-family:inherit;font-size:12px}
+.ov-cross-btn:hover{background:#2ea043}
+.ov-cross-btn:disabled{background:#21262d;color:#484f58;cursor:default}
+.ov-cross-count{font-size:11px;color:#8b949e}
+.ov-cross-clear{background:none;border:none;color:#6e7681;cursor:pointer;font-family:inherit;font-size:11px}
+.ov-cross-clear:hover{color:#c9d1d9}
+.ov-header{display:flex;align-items:center;gap:16px;padding:8px 24px;border-bottom:1px solid #30363d;background:#0d1117}
+.ov-header button{background:none;border:none;color:#6e7681;cursor:pointer;font-family:inherit;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;padding:0}
+.ov-header button:hover{color:#c9d1d9}
+.ov-header button .sort-arrow{margin-left:4px;font-size:9px}
+.ov-header .ov-h-name{flex:1;min-width:120px;text-align:left}
+.ov-header .ov-h-trials{width:60px;text-align:right}
+.ov-header .ov-h-created{width:130px;text-align:right}
+.back-btn{background:none;border:none;color:#3fb950;cursor:pointer;font-family:inherit;font-size:13px;padding:0 8px}
+.back-btn:hover{text-decoration:underline}
 </style>
 </head>
 <body>
 <header><h1>godon <span>observer</span></h1><span id="clock" style="font-size:11px;color:#8b949e"></span></header>
-<div class="bar">
+<div class="bar" id="bar">
+<button class="back-btn" id="backBtn" style="display:none">&#8592; overview</button>
 <label>breeder:</label><input type="text" id="breederId" placeholder="paste breeder UUID">
 <button id="loadBtn">load</button>
 <span id="loadStatus" style="color:#8b949e;font-size:11px"></span>
 </div>
-<nav>
+<nav id="nav">
 <button class="active" data-view="heatmap">heatmap</button>
 <button data-view="spider">spider web</button>
 <button data-view="parallel">parallel coordinates</button>
@@ -72,7 +99,7 @@ nav button:hover{color:#c9d1d9}
 <button data-view="guardrails">guardrails</button>
 </nav>
 <div class="summary" id="summary"></div>
-<div class="content" id="content"><div class="info">paste a breeder UUID and click load</div></div>
+<div class="content" id="content"></div>
 <div class="tooltip" id="tooltip"></div>
 <div class="status"><span id="statusL">ready</span><span id="statusR"></span></div>
 <script>
@@ -110,6 +137,204 @@ const DEMO_TRIALS=(function(){
   }
   return out;
 })();
+
+const DEMO_BREEDERS=[
+  {id:'b8c9d0e1-f2a3-4567-bcde-678901234567',name:'network-tuner',total_trials:156,createdAt:'2026-04-18T11:00:00Z'},
+  {id:'a1b2c3d4-e5f6-7890-abcd-ef1234567890',name:'bench-s3-gh1',total_trials:47,createdAt:'2026-04-20T08:12:00Z'},
+  {id:'b2c3d4e5-f6a7-8901-bcde-f12345678901',name:'bench-s3-gh2',total_trials:43,createdAt:'2026-04-20T08:12:30Z'},
+  {id:'c3d4e5f6-a7b8-9012-cdef-123456789012',name:'bench-s4-gh1',total_trials:31,createdAt:'2026-04-21T14:30:00Z'},
+  {id:'d4e5f6a7-b8c9-0123-defa-234567890123',name:'bench-s4-gh2',total_trials:28,createdAt:'2026-04-21T14:30:15Z'},
+  {id:'e5f6a7b8-c9d0-1234-efab-345678901234',name:'linux-perf-01',total_trials:12,createdAt:'2026-04-22T09:05:00Z'},
+  {id:'a7b8c9d0-e1f2-3456-abcd-567890123456',name:'greenhouse-beta',total_trials:5,createdAt:'2026-04-22T10:15:00Z'},
+  {id:'f6a7b8c9-d0e1-2345-fabc-456789012345',name:'greenhouse-alpha',total_trials:0,createdAt:'2026-04-22T10:00:00Z'},
+];
+
+let overviewMode=true;
+let selectedBreeders=[];
+let lastClickedIdx=-1;
+let sortField='name';
+let sortDir=1;
+
+function fmtDate(iso){
+  const d=new Date(iso);
+  return d.toLocaleDateString('en-CA')+' '+d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+}
+
+function sortedBreeders(breeders){
+  return [...breeders].sort((a,b)=>{
+    let va,vb;
+    if(sortField==='name'){va=a.name.toLowerCase();vb=b.name.toLowerCase();return va<vb?-sortDir:va>vb?sortDir:0}
+    if(sortField==='trials'){va=a.total_trials||0;vb=b.total_trials||0}
+    if(sortField==='created'){va=new Date(a.createdAt||0).getTime();vb=new Date(b.createdAt||0).getTime()}
+    return (va-vb)*sortDir;
+  });
+}
+
+function updateCrossBar(){
+  const bar=$('crossBar');
+  const btn=$('crossBtn');
+  const count=$('crossCount');
+  if(selectedBreeders.length>0){
+    bar.classList.add('show');
+    btn.disabled=selectedBreeders.length<2;
+    count.textContent=selectedBreeders.length+' selected';
+  } else {
+    bar.classList.remove('show');
+  }
+  document.querySelectorAll('.ov-row').forEach(row=>{
+    const id=row.dataset.id;
+    if(selectedBreeders.includes(id)) row.classList.add('selected');
+    else row.classList.remove('selected');
+  });
+}
+
+function toggleSelect(id,idx){
+  const pos=selectedBreeders.indexOf(id);
+  if(pos>=0) selectedBreeders.splice(pos,1);
+  else selectedBreeders.push(id);
+  lastClickedIdx=idx;
+  updateCrossBar();
+}
+
+function rangeSelect(id,idx){
+  if(lastClickedIdx<0||lastClickedIdx>=currentBreeders.length){
+    toggleSelect(id,idx);
+    return;
+  }
+  const start=Math.min(lastClickedIdx,idx);
+  const end=Math.max(lastClickedIdx,idx);
+  for(let i=start;i<=end;i++){
+    const bid=currentBreeders[i].id;
+    if(!selectedBreeders.includes(bid)) selectedBreeders.push(bid);
+  }
+  updateCrossBar();
+}
+
+function clearSelection(){
+  selectedBreeders=[];
+  lastClickedIdx=-1;
+  updateCrossBar();
+}
+
+function showOverview(){
+  overviewMode=true;
+  $('nav').style.display='none';
+  $('summary').style.display='none';
+  $('backBtn').style.display='none';
+  $('bar').querySelector('label').style.display='none';
+  $('breederId').style.display='none';
+  $('loadBtn').style.display='none';
+  $('loadStatus').textContent='';
+  if(refreshTimer){clearInterval(refreshTimer);refreshTimer=null}
+  breederConfig=null;trials=[];
+  loadOverview();
+}
+
+function showDetail(){
+  overviewMode=false;
+  $('nav').style.display='flex';
+  $('backBtn').style.display='inline';
+  $('bar').querySelector('label').style.display='';
+  $('breederId').style.display='';
+  $('loadBtn').style.display='';
+}
+
+async function loadOverview(){
+  const el=$('content');
+  if(DEMO){
+    renderOverview(DEMO_BREEDERS);
+    status('demo mode — '+DEMO_BREEDERS.length+' breeders');
+    return;
+  }
+  baseUrl=window.location.origin;
+  el.innerHTML='<div class="ov-loading">loading breeders...</div>';
+  try{
+    const breeders=await api('/api/breeders');
+    renderOverview(breeders);
+    status(breeders.length+' breeders');
+  }catch(e){
+    el.innerHTML='<div class="error">'+e.message+'</div>';
+    status('error: '+e.message);
+  }
+}
+
+let currentBreeders=[];
+
+function renderOverview(breeders){
+  currentBreeders=breeders;
+  const el=d3.select('#content');
+  el.html('');
+  if(!breeders.length){
+    el.append('div').attr('class','info').text('no breeders found');
+    return;
+  }
+
+  const crossBar=el.append('div').attr('class','ov-cross-bar').attr('id','crossBar');
+  crossBar.append('button').attr('class','ov-cross-btn').attr('id','crossBtn')
+    .attr('disabled',true).text('cross').on('click',()=>crossBreeders(selectedBreeders));
+  crossBar.append('span').attr('class','ov-cross-count').attr('id','crossCount').text('');
+  crossBar.append('button').attr('class','ov-cross-clear').text('clear').on('click',clearSelection);
+
+  const arrow=f=>sortField===f?(sortDir===1?'\u25b2':'\u25bc'):'';
+  const hdr=el.append('div').attr('class','ov-header');
+  hdr.append('button').attr('class','ov-h-name').html('name <span class="sort-arrow">'+arrow('name')+'</span>')
+    .on('click',()=>{sortField='name';if(sortField==='name')sortDir=-sortDir;else sortDir=1;renderOverview(currentBreeders)});
+  hdr.append('button').attr('class','ov-h-trials').html('trials <span class="sort-arrow">'+arrow('trials')+'</span>')
+    .on('click',()=>{sortField='trials';if(sortField==='trials')sortDir=-sortDir;else sortDir=1;renderOverview(currentBreeders)});
+  hdr.append('button').attr('class','ov-h-created').html('created <span class="sort-arrow">'+arrow('created')+'</span>')
+    .on('click',()=>{sortField='created';if(sortField==='created')sortDir=-sortDir;else sortDir=1;renderOverview(currentBreeders)});
+
+  const ordered=sortedBreeders(breeders);
+  const list=el.append('ul').attr('class','ov-list');
+  ordered.forEach((b,idx)=>{
+    const li=list.append('li').attr('class','ov-row')
+      .attr('data-id',b.id)
+      .attr('data-idx',idx);
+
+    if(selectedBreeders.includes(b.id)) li.classed('selected',true);
+
+    li.append('div').attr('class','ov-name').text(b.name);
+    li.append('div').attr('class','ov-trials').text(b.total_trials||'—');
+    li.append('div').attr('class','ov-created').text(b.createdAt?fmtDate(b.createdAt):'');
+
+    li.on('click',function(event){
+      event.preventDefault();
+      if(event.shiftKey){
+        rangeSelect(b.id,idx);
+      } else if(event.ctrlKey||event.metaKey){
+        toggleSelect(b.id,idx);
+      } else {
+        if(selectedBreeders.length>0){
+          clearSelection();
+          return;
+        }
+        $('breederId').value=b.id;
+        showDetail();
+        loadBreeder();
+      }
+    });
+  });
+  updateCrossBar();
+}
+
+function crossBreeders(ids){
+  status('crossing '+ids.length+' breeders...');
+}
+
+const PR=18,PW=4,PI_R=PR-PW;
+function drawOrb(parent,trialCount){
+  const sz=(PR+2)*2;
+  const svg=parent.append('svg').attr('width',sz).attr('height',sz)
+    .attr('viewBox',`${-(PR+1)} ${-(PR+1)} ${(PR+1)*2} ${(PR+1)*2}`);
+  if(trialCount===0){
+    svg.append('circle').attr('r',PR).attr('fill','#161b22').attr('stroke','#30363d').attr('stroke-width',1);
+    return;
+  }
+  const c=trialCount>20?'#3fb950':trialCount>5?'#8b8000':'#f85149';
+  svg.append('circle').attr('r',PR).attr('fill',c).attr('opacity',0.7);
+  svg.append('circle').attr('r',PI_R-0.5).attr('fill','#0d1117');
+  svg.append('circle').attr('r',PI_R*0.4).attr('fill',c).attr('opacity',0.5);
+}
 
 async function api(path){
   if(DEMO){throw new Error('no api in demo mode')}
@@ -174,8 +399,11 @@ function hideTip(){$('tooltip').style.display='none'}
 
 async function loadBreeder(){
   if(DEMO){
+    const bid=$('breederId').value.trim();
+    const match=DEMO_BREEDERS.find(b=>b.id===bid);
     breederConfig=DEMO_CONFIG;
     breederConfig._directions=['MAXIMIZE','MINIMIZE','MINIMIZE'];
+    if(match) breederConfig.name=match.name;
     trials=DEMO_TRIALS;
     renderView();
     $('loadStatus').textContent=trials.length+' demo trials loaded';
@@ -1035,11 +1263,14 @@ function renderGuardrails(){
 
 
 $('loadBtn').onclick=loadBreeder;
+$('backBtn').onclick=showOverview;
+$('breederId').addEventListener('keydown',e=>{if(e.key==='Enter')loadBreeder()});
 document.querySelectorAll('nav button').forEach(btn=>{btn.onclick=()=>{
   document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');currentView=btn.dataset.view;renderView();
 }});
 setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString()},1000);
+showOverview();
 </script>
 </body>
 </html>

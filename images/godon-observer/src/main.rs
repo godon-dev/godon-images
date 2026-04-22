@@ -180,6 +180,40 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
             .unwrap());
     }
 
+    // /api/breeders — list all breeders with trial summaries
+    if path_parts.len() == 2 && path_parts[0] == "api" && path_parts[1] == "breeders" {
+        let url = format!("{}/breeders", state.api_url);
+        return match state.http_client.get(&url).send() {
+            Ok(response) if response.status().is_success() => {
+                let body = response.text().unwrap_or_default();
+                match serde_json::from_str::<serde_json::Value>(&body) {
+                    Ok(serde_json::Value::Array(breeders)) => {
+                        let mut enriched = Vec::new();
+                        for b in &breeders {
+                            let id = b.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let study_name = format!("{}_study", id);
+                            let trial_count = state.optuna.get_trial_count(&id, &study_name).await.unwrap_or(0);
+                            let mut obj = b.clone();
+                            obj.as_object_mut().map(|m| m.insert("total_trials".into(), serde_json::json!(trial_count)));
+                            enriched.push(obj);
+                        }
+                        Ok(json_response(StatusCode::OK, &serde_json::to_string(&enriched).unwrap()))
+                    }
+                    _ => Ok(json_response(StatusCode::OK, &body)),
+                }
+            }
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().unwrap_or_default();
+                Ok(json_response(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY), &body))
+            }
+            Err(e) => {
+                error!("API list breeders error: {}", e);
+                Ok(json_response(StatusCode::BAD_GATEWAY, &format!("{{\"error\": \"api unreachable: {}\"}}", e)))
+            }
+        };
+    }
+
     // /api-proxy/breeders/<uuid> — proxy to godon-api for breeder config
     if path_parts.len() >= 3 && path_parts[0] == "api-proxy" && path_parts[1] == "breeders" {
         let api_path = format!("/breeders/{}", path_parts[2]);
