@@ -507,12 +507,10 @@ function transferEntropy(xs,ys,bins,k){
   return Math.min(Math.abs(te)*20,1);
 }
 
-function crossDetrend(vals){
-  const n=vals.length,xm=(n-1)/2;
-  let sy=0,sxy=0,sx2=0;
-  for(let i=0;i<n;i++){sy+=vals[i];sxy+=(i-xm)*vals[i];sx2+=(i-xm)*(i-xm)}
-  const sl=sx2?sxy/sx2:0,ic=sy/n-sl*xm;
-  return vals.map((v,i)=>v-(ic+sl*i));
+function crossDiff(vals){
+  const r=[];
+  for(let i=1;i<vals.length;i++) r.push(vals[i]-vals[i-1]);
+  return r;
 }
 
 function crossPearsonR(xs,ys){
@@ -533,7 +531,7 @@ function crossRunAnalysis(){
       const n=Math.min(qs[i].length,qs[j].length);
       if(n<6) continue;
       const a=qs[i].slice(0,n),b=qs[j].slice(0,n);
-      const da=crossDetrend(a),db=crossDetrend(b);
+      const da=crossDiff(a),db=crossDiff(b);
       const cc=crossCorrelate(da,db,Math.floor(n/4));
       const maxCC=d3.max(cc,d=>Math.abs(d.corr));
       const bestLag=cc.reduce((best,d)=>Math.abs(d.corr)>Math.abs(best.corr)?d:best,{lag:0,corr:0});
