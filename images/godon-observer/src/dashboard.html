@@ -520,36 +520,47 @@ function grangerF(xs,ys,order){
 function transferEntropy(xs,ys,bins,k){
   const n=Math.min(xs.length,ys.length);
   if(n<k*6) return 0;
-  function disc(arr,b){
-    const sorted=[...arr].sort((a,b)=>a-b);
-    const q=args=>{const idx=Math.floor(args.length*0.01);return args[Math.min(idx,args.length-1)]};
-    const mn=q(sorted),mx=q(sorted.reverse());
-    const r=mx-mn; if(r<1e-10) return arr.map(()=>0);
-    return arr.map(v=>Math.min(Math.floor((v-mn)/r*b),b-1));
+  function teCalc(ax,ay,b,kk){
+    const nn=ax.length;
+    function qdisc(arr,bb){
+      const idx=arr.map((v,i)=>({v,i}));
+      idx.sort((a,b)=>a.v-b.v);
+      const out=new Array(arr.length);
+      for(let i=0;i<arr.length;i++){
+        out[idx[i].i]=Math.min(Math.floor(i*bb/arr.length),bb-1);
+      }
+      return out;
+    }
+    const xd=qdisc(ax,b),yd=qdisc(ay,b);
+    const c={};
+    for(let i=kk;i<nn;i++){
+      const k3=xd[i-kk]+','+yd[i-kk]+','+yd[i];
+      const k2a=xd[i-kk]+','+yd[i-kk];
+      const k2b=yd[i-kk]+','+yd[i];
+      const k1=yd[i-kk];
+      c[k3]=(c[k3]||0)+1;c[k2a]=(c[k2a]||0)+1;c[k2b]=(c[k2b]||0)+1;c[k1]=(c[k1]||0)+1;
+    }
+    let te=0;
+    for(let i=kk;i<nn;i++){
+      const pj=(c[xd[i-kk]+','+yd[i-kk]+','+yd[i]]||0)/(nn-kk);
+      const pp=(c[xd[i-kk]+','+yd[i-kk]]||0)/(nn-kk);
+      const pc=(c[yd[i-kk]+','+yd[i]]||0)/(nn-kk);
+      const py=(c[yd[i-kk]]||0)/(nn-kk);
+      if(pj>0&&pp>0&&pc>0&&py>0) te+=pj*Math.log2((pj/pp)/(pc/py));
+    }
+    return Math.abs(te)/(nn-kk);
   }
-  const xd=disc(xs.slice(0,n),bins),yd=disc(ys.slice(0,n),bins);
-  const c={};let tot=0;
-  for(let i=k;i<n;i++){
-    const key3=xd[i-1]+','+yd[i-1]+','+yd[i];
-    const key2a=xd[i-1]+','+yd[i-1];
-    const key2b=yd[i-1]+','+yd[i];
-    const key1=yd[i-1];
-    c[key3]=(c[key3]||0)+1;
-    c[key2a]=(c[key2a]||0)+1;
-    c[key2b]=(c[key2b]||0)+1;
-    c[key1]=(c[key1]||0)+1;
-    tot++;
+  const ax=xs.slice(0,n),ay=ys.slice(0,n);
+  const realTe=teCalc(ax,ay,3,k);
+  let above=0;
+  const nShuf=20;
+  for(let s=0;s<nShuf;s++){
+    const sy=[...ay];
+    for(let i=sy.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[sy[i],sy[j]]=[sy[j],sy[i]]}
+    if(teCalc(ax,sy,3,k)>=realTe) above++;
   }
-  let te=0;
-  for(let i=k;i<n;i++){
-    const pj=(c[xd[i-1]+','+yd[i-1]+','+yd[i]]||0)/tot;
-    const pp=(c[xd[i-1]+','+yd[i-1]]||0)/tot;
-    const pc=(c[yd[i-1]+','+yd[i]]||0)/tot;
-    const py=(c[yd[i-1]]||0)/tot;
-    if(pj>0&&pp>0&&pc>0&&py>0) te+=pj*Math.log2((pj/pp)/(pc/py));
-  }
-  te=Math.abs(te)/tot;
-  return Math.min(te*100,1);
+  const pVal=above/nShuf;
+  return Math.max(0,1-pVal*2);
 }
 
 function crossDiff(vals){
@@ -583,11 +594,11 @@ function crossRunAnalysis(){
       const gc=grangerF(da,db,3),gcR=grangerF(db,da,3);
       const te=transferEntropy(da,db,8,2),teR=transferEntropy(db,da,8,2);
       const methods=[
-        {name:'pattern match',value:maxCC,threshold:0.4,signal:maxCC>=0.4},
-        {name:'predictive link \u2192',value:gc,threshold:0.3,signal:gc>=0.3},
-        {name:'predictive link \u2190',value:gcR,threshold:0.3,signal:gcR>=0.3},
-        {name:'info flow \u2192',value:te,threshold:0.2,signal:te>=0.2},
-        {name:'info flow \u2190',value:teR,threshold:0.2,signal:teR>=0.2},
+        {name:'pattern match',value:maxCC,threshold:0.3,signal:maxCC>=0.3},
+        {name:'predictive link \u2192',value:gc,threshold:0.1,signal:gc>=0.1},
+        {name:'predictive link \u2190',value:gcR,threshold:0.1,signal:gcR>=0.1},
+        {name:'info flow \u2192',value:te,threshold:0.5,signal:te>=0.5},
+        {name:'info flow \u2190',value:teR,threshold:0.5,signal:teR>=0.5},
       ];
       const sigCount=methods.filter(m=>m.signal).length;
       let tier='low';if(sigCount>=4)tier='high';else if(sigCount>=2)tier='medium';
