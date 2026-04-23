@@ -10,6 +10,7 @@ if(location.protocol==='file:'){
   document.write('<script src="https://unpkg.com/d3-sankey@0.12.3/dist/d3-sankey.min.js"><\/script>');
 } else {
   document.write('<script src="/d3.js"><\/script>');
+  document.write('<script src="https://unpkg.com/d3-sankey@0.12.3/dist/d3-sankey.min.js"><\/script>');
 }
 </script>
 <style>
@@ -459,14 +460,13 @@ async function loadCrossData(ids){
 
 function crossCorrelate(xs,ys,maxLag){
   const n=Math.min(xs.length,ys.length);
-  const mx=xs.slice(0,n).reduce((a,v)=>a+v,0)/n;
-  const my=ys.slice(0,n).reduce((a,v)=>a+v,0)/n;
-  const sx=Math.sqrt(xs.slice(0,n).reduce((a,v)=>a+(v-mx)**2,0)/n)||1;
-  const sy=Math.sqrt(ys.slice(0,n).reduce((a,v)=>a+(v-my)**2,0)/n)||1;
+  const ax=xs.slice(0,n),ay=ys.slice(0,n);
+  const mx=d3.mean(ax),my=d3.mean(ay);
+  const sx=d3.deviation(ax)||1,sy=d3.deviation(ay)||1;
   const results=[];
   for(let lag=-maxLag;lag<=maxLag;lag++){
     let sum=0,count=0;
-    for(let i=0;i<n;i++){const j=i+lag;if(j>=0&&j<n){sum+=(xs[i]-mx)*(ys[j]-my);count++}}
+    for(let i=0;i<n;i++){const j=i+lag;if(j>=0&&j<n){sum+=(ax[i]-mx)*(ay[j]-my);count++}}
     results.push({lag,corr:count?sum/count/(sx*sy):0});
   }
   return results;
@@ -474,26 +474,70 @@ function crossCorrelate(xs,ys,maxLag){
 
 function grangerF(xs,ys,order){
   const n=Math.min(xs.length,ys.length);
-  if(n<order*3) return 0;
+  if(n<order*4) return 0;
   const x=xs.slice(0,n),y=ys.slice(0,n);
-  const my=d3.mean(y);
-  const rssR=d3.sum(y.slice(order).map((v,i)=>{let p=my;for(let k=0;k<order;k++)p+=0.1*(y[i+order-1-k]-my);return(v-p)**2}));
-  const rssU=d3.sum(y.slice(order).map((v,i)=>{let p=my;for(let k=0;k<order;k++)p+=0.1*(y[i+order-1-k]-my);for(let k=0;k<order;k++)p+=0.1*(x[i+order-1-k]-d3.mean(x));return(v-p)**2}));
-  if(rssU===0) return 0;
-  return Math.min(((rssR-rssU)/order)/(rssU/(n-2*order-1))/5,1);
+  function olsPred(target,regs,start){
+    const m=regs.length;
+    const nn=target.length-start;
+    let rss=0;
+    const XtX=Array.from({length:m},()=>Array(m).fill(0));
+    const Xty=Array(m).fill(0);
+    for(let i=0;i<nn;i++){
+      for(let a=0;a<m;a++){
+        Xty[a]+=regs[a][start+i]*target[start+i];
+        for(let b=0;b<m;b++) XtX[a][b]+=regs[a][start+i]*regs[b][start+i];
+      }
+    }
+    const coefs=Array(m).fill(0);
+    for(let iter=0;iter<3;iter++){
+      for(let a=0;a<m;a++){
+        let dot=Xty[a];
+        for(let b=0;b<m;b++) if(b!==a) dot-=XtX[a][b]*coefs[b];
+        coefs[a]=XtX[a][a]>0?dot/XtX[a][a]:0;
+      }
+    }
+    for(let i=0;i<nn;i++){
+      let p=0;for(let a=0;a<m;a++) p+=coefs[a]*regs[a][start+i];
+      rss+=(target[start+i]-p)**2;
+    }
+    return rss;
+  }
+  const start=order;
+  const yTarget=y.slice(start);
+  const yRegs=[];
+  for(let k=0;k<order;k++) yRegs.push(y.slice(k,y.length-order+k));
+  const rssR=olsPred(yTarget,yRegs,0);
+  const allRegs=[...yRegs];
+  for(let k=0;k<order;k++) allRegs.push(x.slice(k,x.length-order+k));
+  const rssU=olsPred(yTarget,allRegs,0);
+  if(rssU<=0||rssR<=rssU) return 0;
+  const df1=order,df2=n-2*order-1;
+  if(df2<=0) return 0;
+  const F=((rssR-rssU)/df1)/(rssU/df2);
+  return Math.min(F/10,1);
 }
 
 function transferEntropy(xs,ys,bins,k){
   const n=Math.min(xs.length,ys.length);
-  if(n<k*4) return 0;
-  const disc=(arr,b)=>{const mn=d3.min(arr),mx=d3.max(arr),r=mx-mn||1;return arr.map(v=>Math.min(Math.floor((v-mn)/r*b),b-1))};
+  if(n<k*6) return 0;
+  function disc(arr,b){
+    const sorted=[...arr].sort((a,b)=>a-b);
+    const q=args=>{const idx=Math.floor(args.length*0.01);return args[Math.min(idx,args.length-1)]};
+    const mn=q(sorted),mx=q(sorted.reverse());
+    const r=mx-mn; if(r<1e-10) return arr.map(()=>0);
+    return arr.map(v=>Math.min(Math.floor((v-mn)/r*b),b-1));
+  }
   const xd=disc(xs.slice(0,n),bins),yd=disc(ys.slice(0,n),bins);
   const c={};let tot=0;
   for(let i=k;i<n;i++){
-    c[xd[i-1]+','+yd[i-1]+','+yd[i]]=(c[xd[i-1]+','+yd[i-1]+','+yd[i]]||0)+1;
-    c[xd[i-1]+','+yd[i-1]]=(c[xd[i-1]+','+yd[i-1]]||0)+1;
-    c[yd[i-1]+','+yd[i]]=(c[yd[i-1]+','+yd[i]]||0)+1;
-    c[yd[i-1]]=(c[yd[i-1]]||0)+1;
+    const key3=xd[i-1]+','+yd[i-1]+','+yd[i];
+    const key2a=xd[i-1]+','+yd[i-1];
+    const key2b=yd[i-1]+','+yd[i];
+    const key1=yd[i-1];
+    c[key3]=(c[key3]||0)+1;
+    c[key2a]=(c[key2a]||0)+1;
+    c[key2b]=(c[key2b]||0)+1;
+    c[key1]=(c[key1]||0)+1;
     tot++;
   }
   let te=0;
@@ -504,7 +548,8 @@ function transferEntropy(xs,ys,bins,k){
     const py=(c[yd[i-1]]||0)/tot;
     if(pj>0&&pp>0&&pc>0&&py>0) te+=pj*Math.log2((pj/pp)/(pc/py));
   }
-  return Math.min(Math.abs(te)*20,1);
+  te=Math.abs(te)/tot;
+  return Math.min(te*100,1);
 }
 
 function crossDiff(vals){
