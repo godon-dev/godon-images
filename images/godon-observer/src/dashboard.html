@@ -121,6 +121,7 @@ nav button:hover{color:#c9d1d9}
 <button data-view="trajectory">trajectory</button>
 <button data-view="heartbeat">heartbeat</button>
 <button data-view="guardrails">guardrails</button>
+<button data-view="interference">interference</button>
 </nav>
 <div class="summary" id="summary"></div>
 <div class="content" id="content"></div>
@@ -145,18 +146,22 @@ const DEMO_CONFIG={objectives:[
 const DEMO_TRIALS=(function(){
   const params=['co2_injection','heating_setpoints','irrigation','light_intensity','shading','vent_openings'];
   const out=[];
+  const choreoId='demo-choreo-001';
   for(let i=0;i<100;i++){
     const p={};params.forEach(k=>{p[k]=+(Math.random()*10).toFixed(2)});
     const h=Math.floor(i/6),m=i%6;
     const max_temp=+(33+Math.random()*12).toFixed(1);
     const max_humidity=+(0.78+Math.random()*0.2).toFixed(3);
     const max_co2=+(1000+Math.random()*700).toFixed(0);
+    const attrs={guardrails:JSON.stringify({max_temp:{value:max_temp,hard_limit:40,violated:max_temp>40},max_humidity:{value:max_humidity,hard_limit:0.9,violated:max_humidity>0.9},max_co2:{value:+max_co2,hard_limit:1500,violated:+max_co2>1500}})};
+    if(i>=20&&i<25){attrs.phase='observe_only';attrs.choreography_id=choreoId;attrs.choreography_phase_idx=2}
+    if(i>=26&&i<31){attrs.phase='observe_only';attrs.choreography_id=choreoId;attrs.choreography_phase_idx=5}
     out.push({
       number:i,state:'COMPLETE',
       datetime_start:'2026-04-17 '+(20+h).toString().padStart(2,'0')+':'+m+'0:00',
       params:p,
       values:[+(0.1+Math.random()*0.5).toFixed(4),+(Math.random()*50).toFixed(4),+(Math.random()*15).toFixed(4)],
-      user_attrs:{guardrails:JSON.stringify({max_temp:{value:max_temp,hard_limit:40,violated:max_temp>40},max_humidity:{value:max_humidity,hard_limit:0.9,violated:max_humidity>0.9},max_co2:{value:+max_co2,hard_limit:1500,violated:+max_co2>1500}})}
+      user_attrs:attrs
     });
   }
   return out;
@@ -1231,6 +1236,7 @@ function renderView(){
   else if(currentView==='trajectory') renderTrajectory();
   else if(currentView==='heartbeat') renderHeartbeat();
   else if(currentView==='guardrails') renderGuardrails();
+  else if(currentView==='interference') renderInterference();
 }
 
 function renderHeatmap(){
@@ -1277,6 +1283,9 @@ function renderHeatmap(){
     .attr('width',cellW-2).attr('height',objCellH-2)
     .attr('fill',d=>qColor(d.q))
     .attr('rx',2)
+    .attr('stroke',d=>d.t.user_attrs&&d.t.user_attrs.phase==='observe_only'?'#58a6ff':null)
+    .attr('stroke-width',d=>d.t.user_attrs&&d.t.user_attrs.phase==='observe_only'?2:null)
+    .attr('stroke-dasharray',d=>d.t.user_attrs&&d.t.user_attrs.phase==='observe_only'?'3,2':null)
     .on('mouseenter',function(event,d){
       d3.select(this).attr('stroke','#fff').attr('stroke-width',2);
       const t=d.t;
@@ -1607,6 +1616,16 @@ function renderConvergence(){
   const svg=el.append('svg').attr('width',900).attr('height',400);
   const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
 
+  const obsTrials=trials.map(t=>t.user_attrs&&t.user_attrs.phase==='observe_only');
+  if(obsTrials.some(v=>v)){
+    const pg=svg.append('g').attr('transform','translate('+margin.left+',5)');
+    obsTrials.forEach((isObs,i)=>{
+      if(isObs) pg.append('rect').attr('x',x(i)).attr('y',0).attr('width',Math.max(1,x(1)-x(0)-1)).attr('height',14)
+        .attr('fill','#58a6ff').attr('opacity',0.4).attr('rx',1);
+    });
+    pg.append('text').attr('x',-5).attr('y',11).attr('text-anchor','end').attr('fill','#58a6ff').style('font','8px monospace').text('obs');
+  }
+
   const x=d3.scaleLinear().domain([0,trials.length-1]).range([0,width]);
   g.append('g').attr('transform','translate(0,'+height+')').call(d3.axisBottom(x).ticks(10).tickFormat(d=>'#'+(d+1)))
     .selectAll('text').attr('fill','#8b949e').style('font','9px monospace');
@@ -1816,6 +1835,100 @@ function renderTrajectory(){
   g.append('text').attr('x',5).attr('y',fullHeight/2)
     .attr('fill','#484f58').style('font','10px monospace')
     .attr('transform','rotate(-90,5,'+fullHeight/2+')').text('PC2: '+topComponents(pc2));
+}
+
+function renderInterference(){
+  const el=d3.select('#content');
+  const objs=breederConfig.objectives||[];
+  const obsTrials=trials.filter(t=>t.user_attrs&&t.user_attrs.phase==='observe_only');
+  const activeTrials=trials.filter(t=>!t.user_attrs||t.user_attrs.phase!=='observe_only');
+
+  if(!obsTrials.length){
+    el.html('<div class="info">no interference choreography data — observe-only trials will appear here when a choreography runs</div>');
+    return;
+  }
+
+  const choreoIds=[...new Set(obsTrials.map(t=>t.user_attrs.choreography_id||'unknown'))];
+
+  el.append('div').attr('class','legend').html(
+    '<span><div class="dot" style="background:#3fb950"></div>active trials</span>'+
+    '<span><div class="dot" style="background:#58a6ff"></div>observe-only</span>'+
+    '<span>choreographies: '+choreoIds.length+'</span>'+
+    '<span>observe trials: '+obsTrials.length+'</span>'
+  );
+
+  const margin={top:40,right:80,bottom:40,left:60};
+  const width=900-margin.left-margin.right;
+  const height=350-margin.top-margin.bottom;
+
+  const svg=el.append('svg').attr('width',900).attr('height',350);
+  const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
+
+  const x=d3.scaleLinear().domain([0,trials.length-1]).range([0,width]);
+  g.append('g').attr('transform','translate(0,'+height+')').call(d3.axisBottom(x).ticks(10).tickFormat(d=>'#'+(d+1)))
+    .selectAll('text').attr('fill','#8b949e').style('font','9px monospace');
+  g.selectAll('.domain').attr('stroke','#30363d');
+  g.selectAll('.tick line').attr('stroke','#30363d');
+
+  const y=d3.scaleLinear().domain([0,1]).range([height,0]);
+  g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.0%')))
+    .selectAll('text').attr('fill','#8b949e').style('font','9px monospace');
+  g.append('text').attr('x',-height/2).attr('y',-45).attr('text-anchor','middle')
+    .attr('fill','#8b949e').style('font','10px monospace').attr('transform','rotate(-90)').text('composite quality');
+
+  trials.forEach((t,i)=>{
+    const q=trialQuality(t);
+    const isObs=t.user_attrs&&t.user_attrs.phase==='observe_only';
+    const phaseIdx=t.user_attrs?+(t.user_attrs.choreography_phase_idx||0):0;
+
+    if(isObs){
+      g.append('rect').attr('x',x(i)-2).attr('y',0).attr('width',4).attr('height',height)
+        .attr('fill','#58a6ff').attr('opacity',0.07);
+    }
+
+    g.append('circle')
+      .attr('cx',x(i)).attr('cy',y(q)).attr('r',isObs?4:3)
+      .attr('fill',isObs?'none':'#3fb950')
+      .attr('stroke',isObs?'#58a6ff':null)
+      .attr('stroke-width',isObs?2:null)
+      .attr('opacity',0.8)
+      .on('mouseenter',function(){
+        d3.select(this).attr('r',6);
+        let html='<b>T'+t.number+'</b> '+(isObs?'<span style="color:#58a6ff">[observe-only]</span>':'[active]')+'<br>';
+        html+='quality: '+q.toFixed(3)+'<br>';
+        objs.forEach((o,oi)=>{const v=trialValue(t,oi);html+=o.name+': '+(v!==null?v.toFixed(4):'-')+'<br>'});
+        if(isObs) html+='<br>choreography: '+(t.user_attrs.choreography_id||'?').substring(0,8)+'.. phase: '+phaseIdx;
+        showTip(html,d3.event.clientX,d3.event.clientY);
+      })
+      .on('mouseleave',function(){d3.select(this).attr('r',isObs?4:3);hideTip()});
+  });
+
+  const activeQ=activeTrials.map(trialQuality);
+  const obsQ=obsTrials.map(trialQuality);
+  const activeMean=activeQ.length?d3.mean(activeQ):0;
+  const obsMean=obsQ.length?d3.mean(obsQ):0;
+
+  if(activeQ.length){
+    g.append('line').attr('x1',0).attr('y1',y(activeMean)).attr('x2',width).attr('y2',y(activeMean))
+      .attr('stroke','#3fb950').attr('stroke-width',1).attr('stroke-dasharray','6,3').attr('opacity',0.6);
+    g.append('text').attr('x',width+5).attr('y',y(activeMean)+3).attr('fill','#3fb950').style('font','8px monospace').text('active μ');
+  }
+  if(obsQ.length){
+    g.append('line').attr('x1',0).attr('y1',y(obsMean)).attr('x2',width).attr('y2',y(obsMean))
+      .attr('stroke','#58a6ff').attr('stroke-width',1).attr('stroke-dasharray','6,3').attr('opacity',0.6);
+    g.append('text').attr('x',width+5).attr('y',y(obsMean)+3).attr('fill','#58a6ff').style('font','8px monospace').text('obs μ');
+  }
+
+  const statsEl=el.append('div').style('margin-top','16px').style('display','grid').style('grid-template-columns','1fr 1fr 1fr').style('gap','12px');
+
+  const shift=activeMean>0?((obsMean-activeMean)/activeMean*100).toFixed(1):'—';
+  const activeStd=activeQ.length?d3.deviation(activeQ):0;
+  const obsStd=obsQ.length?d3.deviation(obsQ):0;
+  const varianceRatio=activeStd>0?(obsStd/activeStd).toFixed(2):'—';
+
+  statsEl.append('div').attr('class','info').html('<b>quality shift</b><br>'+(obsMean-activeMean).toFixed(4)+'<br><span style="color:#8b949e">'+shift+'%</span>');
+  statsEl.append('div').attr('class','info').html('<b>stability change</b><br>σ active: '+(activeStd||0).toFixed(4)+'<br>σ observe: '+(obsStd||0).toFixed(4)+'<br><span style="color:#8b949e">ratio: '+varianceRatio+'</span>');
+  statsEl.append('div').attr('class','info').html('<b>observe-only trials</b><br>'+obsTrials.length+' / '+trials.length+' total<br><span style="color:#8b949e">'+choreoIds.length+' choreographie(s)</span>');
 }
 
 function renderHeartbeat(){
