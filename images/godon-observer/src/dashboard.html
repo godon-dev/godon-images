@@ -121,7 +121,6 @@ nav button:hover{color:#c9d1d9}
 <button data-view="trajectory">trajectory</button>
 <button data-view="heartbeat">heartbeat</button>
 <button data-view="guardrails">guardrails</button>
-<button data-view="interference">interference</button>
 </nav>
 <div class="summary" id="summary"></div>
 <div class="content" id="content"></div>
@@ -453,6 +452,25 @@ async function loadCrossData(ids){
         b.trials=allQ[idx].map((q,i)=>({number:i,state:'COMPLETE',datetime_start:new Date(allT[idx][i]*1000).toISOString(),params:{},values:[q],user_attrs:{}}));
         b.trialCount=b.trials.length;
       });
+      const choreoId='demo-cross-choreo-001';
+      couples.forEach(([ai,bi])=>{
+        if(bi>=breeders.length) return;
+        for(let i=15;i<22;i++){
+          if(breeders[bi].trials[i]){
+            breeders[bi].trials[i].user_attrs={phase:'observe_only',choreography_id:choreoId,choreography_phase_idx:2};
+            breeders[bi].trials[i].values[0]=Math.min(1,breeders[bi].trials[i].values[0]*1.35);
+          }
+        }
+        for(let i=35;i<42;i++){
+          if(breeders[ai].trials[i]){
+            breeders[ai].trials[i].user_attrs={phase:'observe_only',choreography_id:choreoId,choreography_phase_idx:5};
+            breeders[ai].trials[i].values[0]=Math.min(1,breeders[ai].trials[i].values[0]*1.25);
+          }
+        }
+      });
+      breeders.forEach(b=>{
+        b.qualities=b.trials.map(t=>t.values[0]);
+      });
     }
     crossData=breeders;
     status('cross-examining '+breeders.length+' breeders');
@@ -463,154 +481,71 @@ async function loadCrossData(ids){
   }
 }
 
-function crossCorrelate(xs,ys,maxLag){
-  const n=Math.min(xs.length,ys.length);
-  const ax=xs.slice(0,n),ay=ys.slice(0,n);
-  const mx=d3.mean(ax),my=d3.mean(ay);
-  const sx=d3.deviation(ax)||1,sy=d3.deviation(ay)||1;
-  const results=[];
-  for(let lag=-maxLag;lag<=maxLag;lag++){
-    let sum=0,count=0;
-    for(let i=0;i<n;i++){const j=i+lag;if(j>=0&&j<n){sum+=(ax[i]-mx)*(ay[j]-my);count++}}
-    results.push({lag,corr:count?sum/count/(sx*sy):0});
-  }
-  return results;
-}
-
-function grangerF(xs,ys,order){
-  const n=Math.min(xs.length,ys.length);
-  if(n<order*4) return 0;
-  const x=xs.slice(0,n),y=ys.slice(0,n);
-  function olsPred(target,regs,start){
-    const m=regs.length;
-    const nn=target.length-start;
-    let rss=0;
-    const XtX=Array.from({length:m},()=>Array(m).fill(0));
-    const Xty=Array(m).fill(0);
-    for(let i=0;i<nn;i++){
-      for(let a=0;a<m;a++){
-        Xty[a]+=regs[a][start+i]*target[start+i];
-        for(let b=0;b<m;b++) XtX[a][b]+=regs[a][start+i]*regs[b][start+i];
-      }
-    }
-    const coefs=Array(m).fill(0);
-    for(let iter=0;iter<3;iter++){
-      for(let a=0;a<m;a++){
-        let dot=Xty[a];
-        for(let b=0;b<m;b++) if(b!==a) dot-=XtX[a][b]*coefs[b];
-        coefs[a]=XtX[a][a]>0?dot/XtX[a][a]:0;
-      }
-    }
-    for(let i=0;i<nn;i++){
-      let p=0;for(let a=0;a<m;a++) p+=coefs[a]*regs[a][start+i];
-      rss+=(target[start+i]-p)**2;
-    }
-    return rss;
-  }
-  const start=order;
-  const yTarget=y.slice(start);
-  const yRegs=[];
-  for(let k=0;k<order;k++) yRegs.push(y.slice(k,y.length-order+k));
-  const rssR=olsPred(yTarget,yRegs,0);
-  const allRegs=[...yRegs];
-  for(let k=0;k<order;k++) allRegs.push(x.slice(k,x.length-order+k));
-  const rssU=olsPred(yTarget,allRegs,0);
-  if(rssU<=0||rssR<=rssU) return 0;
-  const df1=order,df2=n-2*order-1;
-  if(df2<=0) return 0;
-  const F=((rssR-rssU)/df1)/(rssU/df2);
-  return Math.min(F/10,1);
-}
-
-function transferEntropy(xs,ys,bins,k){
-  const n=Math.min(xs.length,ys.length);
-  if(n<k*6) return 0;
-  function teCalc(ax,ay,b,kk){
-    const nn=ax.length;
-    function qdisc(arr,bb){
-      const idx=arr.map((v,i)=>({v,i}));
-      idx.sort((a,b)=>a.v-b.v);
-      const out=new Array(arr.length);
-      for(let i=0;i<arr.length;i++){
-        out[idx[i].i]=Math.min(Math.floor(i*bb/arr.length),bb-1);
-      }
-      return out;
-    }
-    const xd=qdisc(ax,b),yd=qdisc(ay,b);
-    const c={};
-    for(let i=kk;i<nn;i++){
-      const k3=xd[i-kk]+','+yd[i-kk]+','+yd[i];
-      const k2a=xd[i-kk]+','+yd[i-kk];
-      const k2b=yd[i-kk]+','+yd[i];
-      const k1=yd[i-kk];
-      c[k3]=(c[k3]||0)+1;c[k2a]=(c[k2a]||0)+1;c[k2b]=(c[k2b]||0)+1;c[k1]=(c[k1]||0)+1;
-    }
-    let te=0;
-    for(let i=kk;i<nn;i++){
-      const pj=(c[xd[i-kk]+','+yd[i-kk]+','+yd[i]]||0)/(nn-kk);
-      const pp=(c[xd[i-kk]+','+yd[i-kk]]||0)/(nn-kk);
-      const pc=(c[yd[i-kk]+','+yd[i]]||0)/(nn-kk);
-      const py=(c[yd[i-kk]]||0)/(nn-kk);
-      if(pj>0&&pp>0&&pc>0&&py>0) te+=pj*Math.log2((pj/pp)/(pc/py));
-    }
-    return Math.abs(te)/(nn-kk);
-  }
-  const ax=xs.slice(0,n),ay=ys.slice(0,n);
-  const realTe=teCalc(ax,ay,3,k);
-  let above=0;
-  const nShuf=20;
-  for(let s=0;s<nShuf;s++){
-    const sy=[...ay];
-    for(let i=sy.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[sy[i],sy[j]]=[sy[j],sy[i]]}
-    if(teCalc(ax,sy,3,k)>=realTe) above++;
-  }
-  const pVal=above/nShuf;
-  return Math.max(0,1-pVal*2);
-}
-
-function crossDiff(vals){
-  const r=[];
-  for(let i=1;i<vals.length;i++) r.push(vals[i]-vals[i-1]);
-  return r;
-}
-
-function crossPearsonR(xs,ys){
-  const n=xs.length,mx=d3.mean(xs),my=d3.mean(ys);
-  let num=0,dx=0,dy=0;
-  for(let i=0;i<n;i++){num+=(xs[i]-mx)*(ys[i]-my);dx+=(xs[i]-mx)**2;dy+=(ys[i]-my)**2}
-  const d=Math.sqrt(dx*dy);return d?num/d:0;
-}
-
 const crossTierColor=t=>t==='high'?'#3fb950':t==='medium'?'#d29922':'#58a6ff';
 const crossTierBg=t=>t==='high'?'rgba(63,185,80,0.15)':t==='medium'?'rgba(210,153,34,0.12)':'rgba(88,166,255,0.08)';
 
+function crossQ(t){
+  if(breederConfig) return trialQuality(t);
+  if(t.values&&t.values[0]!=null) return Math.max(0,Math.min(1,t.values[0]));
+  return 0;
+}
+
 function crossRunAnalysis(){
-  const qs=crossData.map(b=>b.qualities);
   const results={pairs:[],overall:{high:0,medium:0,low:0}};
+
   for(let i=0;i<crossData.length;i++){
     for(let j=i+1;j<crossData.length;j++){
-      const n=Math.min(qs[i].length,qs[j].length);
-      if(n<6) continue;
-      const a=qs[i].slice(0,n),b=qs[j].slice(0,n);
-      const da=crossDiff(a),db=crossDiff(b);
-      const cc=crossCorrelate(da,db,Math.floor(n/4));
-      const maxCC=d3.max(cc,d=>Math.abs(d.corr));
-      const bestLag=cc.reduce((best,d)=>Math.abs(d.corr)>Math.abs(best.corr)?d:best,{lag:0,corr:0});
-      const gc=grangerF(da,db,3),gcR=grangerF(db,da,3);
-      const te=transferEntropy(da,db,8,2),teR=transferEntropy(db,da,8,2);
-      const methods=[
-        {name:'pattern match',value:maxCC,threshold:0.3,signal:maxCC>=0.3},
-        {name:'predictive link \u2192',value:gc,threshold:0.1,signal:gc>=0.1},
-        {name:'predictive link \u2190',value:gcR,threshold:0.1,signal:gcR>=0.1},
-        {name:'info flow \u2192',value:te,threshold:0.5,signal:te>=0.5},
-        {name:'info flow \u2190',value:teR,threshold:0.5,signal:teR>=0.5},
-      ];
-      const sigCount=methods.filter(m=>m.signal).length;
-      let tier='low';if(sigCount>=4)tier='high';else if(sigCount>=2)tier='medium';
-      results.pairs.push({a:crossData[i].name,b:crossData[j].name,idxA:i,idxB:j,methods,tier,sigCount,
-        crossCorr:cc,bestLag,qa:a,qb:b,
-        timesA:crossData[i].times.slice(0,n),timesB:crossData[j].times.slice(0,n)});
-      results.overall[tier]++;
+      const a=crossData[i],b=crossData[j];
+      const pair={a:a.name,b:b.name,idxA:i,idxB:j,methods:[],tier:'low',sigCount:0};
+
+      const aObs=a.trials.filter(t=>t.user_attrs&&t.user_attrs.phase==='observe_only');
+      const bObs=b.trials.filter(t=>t.user_attrs&&t.user_attrs.phase==='observe_only');
+
+      if(aObs.length&&bObs.length){
+        const aAct=a.trials.filter(t=>!t.user_attrs||t.user_attrs.phase!=='observe_only');
+        const bAct=b.trials.filter(t=>!t.user_attrs||t.user_attrs.phase!=='observe_only');
+
+        const aActQ=aAct.map(t=>crossQ(t));
+        const aObsQ=aObs.map(t=>crossQ(t));
+        const bActQ=bAct.map(t=>crossQ(t));
+        const bObsQ=bObs.map(t=>crossQ(t));
+
+        const aActMean=aActQ.length?d3.mean(aActQ):0;
+        const aObsMean=aObsQ.length?d3.mean(aObsQ):0;
+        const bActMean=bActQ.length?d3.mean(bActQ):0;
+        const bObsMean=bObsQ.length?d3.mean(bObsQ):0;
+
+        const shiftA=aActMean>0?Math.abs((aObsMean-aActMean)/aActMean):0;
+        const shiftB=bActMean>0?Math.abs((bObsMean-bActMean)/bActMean):0;
+
+        const aToB=shiftB;
+        const bToA=shiftA;
+        const maxShift=Math.max(aToB,bToA);
+
+        pair.methods=[
+          {name:'A paused \u2192 B shift',value:aToB,signal:aToB>0.1},
+          {name:'B paused \u2192 A shift',value:bToA,signal:bToA>0.1},
+        ];
+        pair.sigCount=pair.methods.filter(m=>m.signal).length;
+        pair.shiftA=shiftA;
+        pair.shiftB=shiftB;
+        pair.maxShift=maxShift;
+        pair.aActMean=aActMean;
+        pair.aObsMean=aObsMean;
+        pair.bActMean=bActMean;
+        pair.bObsMean=bObsMean;
+        pair.aObsCount=aObs.length;
+        pair.bObsCount=bObs.length;
+        if(maxShift>=0.3)pair.tier='high';
+        else if(maxShift>=0.1)pair.tier='medium';
+        pair.hasChoreography=true;
+      } else {
+        pair.methods=[{name:'no choreography data',value:0,signal:false}];
+        pair.hasChoreography=false;
+      }
+
+      results.pairs.push(pair);
+      results.overall[pair.tier]++;
     }
   }
   return results;
@@ -630,23 +565,24 @@ function renderCross(){
 
   const analysis=crossRunAnalysis();
 
-  if(!analysis.pairs.length){
-    el.append('div').attr('class','info').text('not enough trials for cross-examination (need 6+ per pair)');
-    return;
-  }
+  const hasAnyChoreography=analysis.pairs.some(p=>p.hasChoreography);
 
   const tabs=el.append('div').attr('class','cross-tabs');
   tabs.append('button').classed('active',crossView==='ranked').text('ranked').on('click',()=>{crossView='ranked';renderCross()});
   tabs.append('button').classed('active',crossView==='matrix').text('matrix').on('click',()=>{crossView='matrix';renderCross()});
   tabs.append('button').classed('active',crossView==='causality').text('causality').on('click',()=>{crossView='causality';renderCross()});
 
-  const leg=el.append('div').attr('class','legend').style('margin-bottom','8px');
-  leg.append('span').html('<div class="dot" style="background:#3fb950"></div>high');
-  leg.append('span').html('<div class="dot" style="background:#d29922"></div>medium');
-  leg.append('span').html('<div class="dot" style="background:#58a6ff"></div>low');
+  if(!hasAnyChoreography){
+    el.append('div').attr('class','info').style('margin-bottom','8px').text('no interference choreography data — run a choreography to see coupling measurements. showing pairs without shift data.');
+  } else {
+    const leg=el.append('div').attr('class','legend').style('margin-bottom','8px');
+    leg.append('span').html('<div class="dot" style="background:#3fb950"></div>strong');
+    leg.append('span').html('<div class="dot" style="background:#d29922"></div>moderate');
+    leg.append('span').html('<div class="dot" style="background:#58a6ff"></div>weak');
 
-  const sum=el.append('div').style('margin-bottom','10px').style('font-size','10px').style('color','#6e7681');
-  sum.text(analysis.pairs.length+' pairs: '+analysis.overall.high+' high, '+analysis.overall.medium+' medium, '+analysis.overall.low+' low');
+    const sum=el.append('div').style('margin-bottom','10px').style('font-size','10px').style('color','#6e7681');
+    sum.text(analysis.pairs.length+' pairs: '+analysis.overall.high+' strong, '+analysis.overall.medium+' moderate, '+analysis.overall.low+' weak');
+  }
 
   if(crossView==='ranked') renderCrossRanked(el,analysis);
   else if(crossView==='matrix') renderCrossMatrix(el,analysis);
@@ -657,23 +593,18 @@ function renderCross(){
 
 function renderCrossRanked(el,analysis){
   const ranked=analysis.pairs.map(pair=>{
-    const fwdS=d3.mean([pair.methods[1],pair.methods[3]],m=>m.value);
-    const revS=d3.mean([pair.methods[2],pair.methods[4]],m=>m.value);
-    const maxS=Math.max(fwdS,revS);
-    const tierW=pair.tier==='high'?3:pair.tier==='medium'?2:1;
-    const bestDir=fwdS>=revS?pair.a+'\u2192'+pair.b:pair.b+'\u2192'+pair.a;
-    return{pair,score:maxS*tierW+pair.sigCount*0.1,maxS,bestDir};
+    const bestDir=pair.hasChoreography?(pair.shiftB>=pair.shiftA?pair.a+'\u2192'+pair.b:pair.b+'\u2192'+pair.a):'\u2014';
+    return{pair,score:pair.hasChoreography?pair.maxShift:0,bestDir};
   }).sort((a,b)=>b.score-a.score);
   const maxScore=d3.max(ranked,d=>d.score)||1;
 
   const cols=[
     {key:'#',w:'30px',field:null},
     {key:'pair',w:'200px',field:'name'},
-    {key:'strength',w:'160px',field:'score'},
-    {key:'tests',w:'45px',field:'sig'},
+    {key:'magnitude',w:'160px',field:'score'},
     {key:'certainty',w:'60px',field:'tier'},
     {key:'direction',w:'140px',field:'dir'},
-    {key:'evidence',w:'80px',field:null},
+    {key:'detail',w:'120px',field:null},
   ];
 
   const hdr=el.append('div').attr('class','cross-ranked-header');
@@ -695,9 +626,7 @@ function renderCrossRanked(el,analysis){
     return items.slice().sort((a,b)=>{
       if(crossSort==='name') return crossSortDir*(a.pair.a+' '+a.pair.b).localeCompare(b.pair.a+' '+b.pair.b);
       if(crossSort==='score') return crossSortDir*(a.score-b.score);
-      if(crossSort==='sig') return crossSortDir*(a.pair.sigCount-b.pair.sigCount);
       if(crossSort==='tier'){const tw=t=>t==='high'?3:t==='medium'?2:1;return crossSortDir*(tw(a.pair.tier)-tw(b.pair.tier))}
-      if(crossSort==='dir') return crossSortDir*(a.maxS-b.maxS);
       return 0;
     });
   }
@@ -710,16 +639,15 @@ function renderCrossRanked(el,analysis){
       .style('font','11px monospace').style('color','#c9d1d9').style('flex-shrink','0').text(p.a+' \u00d7 '+p.b);
     const bar=row.append('span').style('width','160px').style('height','6px').style('background','#21262d')
       .style('border-radius','3px').style('overflow','hidden').style('flex-shrink','0');
-    bar.append('span').style('display','block').style('height','100%')
-      .style('width',(r.score/maxScore*100)+'%').style('background',crossTierColor(p.tier)).style('border-radius','3px');
-    row.append('span').style('width','45px').style('text-align','right').style('font','9px monospace')
-      .style('color','#6e7681').style('flex-shrink','0').text(p.sigCount+'/5');
-    row.append('span').style('width','60px').style('font','9px monospace').style('color',crossTierColor(p.tier)).style('flex-shrink','0').text(p.tier);
+    if(p.hasChoreography){
+      bar.append('span').style('display','block').style('height','100%')
+        .style('width',(r.score/maxScore*100)+'%').style('background',crossTierColor(p.tier)).style('border-radius','3px');
+    }
+    row.append('span').style('width','60px').style('font','9px monospace').style('color',crossTierColor(p.tier)).style('flex-shrink','0').text(p.hasChoreography?p.tier:'\u2014');
     row.append('span').style('width','140px').style('font','9px monospace').style('color','#8b949e').style('flex-shrink','0')
-      .text(r.bestDir+' '+(r.maxS*100).toFixed(0)+'%');
-    const dots=row.append('span').style('display','flex').style('gap','3px').style('flex-shrink','0');
-    p.methods.forEach(m=>{dots.append('span').style('width','5px').style('height','5px').style('border-radius','50%')
-      .style('background',m.signal?'#3fb950':'#30363d')});
+      .text(p.hasChoreography?r.bestDir+' '+(r.score*100).toFixed(0)+'%':'no choreography');
+    row.append('span').style('width','120px').style('font','9px monospace').style('color','#6e7681').style('flex-shrink','0')
+      .text(p.hasChoreography?'obs: '+p.aObsCount+'/'+p.bObsCount:'');
     row.on('click',()=>showCrossPairDetail(p));
   });
 }
@@ -745,34 +673,36 @@ function renderCrossMatrix(el,analysis){
       if(i===j){svg.append('rect').attr('x',cx+2).attr('y',cy+2).attr('width',cellSize-4).attr('height',cellSize-4).attr('fill','#0d1117').attr('rx',3).attr('stroke','#21262d');continue}
       const a=names[i],b=names[j];
       const pair=pm[a+'::'+b]||pm[b+'::'+a];
-      if(pair){
-        const fwd=names[i]===pair.a&&names[j]===pair.b;
-        const dm=fwd?[pair.methods[0],pair.methods[1],pair.methods[3]]:[pair.methods[0],pair.methods[2],pair.methods[4]];
-        const ds=dm.filter(m=>m.signal).length;
-        const dv=d3.mean(dm,m=>m.value);
-        let dt='low';if(ds>=3)dt='high';else if(ds>=2)dt='medium';
-        const g=svg.append('g').style('cursor','pointer');
+      if(!pair){continue}
+      const g=svg.append('g').style('cursor','pointer');
+      if(pair.hasChoreography){
+        const isA=names[i]===pair.a;
+        const shift=isA?pair.shiftA:pair.shiftB;
+        const obsCount=isA?pair.aObsCount:pair.bObsCount;
         g.append('rect').attr('x',cx+2).attr('y',cy+2).attr('width',cellSize-4).attr('height',cellSize-4)
-          .attr('fill',crossTierBg(dt)).attr('rx',3).attr('stroke',crossTierColor(dt)).attr('stroke-width',1.5);
-        g.append('text').attr('x',cx+cellSize/2).attr('y',cy+16).attr('text-anchor','middle')
-          .attr('fill',crossTierColor(dt)).style('font','bold 10px monospace').text(dt+' '+(fwd?'\u2192':'\u2190'));
-        const dotY=cy+30,ds2=14,dx=cx+cellSize/2-(dm.length*ds2)/2+ds2/2;
-        dm.forEach((m,mi)=>{g.append('circle').attr('cx',dx+mi*ds2).attr('cy',dotY).attr('r',3).attr('fill',m.signal?'#3fb950':'#30363d')});
-        g.append('text').attr('x',cx+cellSize/2).attr('y',cy+48).attr('text-anchor','middle')
-          .attr('fill','#6e7681').style('font','8px monospace').text(ds+'/'+dm.length);
-        g.append('text').attr('x',cx+cellSize/2).attr('y',cy+66).attr('text-anchor','middle')
-          .attr('fill','#484f58').style('font','8px monospace').text((dv*100).toFixed(0)+'%');
+          .attr('fill',crossTierBg(pair.tier)).attr('rx',3).attr('stroke',crossTierColor(pair.tier)).attr('stroke-width',1.5);
+        g.append('text').attr('x',cx+cellSize/2).attr('y',cy+18).attr('text-anchor','middle')
+          .attr('fill',crossTierColor(pair.tier)).style('font','bold 10px monospace').text((shift*100).toFixed(0)+'%');
+        g.append('text').attr('x',cx+cellSize/2).attr('y',cy+36).attr('text-anchor','middle')
+          .attr('fill','#6e7681').style('font','8px monospace').text(obsCount+' obs');
+        g.append('text').attr('x',cx+cellSize/2).attr('y',cy+52).attr('text-anchor','middle')
+          .attr('fill','#484f58').style('font','8px monospace').text(pair.tier);
         g.on('click',()=>showCrossPairDetail(pair));
         g.on('mouseenter',function(event){
           d3.select(this).select('rect').attr('stroke-width',2.5);
-          const from=fwd?a:b,to=fwd?b:a;
-          let html='<div class="tt-title">does '+from+' affect '+to+'?</div>';
-          html+='<div class="tt-line">certainty: <span>'+dt+'</span></div>';
-          html+='<div class="tt-line">evidence: <span>'+(dv*100).toFixed(0)+'%</span></div>';
-          html+='<div class="tt-hint">click for detail</div>';
+          const from=isA?pair.a:pair.b,to=isA?pair.b:pair.a;
+          let html='<div class="tt-title">'+from+' paused \u2192 '+to+'</div>';
+          html+='<div class="tt-line">shift: <span>'+(shift*100).toFixed(1)+'%</span></div>';
+          html+='<div class="tt-line">certainty: <span>'+pair.tier+'</span></div>';
           showTip(html,event.clientX,event.clientY);
         })
         .on('mouseleave',function(){d3.select(this).select('rect').attr('stroke-width',1.5);hideTip()});
+      } else {
+        g.append('rect').attr('x',cx+2).attr('y',cy+2).attr('width',cellSize-4).attr('height',cellSize-4)
+          .attr('fill','#0d1117').attr('rx',3).attr('stroke','#21262d').attr('stroke-width',1);
+        g.append('text').attr('x',cx+cellSize/2).attr('y',cy+30).attr('text-anchor','middle')
+          .attr('fill','#484f58').style('font','9px monospace').text('no data');
+        g.on('click',()=>showCrossPairDetail(pair));
       }
     }
   }
@@ -781,12 +711,9 @@ function renderCrossMatrix(el,analysis){
 function renderCrossCausality(el,analysis){
   const edges=[];
   analysis.pairs.forEach(pair=>{
-    const fwdSig=[pair.methods[0],pair.methods[1],pair.methods[3]].filter(m=>m.signal).length;
-    const revSig=[pair.methods[0],pair.methods[2],pair.methods[4]].filter(m=>m.signal).length;
-    const fwdS=d3.mean([pair.methods[0],pair.methods[1],pair.methods[3]],m=>m.value);
-    const revS=d3.mean([pair.methods[0],pair.methods[2],pair.methods[4]],m=>m.value);
-    if(fwdSig>=2) edges.push({from:pair.a,to:pair.b,strength:fwdS,tier:pair.tier,pair});
-    if(revSig>=2) edges.push({from:pair.b,to:pair.a,strength:revS,tier:pair.tier,pair});
+    if(!pair.hasChoreography) return;
+    if(pair.shiftB>0.1) edges.push({from:pair.a,to:pair.b,strength:pair.shiftB,tier:pair.tier,pair});
+    if(pair.shiftA>0.1) edges.push({from:pair.b,to:pair.a,strength:pair.shiftA,tier:pair.tier,pair});
   });
 
   const fromMap={};
@@ -806,7 +733,7 @@ function renderCrossCausality(el,analysis){
     .html('nodes colored by impact: <span style="color:#3fb950">causes interference</span> | <span style="color:#f0883e">affected by interference</span> | <span style="color:#484f58">isolated</span> | hover nodes and edges for detail');
 
   if(!edges.length){
-    el.append('div').attr('class','info').text('no significant causation edges found (need 2+ agreeing tests per direction) \u2014 try the ranked or matrix tabs for all pair results');
+    el.append('div').attr('class','info').text('no significant causation edges found (shift < 10%) \u2014 run a choreography or check the ranked/matrix tabs');
     return;
   }
 
@@ -906,7 +833,7 @@ function renderCrossCausality(el,analysis){
           row.append('span').style('font','8px monospace').style('color',crossTierColor(e.tier)).text((e.strength*100).toFixed(0)+'%');
           row.append('span').style('font','9px monospace').style('color','#c9d1d9').text(e.to);
           row.on('click',()=>showCrossPairDetail(e.pair));
-          row.on('mouseenter',function(ev){showTip('<div class="tt-title">'+e.from+' \u2192 '+e.to+'</div><div class="tt-line">evidence: <span>'+(e.strength*100).toFixed(0)+'%</span></div>',ev.clientX,ev.clientY)})
+          row.on('mouseenter',function(ev){showTip('<div class="tt-title">'+e.from+' \u2192 '+e.to+'</div><div class="tt-line">shift: <span>'+(e.strength*100).toFixed(0)+'%</span></div>',ev.clientX,ev.clientY)})
             .on('mouseleave',hideTip);
         });
       }
@@ -1026,34 +953,46 @@ function showCrossPairDetail(pair){
   const el=d3.select('#crossPairDetail');
   el.html('').classed('show',true);
   const hdr=el.append('div').style('display','flex').style('align-items','center').style('gap','10px').style('margin-bottom','12px');
-  hdr.append('h3').style('margin','0').style('font-size','12px').style('color','#c9d1d9').text(pair.a+' \u00d7 '+pair.b+' \u2014 '+pair.tier);
+  hdr.append('h3').style('margin','0').style('font-size','12px').style('color','#c9d1d9').text(pair.a+' \u00d7 '+pair.b+(pair.hasChoreography?' \u2014 '+pair.tier:''));
   hdr.append('button').attr('class','cross-close-btn').text('close').on('click',()=>{el.classed('show',false);el.html('')});
-  const md=el.append('div').style('margin-bottom','12px');
+
+  if(pair.hasChoreography){
+    const grid=el.append('div').style('display','grid').style('grid-template-columns','1fr 1fr').style('gap','12px');
+    grid.append('div').attr('class','info').html('<b>'+pair.a+' paused</b><br>quality: active '+pair.aActMean.toFixed(3)+' \u2192 observe '+pair.aObsMean.toFixed(3)+'<br>shift: <span style="color:'+(pair.shiftA>0.1?'#f0883e':'#3fb950')+'">'+(pair.shiftA*100).toFixed(1)+'%</span><br>trials: '+pair.aObsCount);
+    grid.append('div').attr('class','info').html('<b>'+pair.b+' paused</b><br>quality: active '+pair.bActMean.toFixed(3)+' \u2192 observe '+pair.bObsMean.toFixed(3)+'<br>shift: <span style="color:'+(pair.shiftB>0.1?'#f0883e':'#3fb950')+'">'+(pair.shiftB*100).toFixed(1)+'%</span><br>trials: '+pair.bObsCount);
+  } else {
+    el.append('div').attr('class','info').text('no choreography data for this pair — run a choreography to measure interference');
+  }
+
   pair.methods.forEach(m=>{
-    const row=md.append('div').attr('class','cross-method-row');
+    const row=el.append('div').attr('class','cross-method-row');
     row.append('span').attr('class','cross-m-dot '+(m.signal?'on':'off'));
-    row.append('span').style('width','130px').style('white-space','nowrap').style('overflow','hidden').style('text-overflow','ellipsis').style('font-size','10px').text(m.name);
+    row.append('span').style('width','180px').style('white-space','nowrap').style('overflow','hidden').style('text-overflow','ellipsis').style('font-size','10px').text(m.name);
     const bar=row.append('span').attr('class','cross-m-bar');
     bar.append('span').style('display','block').style('height','100%').style('width',(m.value*100)+'%')
       .style('background',m.signal?'#3fb950':'#484f58').style('border-radius','1.5px');
     row.append('span').style('width','60px').style('text-align','right').style('font-size','10px').style('color','#6e7681').text((m.value*100).toFixed(1)+'%');
   });
+
+  const aBreeder=crossData[pair.idxA];
+  const bBreeder=crossData[pair.idxB];
   const COLORS=['#58a6ff','#f0883e'];
   const margin={top:20,right:20,bottom:30,left:45};
   const width=Math.min(600,window.innerWidth-160)-margin.left-margin.right;
   const height=180-margin.top-margin.bottom;
   const svg=el.append('svg').attr('width',width+margin.left+margin.right).attr('height',height+margin.top+margin.bottom);
   const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
-  const n=Math.min(pair.qa.length,pair.qb.length);
-  const x=d3.scaleLinear().domain(d3.extent([...pair.timesA.slice(0,n),...pair.timesB.slice(0,n)])).range([0,width]);
+  const n=Math.min(aBreeder.qualities.length,bBreeder.qualities.length);
+  const allTimes=[...aBreeder.times.slice(0,n),...bBreeder.times.slice(0,n)];
+  const x=d3.scaleLinear().domain(d3.extent(allTimes)).range([0,width]);
   const y=d3.scaleLinear().domain([0,1]).range([height,0]);
   g.append('g').attr('transform','translate(0,'+height+')').call(d3.axisBottom(x).ticks(5).tickFormat(d=>{const dt=new Date(d*1000);return dt.getHours().toString().padStart(2,'0')+':'+dt.getMinutes().toString().padStart(2,'0')}))
     .selectAll('text').attr('fill','#6e7681').style('font','9px monospace');
   g.selectAll('.domain').attr('stroke','#30363d');g.selectAll('.tick line').attr('stroke','#30363d');
   g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.0%'))).selectAll('text').attr('fill','#6e7681').style('font','9px monospace');
   [0,1].forEach(idx=>{
-    const q=idx===0?pair.qa:pair.qb;
-    const t=idx===0?pair.timesA:pair.timesB;
+    const q=idx===0?aBreeder.qualities:bBreeder.qualities;
+    const t=idx===0?aBreeder.times:bBreeder.times;
     const line=d3.line().x((_,i)=>x(t[i])).y(d=>y(d)).curve(d3.curveMonotoneX);
     g.append('path').datum(q.slice(0,n)).attr('d',line).attr('fill','none').attr('stroke',COLORS[idx]).attr('stroke-width',1.5).attr('opacity',0.8);
   });
@@ -1062,6 +1001,7 @@ function showCrossPairDetail(pair){
   leg2.append('span').html('<div class="dot" style="background:'+COLORS[1]+'"></div>'+pair.b);
   document.getElementById('crossPairDetail').scrollIntoView({behavior:'smooth',block:'start'});
 }
+
 
 const PR=18,PW=4,PI_R=PR-PW;
 function drawOrb(parent,trialCount){
@@ -1236,7 +1176,6 @@ function renderView(){
   else if(currentView==='trajectory') renderTrajectory();
   else if(currentView==='heartbeat') renderHeartbeat();
   else if(currentView==='guardrails') renderGuardrails();
-  else if(currentView==='interference') renderInterference();
 }
 
 function renderHeatmap(){
@@ -1257,6 +1196,7 @@ function renderHeatmap(){
     '<span><div class="dot" style="background:#3fb950"></div>good</span>'+
     '<span><div class="dot" style="background:#f85149"></div>bad</span>'+
     '<span><div class="dot" style="background:#30363d"></div>missing</span>'+
+    '<span><div class="dot" style="background:#1a3a5c"></div>observe-only</span>'+
     '<span><div class="dot" style="background:none;border:2px dashed #f85149"></div>guardrail violation</span>'+
     '<span><div class="dot" style="background:none;border:2px solid #fff"></div>best trial</span>'
   );
@@ -1281,18 +1221,18 @@ function renderHeatmap(){
     .attr('x',d=>margin.left+d.trial*cellW)
     .attr('y',d=>margin.top+d.obj*objCellH)
     .attr('width',cellW-2).attr('height',objCellH-2)
-    .attr('fill',d=>qColor(d.q))
+    .attr('fill',d=>d.t.user_attrs&&d.t.user_attrs.phase==='observe_only'?'#1a3a5c':qColor(d.q))
     .attr('rx',2)
-    .attr('stroke',d=>d.t.user_attrs&&d.t.user_attrs.phase==='observe_only'?'#58a6ff':null)
-    .attr('stroke-width',d=>d.t.user_attrs&&d.t.user_attrs.phase==='observe_only'?2:null)
-    .attr('stroke-dasharray',d=>d.t.user_attrs&&d.t.user_attrs.phase==='observe_only'?'3,2':null)
     .on('mouseenter',function(event,d){
       d3.select(this).attr('stroke','#fff').attr('stroke-width',2);
       const t=d.t;
-      let html='<b>T'+t.number+'</b> ('+t.datetime_start?.substring(11,19)+')<br>';
+      const isObs=t.user_attrs&&t.user_attrs.phase==='observe_only';
+      let html='<b>T'+t.number+'</b> ('+t.datetime_start?.substring(11,19)+')'+(isObs?' <span style="color:#58a6ff">[observe-only]</span>':'')+'<br>';
       objs.forEach((o,oi)=>{const v=trialValue(t,oi);html+=o.name+': '+(v!==null?v.toFixed(4):'-')+'<br>'});
-      html+='<br><b>params:</b>';
-      Object.entries(t.params).forEach(([k,v])=>{html+='<br>'+k+': '+v.toFixed(3)});
+      if(!isObs){
+        html+='<br><b>params:</b>';
+        Object.entries(t.params).forEach(([k,v])=>{html+='<br>'+k+': '+v.toFixed(3)});
+      }
       const gr=getGuardrailReadings(t);
       if(Object.keys(gr).length){
         html+='<br><br><b>guardrails:</b>';
@@ -1308,7 +1248,7 @@ function renderHeatmap(){
   svg.selectAll('.hm-val').data(cells.filter(d=>d.val!==null&&d.val!==undefined)).join('text')
     .attr('x',d=>margin.left+d.trial*cellW+cellW/2)
     .attr('y',d=>margin.top+d.obj*objCellH+objCellH/2+3)
-    .attr('text-anchor','middle').attr('fill','rgba(0,0,0,0.7)')
+    .attr('text-anchor','middle').attr('fill',d=>d.t.user_attrs&&d.t.user_attrs.phase==='observe_only'?'#58a6ff':'rgba(0,0,0,0.7)')
     .style('font','8px monospace').style('pointer-events','none')
     .text(d=>d.val.toFixed(2));
 
@@ -1387,15 +1327,17 @@ function renderHeatmap(){
 
 function renderSpider(){
   const el=d3.select('#content');
+  const allTrials=trials.filter(t=>!t.user_attrs||t.user_attrs.phase!=='observe_only');
+  if(!allTrials.length){el.html('<div class="info">no active trials (all observe-only)</div>');return}
   const axes=breederConfig.objectives.map((o,i)=>({label:o.name,idx:i}));
   if(axes.length<3){el.html('<div class="info">need 3+ objectives for spider</div>');return}
-  const bestI=bestTrialIdx();
-  const qColors=trials.map(t=>qColor(trialQuality(t)));
+  const bestI=allTrials.reduce((bi,t,i)=>trialQuality(t)>trialQuality(allTrials[bi])?i:bi,0);
+  const qColors=allTrials.map(t=>qColor(trialQuality(t)));
   const size=500,center=size/2,R=200;
   const n=axes.length;
   const angle=d3.scaleLinear().domain([0,n]).range([-Math.PI/2,Math.PI*3/2]);
 
-  const axisMaxes=axes.map(ax=>d3.max(trials,t=>{const v=trialValue(t,ax.idx);return v!==null?Math.abs(v):0})||1);
+  const axisMaxes=axes.map(ax=>d3.max(allTrials,t=>{const v=trialValue(t,ax.idx);return v!==null?Math.abs(v):0})||1);
   const radScale=axes.map((ax,i)=>d3.scaleLinear().domain([0,axisMaxes[i]]).range([0,R]));
 
   el.append('div').attr('class','legend').html(
@@ -1411,34 +1353,34 @@ function renderSpider(){
   const sliderWrap=sliderRow.append('div').style('display','flex').style('flex','1').style('position','relative');
   const trackDiv=sliderWrap.append('div').style('position','absolute').style('top','50%').style('transform','translateY(-50%)')
     .style('width','100%').style('height','8px').style('border-radius','4px').style('overflow','hidden').style('display','flex').style('pointer-events','none');
-  trials.forEach((t,i)=>{
+  allTrials.forEach((t,i)=>{
     trackDiv.append('div').style('flex','1').style('background',qColor(trialQuality(t)));
   });
   sliderWrap.append('div').style('position','absolute')
-    .style('left',(bestI/Math.max(trials.length-1,1)*100)+'%').style('top','calc(50% - 6px)')
+    .style('left',(bestI/Math.max(allTrials.length-1,1)*100)+'%').style('top','calc(50% - 6px)')
     .style('width','2px').style('height','12px').style('background','#fff')
     .style('pointer-events','none').style('z-index','0');
-  trials.forEach((t,i)=>{
+  allTrials.forEach((t,i)=>{
     const gv=checkGuardrails(t);
     if(Object.keys(gv).length){
       sliderWrap.append('div').style('position','absolute')
-        .style('left',(i/Math.max(trials.length-1,1)*100)+'%').style('top',0)
+        .style('left',(i/Math.max(allTrials.length-1,1)*100)+'%').style('top',0)
         .style('width','1px').style('height','100%').style('background','#f85149')
         .style('pointer-events','none').style('z-index','0').style('opacity','0.8');
     }
   });
   const slider=sliderWrap.append('input').attr('type','range')
-    .attr('min',0).attr('max',trials.length-1).attr('value',trials.length-1)
+    .attr('min',0).attr('max',allTrials.length-1).attr('value',allTrials.length-1)
     .attr('class','quality-track')
     .style('width','100%').style('position','relative').style('z-index','1');
-  const info=sliderRow.append('span').attr('class','trial-info').text(trials.length+'/'+trials.length);
+  const info=sliderRow.append('span').attr('class','trial-info').text(allTrials.length+'/'+allTrials.length);
 
   const svgEl=el.append('svg').attr('width',size).attr('height',size+40);
   const g=svgEl.append('g').attr('transform','translate(0,20)');
 
   function draw(){
     const idx=+slider.node().value;
-    info.text((idx+1)+'/'+trials.length);
+    info.text((idx+1)+'/'+allTrials.length);
     g.html('');
 
     for(let ring=1;ring<=4;ring++){
@@ -1471,7 +1413,7 @@ function renderSpider(){
       });
     }
 
-    trials.forEach((t,ti)=>{
+    allTrials.forEach((t,ti)=>{
       if(ti===idx) return;
       const pts=trialPoints(t);
       g.append('polygon').attr('points',pts.map(p=>p.join(',')).join(' '))
@@ -1479,7 +1421,7 @@ function renderSpider(){
         .attr('fill','none').attr('stroke',qColors[ti]).attr('opacity',0.25).attr('stroke-width',1);
     });
 
-    const bestPts=trialPoints(trials[bestI]);
+    const bestPts=trialPoints(allTrials[bestI]);
     g.append('polygon').attr('points',bestPts.map(p=>p.join(',')).join(' '))
       .attr('fill','rgba(63,185,80,0.1)').attr('stroke','#3fb950').attr('stroke-width',2)
       .attr('stroke-dasharray','4,3');
@@ -1488,7 +1430,7 @@ function renderSpider(){
       .attr('text-anchor','middle').attr('fill','#3fb950').style('font','9px monospace')
       .text('best #'+(bestI+1));
 
-    const t=trials[idx];
+    const t=allTrials[idx];
     const pts=trialPoints(t);
     g.append('polygon').attr('points',pts.map(p=>p.join(',')).join(' '))
       .attr('fill',qColors[idx]).attr('fill-opacity',0.2)
@@ -1508,8 +1450,10 @@ function renderSpider(){
 
 function renderParallel(){
   const el=d3.select('#content');
-  const params=Object.keys(trials[0].params);
-  const bestI=bestTrialIdx();
+  const activeTrials=trials.filter(t=>!t.user_attrs||t.user_attrs.phase!=='observe_only');
+  if(!activeTrials.length){el.html('<div class="info">no active trials (all observe-only)</div>');return}
+  const params=Object.keys(activeTrials[0].params);
+  const bestI=activeTrials.reduce((bi,t,i)=>trialQuality(t)>trialQuality(activeTrials[bi])?i:bi,0);
   const margin={top:50,right:30,bottom:50,left:30};
   const axisSpacing=120;
   const width=margin.left+params.length*axisSpacing+margin.right;
@@ -1527,7 +1471,7 @@ function renderParallel(){
   const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
 
   const scales=params.map(p=>{
-    const vals=trials.map(t=>t.params[p]||0);
+    const vals=activeTrials.map(t=>t.params[p]||0);
     return d3.scaleLinear().domain([d3.min(vals),d3.max(vals)]).range([innerH,0]);
   });
 
@@ -1553,7 +1497,7 @@ function renderParallel(){
     }));
   }
 
-  g.selectAll('.pc-line-bg').data(trials.filter((_,i)=>i!==bestI)).join('path')
+  g.selectAll('.pc-line-bg').data(activeTrials.filter((_,i)=>i!==bestI)).join('path')
     .attr('class','pc-line')
     .attr('d',linePath)
     .attr('stroke',d=>qColor(trialQuality(d)))
@@ -1579,11 +1523,11 @@ function renderParallel(){
     .on('mouseleave',function(){d3.select(this).attr('stroke-width',d=>trialQuality(d)>0.7?1.5:1).attr('opacity',0.5);hideTip()});
 
   g.append('path').attr('class','pc-best')
-    .attr('d',linePath(trials[bestI]))
+    .attr('d',linePath(activeTrials[bestI]))
     .attr('fill','none').attr('stroke','#3fb950').attr('stroke-width',3)
     .on('mouseenter',function(event){
       d3.select(this).attr('stroke-width',5);
-      const d=trials[bestI];
+      const d=activeTrials[bestI];
       let html='<b>T'+d.number+' (BEST)</b> ('+d.datetime_start?.substring(11,19)+')<br>';
       html+='<b>objectives:</b>';
       breederConfig.objectives.forEach((o,oi)=>{const v=trialValue(d,oi);html+='<br>'+o.name+': '+(v!==null?v.toFixed(4):'-')});
@@ -1616,6 +1560,8 @@ function renderConvergence(){
   const svg=el.append('svg').attr('width',900).attr('height',400);
   const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
 
+  const x=d3.scaleLinear().domain([0,trials.length-1]).range([0,width]);
+
   const obsTrials=trials.map(t=>t.user_attrs&&t.user_attrs.phase==='observe_only');
   if(obsTrials.some(v=>v)){
     const pg=svg.append('g').attr('transform','translate('+margin.left+',5)');
@@ -1626,7 +1572,6 @@ function renderConvergence(){
     pg.append('text').attr('x',-5).attr('y',11).attr('text-anchor','end').attr('fill','#58a6ff').style('font','8px monospace').text('obs');
   }
 
-  const x=d3.scaleLinear().domain([0,trials.length-1]).range([0,width]);
   g.append('g').attr('transform','translate(0,'+height+')').call(d3.axisBottom(x).ticks(10).tickFormat(d=>'#'+(d+1)))
     .selectAll('text').attr('fill','#8b949e').style('font','9px monospace');
   g.selectAll('.domain').attr('stroke','#30363d');
@@ -1687,7 +1632,9 @@ function renderConvergence(){
 
 function renderTrajectory(){
   const el=d3.select('#content');
-  const params=Object.keys(trials[0].params);
+  const activeTrials=trials.filter(t=>!t.user_attrs||t.user_attrs.phase!=='observe_only');
+  if(!activeTrials.length){el.html('<div class="info">no active trials (all observe-only)</div>');return}
+  const params=Object.keys(activeTrials[0].params);
   if(params.length<2){el.html('<div class="info">need 2+ parameters for trajectory</div>');return}
 
   el.append('div').attr('class','legend').html(
@@ -1705,7 +1652,7 @@ function renderTrajectory(){
   svg.call(zoom);
   const g=svg.append('g');
 
-  const data=trials.map(t=>params.map(p=>t.params[p]||0));
+  const data=activeTrials.map(t=>params.map(p=>t.params[p]||0));
   const n=data.length;
   const d=params.length;
 
@@ -1756,11 +1703,11 @@ function renderTrajectory(){
   g.append('line').attr('x1',0).attr('y1',cy).attr('x2',fullWidth).attr('y2',cy).attr('stroke','#161b22').attr('stroke-width',0.5);
   g.append('line').attr('x1',cx).attr('y1',0).attr('x2',cx).attr('y2',fullHeight).attr('stroke','#161b22').attr('stroke-width',0.5);
 
-  const bestI=bestTrialIdx();
+  const bestI=activeTrials.reduce((bi,t,i)=>trialQuality(t)>trialQuality(activeTrials[bi])?i:bi,0);
   const timeColor=d3.scaleLinear().domain([0,n-1]).range(['#484f58','#3fb950']).interpolate(d3.interpolateRgb);
   proj.forEach((p,i)=>{
-    const q=trialQuality(trials[i]);
-    const gv=checkGuardrails(trials[i]);
+    const q=trialQuality(activeTrials[i]);
+    const gv=checkGuardrails(activeTrials[i]);
     const isBest=i===bestI;
     const tAge=i/(n-1);
     g.append('circle')
@@ -1773,8 +1720,7 @@ function renderTrajectory(){
       .style('cursor','pointer')
       .on('mouseenter',function(event){
         d3.select(this).attr('r',isBest?9:8).attr('opacity',1);
-        const t=trials[i];
-        let html='<b>T'+t.number+'</b> ('+t.datetime_start?.substring(11,19)+')<br>';
+        const t=activeTrials[i];        let html='<b>T'+t.number+'</b> ('+t.datetime_start?.substring(11,19)+')<br>';
         html+='<b>objectives:</b>';
         breederConfig.objectives.forEach((o,oi)=>{const v=trialValue(t,oi);html+='<br>'+o.name+': '+(v!==null?v.toFixed(4):'-')});
         html+='<br><br><b>params:</b>';
@@ -1835,100 +1781,6 @@ function renderTrajectory(){
   g.append('text').attr('x',5).attr('y',fullHeight/2)
     .attr('fill','#484f58').style('font','10px monospace')
     .attr('transform','rotate(-90,5,'+fullHeight/2+')').text('PC2: '+topComponents(pc2));
-}
-
-function renderInterference(){
-  const el=d3.select('#content');
-  const objs=breederConfig.objectives||[];
-  const obsTrials=trials.filter(t=>t.user_attrs&&t.user_attrs.phase==='observe_only');
-  const activeTrials=trials.filter(t=>!t.user_attrs||t.user_attrs.phase!=='observe_only');
-
-  if(!obsTrials.length){
-    el.html('<div class="info">no interference choreography data — observe-only trials will appear here when a choreography runs</div>');
-    return;
-  }
-
-  const choreoIds=[...new Set(obsTrials.map(t=>t.user_attrs.choreography_id||'unknown'))];
-
-  el.append('div').attr('class','legend').html(
-    '<span><div class="dot" style="background:#3fb950"></div>active trials</span>'+
-    '<span><div class="dot" style="background:#58a6ff"></div>observe-only</span>'+
-    '<span>choreographies: '+choreoIds.length+'</span>'+
-    '<span>observe trials: '+obsTrials.length+'</span>'
-  );
-
-  const margin={top:40,right:80,bottom:40,left:60};
-  const width=900-margin.left-margin.right;
-  const height=350-margin.top-margin.bottom;
-
-  const svg=el.append('svg').attr('width',900).attr('height',350);
-  const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
-
-  const x=d3.scaleLinear().domain([0,trials.length-1]).range([0,width]);
-  g.append('g').attr('transform','translate(0,'+height+')').call(d3.axisBottom(x).ticks(10).tickFormat(d=>'#'+(d+1)))
-    .selectAll('text').attr('fill','#8b949e').style('font','9px monospace');
-  g.selectAll('.domain').attr('stroke','#30363d');
-  g.selectAll('.tick line').attr('stroke','#30363d');
-
-  const y=d3.scaleLinear().domain([0,1]).range([height,0]);
-  g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.0%')))
-    .selectAll('text').attr('fill','#8b949e').style('font','9px monospace');
-  g.append('text').attr('x',-height/2).attr('y',-45).attr('text-anchor','middle')
-    .attr('fill','#8b949e').style('font','10px monospace').attr('transform','rotate(-90)').text('composite quality');
-
-  trials.forEach((t,i)=>{
-    const q=trialQuality(t);
-    const isObs=t.user_attrs&&t.user_attrs.phase==='observe_only';
-    const phaseIdx=t.user_attrs?+(t.user_attrs.choreography_phase_idx||0):0;
-
-    if(isObs){
-      g.append('rect').attr('x',x(i)-2).attr('y',0).attr('width',4).attr('height',height)
-        .attr('fill','#58a6ff').attr('opacity',0.07);
-    }
-
-    g.append('circle')
-      .attr('cx',x(i)).attr('cy',y(q)).attr('r',isObs?4:3)
-      .attr('fill',isObs?'none':'#3fb950')
-      .attr('stroke',isObs?'#58a6ff':null)
-      .attr('stroke-width',isObs?2:null)
-      .attr('opacity',0.8)
-      .on('mouseenter',function(){
-        d3.select(this).attr('r',6);
-        let html='<b>T'+t.number+'</b> '+(isObs?'<span style="color:#58a6ff">[observe-only]</span>':'[active]')+'<br>';
-        html+='quality: '+q.toFixed(3)+'<br>';
-        objs.forEach((o,oi)=>{const v=trialValue(t,oi);html+=o.name+': '+(v!==null?v.toFixed(4):'-')+'<br>'});
-        if(isObs) html+='<br>choreography: '+(t.user_attrs.choreography_id||'?').substring(0,8)+'.. phase: '+phaseIdx;
-        showTip(html,d3.event.clientX,d3.event.clientY);
-      })
-      .on('mouseleave',function(){d3.select(this).attr('r',isObs?4:3);hideTip()});
-  });
-
-  const activeQ=activeTrials.map(trialQuality);
-  const obsQ=obsTrials.map(trialQuality);
-  const activeMean=activeQ.length?d3.mean(activeQ):0;
-  const obsMean=obsQ.length?d3.mean(obsQ):0;
-
-  if(activeQ.length){
-    g.append('line').attr('x1',0).attr('y1',y(activeMean)).attr('x2',width).attr('y2',y(activeMean))
-      .attr('stroke','#3fb950').attr('stroke-width',1).attr('stroke-dasharray','6,3').attr('opacity',0.6);
-    g.append('text').attr('x',width+5).attr('y',y(activeMean)+3).attr('fill','#3fb950').style('font','8px monospace').text('active μ');
-  }
-  if(obsQ.length){
-    g.append('line').attr('x1',0).attr('y1',y(obsMean)).attr('x2',width).attr('y2',y(obsMean))
-      .attr('stroke','#58a6ff').attr('stroke-width',1).attr('stroke-dasharray','6,3').attr('opacity',0.6);
-    g.append('text').attr('x',width+5).attr('y',y(obsMean)+3).attr('fill','#58a6ff').style('font','8px monospace').text('obs μ');
-  }
-
-  const statsEl=el.append('div').style('margin-top','16px').style('display','grid').style('grid-template-columns','1fr 1fr 1fr').style('gap','12px');
-
-  const shift=activeMean>0?((obsMean-activeMean)/activeMean*100).toFixed(1):'—';
-  const activeStd=activeQ.length?d3.deviation(activeQ):0;
-  const obsStd=obsQ.length?d3.deviation(obsQ):0;
-  const varianceRatio=activeStd>0?(obsStd/activeStd).toFixed(2):'—';
-
-  statsEl.append('div').attr('class','info').html('<b>quality shift</b><br>'+(obsMean-activeMean).toFixed(4)+'<br><span style="color:#8b949e">'+shift+'%</span>');
-  statsEl.append('div').attr('class','info').html('<b>stability change</b><br>σ active: '+(activeStd||0).toFixed(4)+'<br>σ observe: '+(obsStd||0).toFixed(4)+'<br><span style="color:#8b949e">ratio: '+varianceRatio+'</span>');
-  statsEl.append('div').attr('class','info').html('<b>observe-only trials</b><br>'+obsTrials.length+' / '+trials.length+' total<br><span style="color:#8b949e">'+choreoIds.length+' choreographie(s)</span>');
 }
 
 function renderHeartbeat(){
