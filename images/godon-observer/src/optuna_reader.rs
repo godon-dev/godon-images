@@ -274,7 +274,7 @@ impl OptunaReader {
 
         let choreo_rows = client
             .query(
-                "SELECT id, participants, phases::text, current_phase, status, \
+                "SELECT CAST(id AS TEXT), array_to_string(participants, ','), phases::text, current_phase, status, \
                  CAST(created_at AS TEXT), CAST(updated_at AS TEXT) \
                  FROM interference_choreography ORDER BY created_at DESC",
                 &[],
@@ -284,7 +284,8 @@ impl OptunaReader {
         let mut choreographies = Vec::new();
         for row in &choreo_rows {
             let id: String = row.get(0);
-            let participants: Vec<String> = row.get(1);
+            let participants_str: String = row.get(1);
+            let participants: Vec<String> = if participants_str.is_empty() { vec![] } else { participants_str.split(',').map(|s| s.to_string()).collect() };
             let phases_str: String = row.get(2);
             let current_phase: i32 = row.get(3);
             let status: String = row.get(4);
