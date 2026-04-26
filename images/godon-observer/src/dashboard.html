@@ -129,6 +129,7 @@ nav button:hover{color:#c9d1d9}
 <script>
 const $=id=>document.getElementById(id);
 let breederConfig=null,trials=[],currentView='heatmap',baseUrl='',refreshTimer=null;
+let lastMode='active',obsTrialCount=0,activeTrialCount=0;
 
 const DEMO=!window.location.protocol.startsWith('http');
 function status(m){$('statusL').textContent=m}
@@ -177,11 +178,50 @@ const DEMO_BREEDERS=[
   {id:'f6a7b8c9-d0e1-2345-fabc-456789012345',name:'greenhouse-alpha',total_trials:0,createdAt:'2026-04-22T10:00:00Z'},
 ];
 
+const DEMO_CHOREOGRAPHY={
+  choreographies:[{
+    id:'demo-choreo-001',
+    participants:['a1b2c3d4-e5f6-7890-abcd-ef1234567890','b2c3d4e5-f6a7-8901-bcde-f12345678901'],
+    current_phase:3,total_phases:6,phase_label:'recovery',observe_breeder:null,
+    status:'running',
+    phases:[
+      {observe_breeder:null,label:'baseline'},
+      {observe_breeder:'a1b2c3d4-e5f6-7890-abcd-ef1234567890',label:'observe'},
+      {observe_breeder:null,label:'recovery'},
+      {observe_breeder:null,label:'baseline'},
+      {observe_breeder:'b2c3d4e5-f6a7-8901-bcde-f12345678901',label:'observe'},
+      {observe_breeder:null,label:'recovery'}
+    ],
+    created_at:'2026-04-20 08:15:00',updated_at:'2026-04-20 09:30:00'
+  },{
+    id:'demo-choreo-002',
+    participants:['c3d4e5f6-a7b8-9012-cdef-123456789012','d4e5f6a7-b8c9-0123-defa-234567890123'],
+    current_phase:1,total_phases:6,phase_label:'observe',observe_breeder:'c3d4e5f6-a7b8-9012-cdef-123456789012',
+    status:'running',
+    phases:[
+      {observe_breeder:null,label:'baseline'},
+      {observe_breeder:'c3d4e5f6-a7b8-9012-cdef-123456789012',label:'observe'},
+      {observe_breeder:null,label:'recovery'},
+      {observe_breeder:null,label:'baseline'},
+      {observe_breeder:'d4e5f6a7-b8c9-0123-defa-234567890123',label:'observe'},
+      {observe_breeder:null,label:'recovery'}
+    ],
+    created_at:'2026-04-21 14:35:00',updated_at:'2026-04-21 15:10:00'
+  }],
+  active_breeders:[
+    {breeder_id:'a1b2c3d4-e5f6-7890-abcd-ef1234567890',last_seen:'2026-04-20 09:30:00'},
+    {breeder_id:'b2c3d4e5-f6a7-8901-bcde-f12345678901',last_seen:'2026-04-20 09:30:00'},
+    {breeder_id:'c3d4e5f6-a7b8-9012-cdef-123456789012',last_seen:'2026-04-21 15:10:00'},
+    {breeder_id:'d4e5f6a7-b8c9-0123-defa-234567890123',last_seen:'2026-04-21 15:10:00'},
+  ]
+};
+
 let overviewMode=true;
 let selectedBreeders=[];
 let lastClickedIdx=-1;
 let sortField='name';
 let sortDir=1;
+let choreographyData=null;
 
 function fmtDate(iso){
   const d=new Date(iso);
@@ -196,6 +236,16 @@ function sortedBreeders(breeders){
     if(sortField==='created'){va=new Date(a.createdAt||0).getTime();vb=new Date(b.createdAt||0).getTime()}
     return (va-vb)*sortDir;
   });
+}
+
+function breederChoreography(breederId){
+  if(!choreographyData||!choreographyData.choreographies) return null;
+  return choreographyData.choreographies.find(c=>c.status==='running'&&c.participants.includes(breederId))||null;
+}
+
+async function loadChoreography(){
+  if(DEMO){choreographyData=DEMO_CHOREOGRAPHY;return}
+  try{choreographyData=await api('/api/choreography')}catch(e){choreographyData=null}
 }
 
 function updateCrossBar(){
@@ -270,6 +320,7 @@ function showDetail(){
 async function loadOverview(){
   const el=$('content');
   if(DEMO){
+    await loadChoreography();
     renderOverview(DEMO_BREEDERS);
     status('demo mode — '+DEMO_BREEDERS.length+' breeders');
     return;
@@ -278,6 +329,7 @@ async function loadOverview(){
   el.innerHTML='<div class="ov-loading">loading breeders...</div>';
   try{
     const breeders=await api('/api/breeders');
+    await loadChoreography();
     renderOverview(breeders);
     status(breeders.length+' breeders');
   }catch(e){
@@ -307,10 +359,11 @@ function renderOverview(breeders){
   const hdr=el.append('div').attr('class','ov-header');
   hdr.append('button').attr('class','ov-h-name').html('name <span class="sort-arrow">'+arrow('name')+'</span>')
     .on('click',()=>{sortField='name';if(sortField==='name')sortDir=-sortDir;else sortDir=1;renderOverview(currentBreeders)});
+  hdr.append('button').style('width','140px').style('text-align','left').style('color','#6e7681').style('font-size','10px').text('choreography');
   hdr.append('button').attr('class','ov-h-trials').html('trials <span class="sort-arrow">'+arrow('trials')+'</span>')
     .on('click',()=>{sortField='trials';if(sortField==='trials')sortDir=-sortDir;else sortDir=1;renderOverview(currentBreeders)});
   hdr.append('button').attr('class','ov-h-created').html('created <span class="sort-arrow">'+arrow('created')+'</span>')
-    .on('click',()=>{sortField='created';if(sortField==='created')sortDir=-sortDir;else sortDir=1;renderOverview(currentBreeders)});
+    .on('click',()=>{sortField==='created';if(sortField==='created')sortDir=-sortDir;else sortDir=1;renderOverview(currentBreeders)});
 
   const ordered=sortedBreeders(breeders);
   const list=el.append('ul').attr('class','ov-list');
@@ -322,6 +375,19 @@ function renderOverview(breeders){
     if(selectedBreeders.includes(b.id)) li.classed('selected',true);
 
     li.append('div').attr('class','ov-name').text(b.name);
+
+    const ch=breederChoreography(b.id);
+    if(ch){
+      const isObserving=ch.observe_breeder===b.id;
+      const badge=li.append('div').style('display','flex').style('align-items','center').style('gap','4px').style('flex-shrink','0');
+      badge.append('span').style('width','6px').style('height','6px').style('border-radius','50%')
+        .style('background',isObserving?'#58a6ff':'#3fb950').style('flex-shrink','0');
+      badge.append('span').style('font','9px monospace').style('color',isObserving?'#58a6ff':'#3fb950')
+        .text(ch.current_phase+'/'+ch.total_phases+' '+ch.phase_label+(isObserving?' (observing)':''));
+    } else {
+      li.append('div').style('width','60px').style('flex-shrink','0');
+    }
+
     li.append('div').attr('class','ov-trials').text(b.total_trials||'—');
     li.append('div').attr('class','ov-created').text(b.createdAt?fmtDate(b.createdAt):'');
 
@@ -573,8 +639,22 @@ function renderCross(){
   tabs.append('button').classed('active',crossView==='causality').text('causality').on('click',()=>{crossView='causality';renderCross()});
 
   if(!hasAnyChoreography){
-    el.append('div').attr('class','info').style('margin-bottom','8px').text('no interference choreography data — run a choreography to see coupling measurements. showing pairs without shift data.');
+    el.append('div').attr('class','info').style('margin-bottom','8px').text('no interference choreography data yet — choreography initiates automatically when breeders detect each other.');
   } else {
+    const choreoPhases=[];
+    crossData.forEach(b=>{
+      b.trials.forEach(t=>{
+        if(t.user_attrs&&t.user_attrs.choreography_phase_idx!=null){
+          const idx=t.user_attrs.choreography_phase_idx;
+          if(!choreoPhases[idx]) choreoPhases[idx]={trials:0,observeOnly:0};
+          choreoPhases[idx].trials++;
+          if(t.user_attrs.phase==='observe_only') choreoPhases[idx].observeOnly++;
+        }
+      });
+    });
+    const phaseSum=el.append('div').style('margin-bottom','10px').style('font-size','10px').style('color','#6e7681');
+    const phaseInfo=choreoPhases.filter(Boolean).map((p,i)=>'phase '+i+': '+p.trials+' trials ('+p.observeOnly+' observe-only)').join(' | ');
+    phaseSum.text(choreoPhases.filter(Boolean).length+' choreography phases | '+phaseInfo);
     const leg=el.append('div').attr('class','legend').style('margin-bottom','8px');
     leg.append('span').html('<div class="dot" style="background:#3fb950"></div>strong');
     leg.append('span').html('<div class="dot" style="background:#d29922"></div>moderate');
@@ -1163,11 +1243,28 @@ function renderView(){
   if(!trials.length){el.innerHTML='<div class="info">no completed trials</div>';return}
   const bestI=bestTrialIdx();
   const violations=trials.filter(t=>Object.keys(checkGuardrails(t)).length).length;
+
+  const _obs=trials.filter(t=>t.user_attrs&&t.user_attrs.phase==='observe_only');
+  const _act=trials.filter(t=>!t.user_attrs||t.user_attrs.phase!=='observe_only');
+  obsTrialCount=_obs.length;
+  activeTrialCount=_act.length;
+  const lastTrial=trials[trials.length-1];
+  lastMode=(lastTrial&&lastTrial.user_attrs&&lastTrial.user_attrs.phase==='observe_only')?'observe-only':'active';
+  const currentMode=lastMode==='observe-only'?'<span style="color:#58a6ff">observe-only</span>':'<span style="color:#3fb950">active</span>';
+
+  const phaseIdxs=[...new Set(trials.map(t=>t.user_attrs&&t.user_attrs.choreography_phase_idx!=null?t.user_attrs.choreography_phase_idx:null).filter(v=>v!==null))];
+  const choreoId=obsTrialCount?_obs[_obs.length-1].user_attrs.choreography_id:null;
+
   const s=$('summary');
   s.style.display='block';
-  s.innerHTML='<span>trials: <span class="v">'+trials.length+'</span></span>'+
-    (violations?'<span>violations: <span class="violation">'+violations+'</span></span>':'')+
-    '<span>best: <span class="best">#'+(bestI+1)+'</span></span>';
+  let html='<span>trials: <span class="v">'+trials.length+'</span></span>';
+  html+='<span>mode: '+currentMode+'</span>';
+  if(obsTrialCount) html+='<span>observe-only: <span style="color:#58a6ff">'+obsTrialCount+'</span></span>';
+  if(activeTrialCount) html+='<span>active: <span style="color:#3fb950">'+activeTrialCount+'</span></span>';
+  if(violations) html+='<span>violations: <span class="violation">'+violations+'</span></span>';
+  html+='<span>best: <span class="best">#'+(bestI+1)+'</span></span>';
+  s.innerHTML=html;
+
   d3.select('#content').html('');
   if(currentView==='heatmap') renderHeatmap();
   else if(currentView==='spider') renderSpider();
@@ -1198,10 +1295,35 @@ function renderHeatmap(){
     '<span><div class="dot" style="background:#30363d"></div>missing</span>'+
     '<span><div class="dot" style="background:#1a3a5c"></div>observe-only</span>'+
     '<span><div class="dot" style="background:none;border:2px dashed #f85149"></div>guardrail violation</span>'+
-    '<span><div class="dot" style="background:none;border:2px solid #fff"></div>best trial</span>'
+    '<span><div class="dot" style="background:none;border:2px solid #fff"></div>best trial</span>'+
+    (obsTrialCount?'<span style="color:#8b949e">choreography phase bands shown above heatmap</span>':'')
   );
   const wrap=el.append('div').attr('class','chart-wrap');
-  const svg=wrap.append('svg').attr('width',width).attr('height',height);
+  const svg=wrap.append('svg').attr('width',width).attr('height',height+(obsTrialCount?14:0));
+
+  if(obsTrialCount){
+    const phaseColors=['#3fb950','#58a6ff','#d29922','#bc8cff','#f0883e','#f85149','#8b8000','#79c0ff'];
+    const phaseBandH=8;
+    const trialsPerPhase={};
+    trials.forEach((t,i)=>{
+      const pidx=t.user_attrs&&t.user_attrs.choreography_phase_idx!=null?t.user_attrs.choreography_phase_idx:null;
+      if(pidx!==null){
+        if(!trialsPerPhase[pidx]) trialsPerPhase[pidx]={start:i,end:i};
+        trialsPerPhase[pidx].end=i;
+      }
+    });
+    Object.entries(trialsPerPhase).forEach(([pidx,range])=>{
+      const x1=margin.left+range.start*cellW;
+      const x2=margin.left+(range.end+1)*cellW;
+      const c=phaseColors[parseInt(pidx)%phaseColors.length];
+      svg.append('rect').attr('x',x1).attr('y',margin.top-12).attr('width',x2-x1).attr('height',phaseBandH)
+        .attr('fill',c).attr('opacity',0.6).attr('rx',2);
+      if(x2-x1>30){
+        svg.append('text').attr('x',(x1+x2)/2).attr('y',margin.top-5).attr('text-anchor','middle')
+          .attr('fill',c).style('font','7px monospace').text('p'+pidx);
+      }
+    });
+  }
 
   const objScales=objs.map((o,i)=>{
     const vals=objValues(i);
