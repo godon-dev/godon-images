@@ -121,6 +121,7 @@ nav button:hover{color:#c9d1d9}
 <button data-view="trajectory">trajectory</button>
 <button data-view="heartbeat">heartbeat</button>
 <button data-view="guardrails">guardrails</button>
+<button data-view="choreography">choreography</button>
 </nav>
 <div class="summary" id="summary"></div>
 <div class="content" id="content"></div>
@@ -147,14 +148,17 @@ const DEMO_TRIALS=(function(){
   const params=['co2_injection','heating_setpoints','irrigation','light_intensity','shading','vent_openings'];
   const out=[];
   const choreoId='demo-choreo-001';
+  const phaseSize=17;
   for(let i=0;i<100;i++){
-    const isObs=i>=20&&i<25||i>=26&&i<31;
-    const p=isObs?{}:(() => {const o={};params.forEach(k=>{o[k]=+(Math.random()*10).toFixed(2)});return o})();
+    const phaseIdx=Math.min(Math.floor(i/phaseSize),5);
+    const isObs=phaseIdx===1;
+    const p=isObs?{}:(()=>{const o={};params.forEach(k=>{o[k]=+(Math.random()*10).toFixed(2)});return o})();
     const h=Math.floor(i/6),m=i%6;
     const max_temp=+(33+Math.random()*12).toFixed(1);
     const max_humidity=+(0.78+Math.random()*0.2).toFixed(3);
     const max_co2=+(1000+Math.random()*700).toFixed(0);
-    const attrs=isObs?{phase:'observe_only',choreography_id:choreoId,choreography_phase_idx:i>=26?5:2}:{};
+    const attrs={choreography_id:choreoId,choreography_phase_idx:phaseIdx};
+    if(isObs) attrs.phase='observe_only';
     if(!isObs) attrs.guardrails=JSON.stringify({max_temp:{value:max_temp,hard_limit:40,violated:max_temp>40},max_humidity:{value:max_humidity,hard_limit:0.9,violated:max_humidity>0.9},max_co2:{value:+max_co2,hard_limit:1500,violated:+max_co2>1500}});
     out.push({
       number:i,state:'COMPLETE',
@@ -521,15 +525,23 @@ async function loadCrossData(ids){
       const choreoId='demo-cross-choreo-001';
       couples.forEach(([ai,bi])=>{
         if(bi>=breeders.length) return;
+        const phaseSize=Math.ceil(n/6);
+        [breeders[ai],breeders[bi]].forEach(b=>{
+          b.trials.forEach((t,i)=>{
+            if(!t.user_attrs) t.user_attrs={};
+            t.user_attrs.choreography_phase_idx=Math.min(Math.floor(i/phaseSize),5);
+            t.user_attrs.choreography_id=choreoId;
+          });
+        });
         for(let i=15;i<22;i++){
           if(breeders[bi].trials[i]){
-            breeders[bi].trials[i].user_attrs={phase:'observe_only',choreography_id:choreoId,choreography_phase_idx:2};
+            breeders[bi].trials[i].user_attrs.phase='observe_only';
             breeders[bi].trials[i].values[0]=Math.min(1,breeders[bi].trials[i].values[0]*1.35);
           }
         }
         for(let i=35;i<42;i++){
           if(breeders[ai].trials[i]){
-            breeders[ai].trials[i].user_attrs={phase:'observe_only',choreography_id:choreoId,choreography_phase_idx:5};
+            breeders[ai].trials[i].user_attrs.phase='observe_only';
             breeders[ai].trials[i].values[0]=Math.min(1,breeders[ai].trials[i].values[0]*1.25);
           }
         }
@@ -550,113 +562,80 @@ async function loadCrossData(ids){
 const crossTierColor=t=>t==='high'?'#3fb950':t==='medium'?'#d29922':'#58a6ff';
 const crossTierBg=t=>t==='high'?'rgba(63,185,80,0.15)':t==='medium'?'rgba(210,153,34,0.12)':'rgba(88,166,255,0.08)';
 
-function renderABAStepper(parent, breeders, phases){
-  const stepperW=Math.min(900,window.innerWidth-60);
-  const phaseW=stepperW/phases.length;
-  const rowH=48;
-  const h=breeders.length*rowH+30;
-  const svg=parent.append('svg').attr('width',stepperW).attr('height',h);
-
-  const phaseColors=['#3fb950','#58a6ff','#d29922','#bc8cff','#f0883e','#f85149','#8b8000','#79c0ff'];
-
-  phases.forEach((phase,i)=>{
-    const x=i*phaseW;
-    const isObs=phase.observe_breeder!=null;
-    svg.append('rect').attr('x',x+1).attr('y',0).attr('width',phaseW-2).attr('height',h)
-      .attr('fill',isObs?'rgba(88,166,255,0.06)':'rgba(63,185,80,0.04)').attr('rx',2);
-    svg.append('text').attr('x',x+phaseW/2).attr('y',14).attr('text-anchor','middle')
-      .attr('fill',phaseColors[i%phaseColors.length]).style('font','bold 9px monospace')
-      .text(phase.label||(i%3===0?'baseline':i%3===1?'observe':'recovery'));
-    if(isObs){
-      svg.append('text').attr('x',x+phaseW/2).attr('y',24).attr('text-anchor','middle')
-        .attr('fill','#58a6ff').style('font','7px monospace')
-        .text('obs: '+phase.observe_breeder.substring(0,8)+'..');
-    }
-  });
-
-  breeders.forEach((b,bi)=>{
-    const y=28+bi*rowH;
-    svg.append('text').attr('x',4).attr('y',y+rowH/2+3)
-      .attr('fill','#8b949e').style('font','9px monospace')
-      .text(b.name.length>12?b.name.substring(0,10)+'..':b.name);
-
-    const allQ=d3.median(b.qualities)||0.5;
-
-    phases.forEach((phase,i)=>{
-      const x=i*phaseW;
-      const phaseTrials=b.trials.filter(t=>t.user_attrs&&t.user_attrs.choreography_phase_idx===i);
-      const activeTrials=phaseTrials.filter(t=>!t.user_attrs||t.user_attrs.phase!=='observe_only');
-      const obsTrials=phaseTrials.filter(t=>t.user_attrs&&t.user_attrs.phase==='observe_only');
-      const trialsToShow=obsTrials.length?obsTrials:activeTrials;
-      const trialQs=trialsToShow.map(t=>crossQ(t)).filter(q=>q!=null);
-      const medQ=trialQs.length?d3.median(trialQs):null;
-
-      const barH=20;
-      const barY=y+rowH/2-barH/2;
-      const barX=x+28;
-      const barW=phaseW-34;
-      const maxBarW=Math.max(barW,10);
-
-      svg.append('rect').attr('x',barX).attr('y',barY).attr('width',maxBarW).attr('height',barH)
-        .attr('fill','#161b22').attr('stroke','#21262d').attr('rx',2);
-
-      if(medQ!==null){
-        const fillW=Math.max(2,medQ*maxBarW);
-        const c=qualityScale(medQ);
-        svg.append('rect').attr('x',barX).attr('y',barY).attr('width',fillW).attr('height',barH)
-          .attr('fill',c).attr('opacity',0.7).attr('rx',2);
-        svg.append('text').attr('x',barX+4).attr('y',barY+barH/2+3)
-          .attr('fill','rgba(0,0,0,0.8)').style('font','bold 8px monospace')
-          .text((medQ*100).toFixed(0)+'%');
-      }
-
-      svg.append('text').attr('x',barX+maxBarW+3).attr('y',barY+barH/2+3)
-        .attr('fill','#484f58').style('font','7px monospace')
-        .text(trialsToShow.length+'t');
-
-      const isObserving=phase.observe_breeder&&phase.observe_breeder.startsWith(b.id.substring(0,8));
-      if(isObserving){
-        svg.append('text').attr('x',barX+2).attr('y',barY-2)
-          .attr('fill','#58a6ff').style('font','7px monospace').text('OBS');
-      }
-    });
-  });
-}
+const BREEDER_COLORS=['#58a6ff','#f0883e','#bc8cff','#3fb950','#f85149','#d29922'];
 
 function renderBreederPhaseStepper(parent, phases, currentPhase){
-  const phaseColors=['#3fb950','#58a6ff','#d29922','#bc8cff','#f0883e','#f85149','#8b8000','#79c0ff'];
-  const stepperW=Math.min(880,window.innerWidth-80);
-  const phaseW=stepperW/phases.length;
-  const h=40;
-  const svg=parent.append('svg').attr('width',stepperW).attr('height',h);
+  const objs=breederConfig.objectives||[];
+  if(!objs.length) return;
 
+  const phaseLabel={baseline:'#3fb950',observe:'#58a6ff',recovery:'#d29922'};
+
+  parent.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','6px')
+    .text('median objective values per phase — arrows show change from previous phase');
+
+  const table=parent.append('table').style('width','100%').style('border-collapse','collapse').style('font','10px monospace');
+  const thead=table.append('thead');
+  const hr=thead.append('tr');
+  hr.append('th').style('text-align','left').style('color','#484f58').style('padding','4px 8px').style('font-weight','normal').text('phase');
+  hr.append('th').style('text-align','center').style('color','#484f58').style('padding','4px 8px').style('font-weight','normal').text('mode');
+  hr.append('th').style('text-align','center').style('color','#484f58').style('padding','4px 8px').style('font-weight','normal').text('trials');
+  objs.forEach(obj=>{
+    hr.append('th').style('text-align','center').style('color','#484f58').style('padding','4px 8px').style('font-weight','normal')
+      .text(obj.name.length>14?obj.name.substring(0,12)+'..':obj.name);
+  });
+
+  const prevVals={};
+  const tbody=table.append('tbody');
   phases.forEach((phase,i)=>{
-    const x=i*phaseW;
-    const isObs=phase.observe_breeder!=null;
+    const label=phase.label||(i%3===0?'baseline':i%3===1?'observe':'recovery');
+    const color=phaseLabel[label]||'#8b949e';
     const isCurrent=i===currentPhase;
-    const isPast=i<currentPhase;
-
-    svg.append('rect').attr('x',x+1).attr('y',2).attr('width',phaseW-2).attr('height',h-4)
-      .attr('fill',isObs?'rgba(88,166,255,0.08)':isPast?'rgba(63,185,80,0.08)':'#161b22')
-      .attr('stroke',isCurrent?'#c9d1d9':'#21262d').attr('stroke-width',isCurrent?2:1)
-      .attr('stroke-dasharray',isCurrent?'4,2':null).attr('rx',3);
+    const isObserving=phase.observe_breeder&&(breederConfig.id===phase.observe_breeder||phase.observe_breeder.startsWith((breederConfig.id||'').substring(0,8)));
 
     const phaseTrials=trials.filter(t=>t.user_attrs&&t.user_attrs.choreography_phase_idx===i);
-    const trialQs=phaseTrials.map(t=>trialQuality(t)).filter(q=>q!=null&&isFinite(q));
-    const medQ=trialQs.length?d3.median(trialQs):null;
+    const activeTrials=phaseTrials.filter(t=>!t.user_attrs||t.user_attrs.phase!=='observe_only');
+    const obsTrials=phaseTrials.filter(t=>t.user_attrs&&t.user_attrs.phase==='observe_only');
+    const trialsToShow=obsTrials.length?obsTrials:activeTrials;
+    const mode=isObserving?'observe-only':'active';
 
-    svg.append('text').attr('x',x+phaseW/2).attr('y',16).attr('text-anchor','middle')
-      .attr('fill',phaseColors[i%phaseColors.length]).style('font','bold 8px monospace')
-      .text((i+1)+'. '+(phase.label||'?'));
+    const tr=tbody.append('tr').style('border-bottom','1px solid #161b22');
+    if(isCurrent) tr.style('border-left','2px solid #c9d1d9');
 
-    if(medQ!==null){
-      svg.append('text').attr('x',x+phaseW/2).attr('y',30).attr('text-anchor','middle')
-        .attr('fill',qualityScale(medQ)).style('font','8px monospace')
-        .text((medQ*100).toFixed(0)+'% ('+phaseTrials.length+')');
-    } else {
-      svg.append('text').attr('x',x+phaseW/2).attr('y',30).attr('text-anchor','middle')
-        .attr('fill','#30363d').style('font','8px monospace').text(phaseTrials.length+' trials');
-    }
+    const phaseCell=tr.append('td').style('padding','4px 8px').style('white-space','nowrap');
+    phaseCell.append('span').style('color',color).text((i+1)+'. '+label);
+    if(isCurrent) phaseCell.append('span').style('color','#c9d1d9').style('margin-left','4px').text('\u25C0');
+
+    tr.append('td').style('text-align','center').style('padding','4px 8px')
+      .style('color',isObserving?'#58a6ff':'#3fb950').text(mode);
+
+    tr.append('td').style('text-align','center').style('padding','4px 8px').style('color','#8b949e')
+      .text(trialsToShow.length);
+
+    objs.forEach((obj,oi)=>{
+      const vals=trialsToShow.map(t=>t.values?t.values[oi]:null).filter(v=>v!==null&&v!==undefined&&isFinite(v));
+      const med=vals.length?d3.median(vals):null;
+      const td=tr.append('td').style('text-align','center').style('padding','4px 8px');
+      if(med!==null){
+        td.append('span').style('color','#c9d1d9').text(med.toFixed(2));
+        if(vals.length>=3){
+          const lo=d3.quantile(vals,0.25),hi=d3.quantile(vals,0.75);
+          td.append('span').style('color','#484f58').style('font','8px monospace')
+            .text(' ('+lo.toFixed(1)+'-'+hi.toFixed(1)+')');
+        }
+        const prev=prevVals[oi];
+        if(prev!==undefined){
+          const delta=med-prev;
+          const isImprove=(obj.direction==='minimize'&&delta<0)||(obj.direction==='maximize'&&delta>0);
+          const arrow=delta>=0?'\u2191':'\u2193';
+          const arrowColor=isImprove?'#3fb950':'#f85149';
+          td.append('span').style('color',arrowColor).style('font','9px monospace').style('margin-left','4px')
+            .text(arrow+Math.abs(delta).toFixed(2));
+        }
+        prevVals[oi]=med;
+      } else {
+        td.style('color','#30363d').text('—');
+      }
+    });
   });
 }
 
@@ -1181,127 +1160,185 @@ function renderCrossABA(el,analysis){
     el.append('div').attr('class','info').text('no choreography data available');
     return;
   }
-  const choreo=choreographyData.choreographies.find(c=>c.status==='running')||choreographyData.choreography[0];
-  if(!choreo){el.append('div').attr('class','info').text('no choreography found');return}
 
-  const phases=choreo.phases;
-  const currentPhase=choreo.current_phase;
-  const totalPhases=choreo.total_phases;
+  const allChoreos=choreographyData.choreographies.filter(c=>c.status==='running');
+  if(!allChoreos.length){el.append('div').attr('class','info').text('no active choreographies');return}
 
-  const statusDiv=el.append('div').style('margin-bottom','12px');
-  statusDiv.append('span').style('font','bold 12px monospace').style('color','#c9d1d9')
-    .text('ABA Choreography '+choreo.id.substring(0,8));
-  statusDiv.append('span').style('font','10px monospace').style('color','#6e7681').style('margin-left','12px')
-    .text('status: '+choreo.status+' | phase: '+currentPhase+'/'+totalPhases+' | participants: '+choreo.participants.join(', '));
-  if(choreo.updated_at){
-    statusDiv.append('span').style('font','9px monospace').style('color','#484f58').style('margin-left','12px')
-      .text('last update: '+choreo.updated_at);
+  allChoreos.forEach(choreo=>{
+    const participants=choreo.participants||[];
+    const participantBreeders=crossData.filter(b=>participants.some(p=>b.id===p||p.startsWith(b.id.substring(0,8))));
+    if(participantBreeders.length<2) return;
+
+    const phases=choreo.phases;
+    const currentPhase=choreo.current_phase;
+
+    const section=el.append('div').style('margin-bottom','20px')
+      .style('padding','12px').style('background','#0d1117')
+      .style('border','1px solid #21262d').style('border-radius','6px');
+
+    const statusLine=section.append('div').style('margin-bottom','10px')
+      .style('display','flex').style('align-items','center').style('gap','8px').style('flex-wrap','wrap');
+    statusLine.append('span').style('font','bold 11px monospace').style('color','#c9d1d9')
+      .text('Choreography '+choreo.id.substring(0,8));
+    statusLine.append('span').style('font','9px monospace').style('padding','2px 6px')
+      .style('border-radius','3px').style('background','rgba(63,185,80,0.15)')
+      .style('color','#3fb950').text(choreo.status);
+    statusLine.append('span').style('font','9px monospace').style('color','#6e7681')
+      .text('phase '+currentPhase+'/'+choreo.total_phases);
+    participantBreeders.forEach((b,i)=>{
+      statusLine.append('span').style('font','9px monospace')
+        .style('color',BREEDER_COLORS[i%BREEDER_COLORS.length])
+        .style('background','#161b22').style('border','1px solid #30363d')
+        .style('border-radius','3px').style('padding','1px 6px').text(b.name);
+    });
+
+    renderPhaseOverlay(section,participantBreeders,phases,currentPhase);
+  });
+
+  const nonParticipating=crossData.filter(b=>{
+    return !choreographyData.choreographies.some(c=>c.participants&&c.participants.some(p=>b.id===p||p.startsWith(b.id.substring(0,8))));
+  });
+  if(nonParticipating.length){
+    el.append('div').style('margin-bottom','12px').style('padding','8px')
+      .style('background','#0d1117').style('border','1px solid #21262d').style('border-radius','4px')
+      .append('div').style('font','9px monospace').style('color','#484f58')
+      .text('not in any choreography: '+nonParticipating.map(b=>b.name).join(', '));
   }
+}
 
-  const phaseColors=['#3fb950','#58a6ff','#d29922','#bc8cff','#f0883e','#f85149','#8b8000','#79c0ff'];
-  const stepperW=Math.min(900,window.innerWidth-60);
-  const phaseW=stepperW/phases.length;
-  const rowH=50;
-  const h=crossData.length*rowH+70;
-  const svg=el.append('svg').attr('width',stepperW).attr('height',h);
+function renderPhaseOverlay(parent,breeders,phases,currentPhase){
+  const phaseBg={baseline:'rgba(63,185,80,0.06)',observe:'rgba(88,166,255,0.08)',recovery:'rgba(210,153,34,0.04)'};
+  const phaseStroke={baseline:'rgba(63,185,80,0.2)',observe:'rgba(88,166,255,0.25)',recovery:'rgba(210,153,34,0.15)'};
+  const phaseColor={baseline:'#3fb950',observe:'#58a6ff',recovery:'#d29922'};
 
-  phases.forEach((phase,i)=>{
-    const x=i*phaseW;
-    const isObs=phase.observe_breeder!=null;
-    const isCurrent=i===currentPhase;
+  const margin={top:28,right:20,bottom:30,left:50};
+  const fullWidth=Math.min(900,window.innerWidth-60);
+  const width=fullWidth-margin.left-margin.right;
+  const height=280-margin.top-margin.bottom;
 
-    svg.append('rect').attr('x',x+1).attr('y',0).attr('width',phaseW-2).attr('height',h)
-      .attr('fill',isObs?'rgba(88,166,255,0.06)':'rgba(63,185,80,0.04)').attr('rx',2);
+  const svg=parent.append('svg').attr('width',fullWidth).attr('height',280)
+    .style('display','block').style('margin','10px 0');
+  const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
 
-    if(isCurrent){
-      svg.append('rect').attr('x',x).attr('y',0).attr('width',phaseW).attr('height',h)
-        .attr('fill','none').attr('stroke','#c9d1d9').attr('stroke-width',2).attr('rx',2)
-        .attr('stroke-dasharray','4,2');
-    }
+  const allTimes=breeders.flatMap(b=>b.times);
+  const tMin=d3.min(allTimes),tMax=d3.max(allTimes);
+  const x=d3.scaleLinear().domain([tMin,tMax]).range([0,width]);
+  const y=d3.scaleLinear().domain([0,1]).range([height,0]);
 
-    svg.append('text').attr('x',x+phaseW/2).attr('y',16).attr('text-anchor','middle')
-      .attr('fill',phaseColors[i%phaseColors.length]).style('font','bold 9px monospace')
-      .text((i+1)+'. '+(phase.label||(i%3===0?'baseline':i%3===1?'observe':'recovery')));
-
-    if(isObs&&phase.observe_breeder){
-      const obsName=crossData.find(b=>b.id===phase.observe_breeder||phase.observe_breeder.startsWith(b.id.substring(0,8)));
-      svg.append('text').attr('x',x+phaseW/2).attr('y',28).attr('text-anchor','middle')
-        .attr('fill','#58a6ff').style('font','7px monospace')
-        .text('obs: '+(obsName?obsName.name:phase.observe_breeder.substring(0,8)+'..'));
-    }
-  });
-
-  crossData.forEach((b,bi)=>{
-    const y=38+bi*rowH;
-
-    svg.append('text').attr('x',4).attr('y',y+rowH/2+3)
-      .attr('fill','#c9d1d9').style('font','9px monospace').style('font-weight','bold')
-      .text(b.name.length>10?b.name.substring(0,8)+'..':b.name);
-
-    phases.forEach((phase,i)=>{
-      const x=i*phaseW;
-      const phaseTrials=b.trials.filter(t=>t.user_attrs&&t.user_attrs.choreography_phase_idx===i);
-      const activeTrials=phaseTrials.filter(t=>!t.user_attrs||t.user_attrs.phase!=='observe_only');
-      const obsTrials=phaseTrials.filter(t=>t.user_attrs&&t.user_attrs.phase==='observe_only');
-      const trialsToShow=obsTrials.length?obsTrials:activeTrials;
-      const trialQs=trialsToShow.map(t=>crossQ(t)).filter(q=>q!=null&&isFinite(q));
-      const medQ=trialQs.length?d3.median(trialQs):null;
-
-      const barH=22;
-      const barY=y+rowH/2-barH/2;
-      const barX=x+36;
-      const barW=phaseW-42;
-
-      svg.append('rect').attr('x',barX).attr('y',barY).attr('width',barW).attr('height',barH)
-        .attr('fill','#161b22').attr('stroke','#21262d').attr('rx',2);
-
-      if(medQ!==null&&isFinite(medQ)){
-        const fillW=Math.max(2,medQ*barW);
-        const c=qualityScale(medQ);
-        svg.append('rect').attr('x',barX).attr('y',barY).attr('width',fillW).attr('height',barH)
-          .attr('fill',c).attr('opacity',0.7).attr('rx',2);
-        svg.append('text').attr('x',barX+4).attr('y',barY+barH/2+3)
-          .attr('fill','rgba(0,0,0,0.8)').style('font','bold 8px monospace')
-          .text((medQ*100).toFixed(0)+'%');
-      }
-
-      const isObserving=phase.observe_breeder&&(b.id===phase.observe_breeder||phase.observe_breeder.startsWith(b.id.substring(0,8)));
-      if(isObserving){
-        svg.append('rect').attr('x',barX-12).attr('y',barY+2).attr('width',10).attr('height',barH-4)
-          .attr('fill','#58a6ff').attr('opacity',0.5).attr('rx',1);
-      }
-
-      svg.append('text').attr('x',barX+barW+2).attr('y',barY+barH/2+3)
-        .attr('fill',isObserving?'#58a6ff':'#484f58').style('font','7px monospace')
-        .text(trialsToShow.length+'t');
-    });
-  });
-
-  const compareDiv=el.append('div').style('margin-top','16px').style('padding','12px').style('background','#0d1117').style('border','1px solid #21262d').style('border-radius','6px');
-  compareDiv.append('div').style('font','bold 10px monospace').style('color','#c9d1d9').style('margin-bottom','8px').text('Phase comparison');
-  const compTable=compareDiv.append('div').style('display','grid').style('grid-template-columns','120px repeat('+phases.length+', 1fr)').style('gap','2px');
-  compTable.append('div').style('font','8px monospace').style('color','#484f58');
-  phases.forEach((p,i)=>compTable.append('div').style('font','8px monospace').style('color',phaseColors[i%phaseColors.length]).style('text-align','center').text('P'+i));
-
-  crossData.forEach(b=>{
-    compTable.append('div').style('font','8px monospace').style('color','#8b949e').text(b.name.substring(0,12));
-    phases.forEach((phase,i)=>{
-      const phaseTrials=b.trials.filter(t=>t.user_attrs&&t.user_attrs.choreography_phase_idx===i);
-      const activeTrials=phaseTrials.filter(t=>!t.user_attrs||t.user_attrs.phase!=='observe_only');
-      const obsTrials=phaseTrials.filter(t=>t.user_attrs&&t.user_attrs.phase==='observe_only');
-      const trialsToShow=obsTrials.length?obsTrials:activeTrials;
-      const trialQs=trialsToShow.map(t=>crossQ(t)).filter(q=>q!=null&&isFinite(q));
-      const medQ=trialQs.length?d3.median(trialQs):null;
-      const cell=compTable.append('div').style('font','8px monospace').style('text-align','center').style('padding','2px')
-        .style('border-radius','2px');
-      if(medQ!==null){
-        cell.style('background',qualityScale(medQ)).style('color','rgba(0,0,0,0.7)')
-          .text((medQ*100).toFixed(0)+'% ('+trialsToShow.length+')');
-      } else {
-        cell.style('color','#30363d').text('—');
+  const phaseTimeRanges={};
+  breeders.forEach(b=>{
+    b.trials.forEach((t,i)=>{
+      const pidx=t.user_attrs&&t.user_attrs.choreography_phase_idx!=null?t.user_attrs.choreography_phase_idx:null;
+      if(pidx!==null&&b.times[i]!=null){
+        if(!phaseTimeRanges[pidx]) phaseTimeRanges[pidx]={min:Infinity,max:-Infinity};
+        phaseTimeRanges[pidx].min=Math.min(phaseTimeRanges[pidx].min,b.times[i]);
+        phaseTimeRanges[pidx].max=Math.max(phaseTimeRanges[pidx].max,b.times[i]);
       }
     });
   });
+
+  const sortedPhases=Object.entries(phaseTimeRanges).sort((a,b)=>parseInt(a[0])-parseInt(b[0]));
+  sortedPhases.forEach(([pidx,range])=>{
+    const phase=phases[parseInt(pidx)];
+    const label=phase?(phase.label||'baseline'):'baseline';
+    const bg=phaseBg[label]||phaseBg.baseline;
+    const stroke=phaseStroke[label]||phaseStroke.baseline;
+    const sx=x(range.min),ex=x(range.max)+2;
+
+    g.append('rect').attr('x',sx).attr('y',0).attr('width',Math.max(ex-sx,2)).attr('height',height)
+      .attr('fill',bg);
+
+    const lbl=(parseInt(pidx)+1)+'. '+label;
+    const cx=sx+(ex-sx)/2;
+    g.append('text').attr('x',cx).attr('y',-6).attr('text-anchor','middle')
+      .attr('fill',phaseColor[label]||'#8b949e').style('font','8px monospace').text(lbl);
+
+    if(phase&&phase.observe_breeder){
+      const obsName=breeders.find(b=>b.id===phase.observe_breeder||phase.observe_breeder.startsWith(b.id.substring(0,8)));
+      g.append('line').attr('x1',sx).attr('y1',0).attr('x2',sx).attr('y2',height)
+        .attr('stroke',stroke).attr('stroke-width',1.5).attr('stroke-dasharray','4,3');
+      if(obsName) g.append('text').attr('x',cx).attr('y',height+margin.bottom-4)
+        .attr('text-anchor','middle').attr('fill','#58a6ff').style('font','7px monospace')
+        .text(obsName.name+' paused');
+    }
+  });
+
+  const line=d3.line().x((d,i)=>x(d.time)).y(d=>y(d.q)).defined(d=>d.q!=null&&isFinite(d.q));
+  breeders.forEach((b,bi)=>{
+    const color=BREEDER_COLORS[bi%BREEDER_COLORS.length];
+    const pts=b.qualities.map((q,i)=>({q,time:b.times[i]}));
+
+    g.append('path').datum(pts).attr('d',line)
+      .attr('fill','none').attr('stroke',color).attr('stroke-width',1.5).attr('opacity',0.85)
+      .style('cursor','pointer')
+      .on('mouseenter',function(){
+        d3.select(this).attr('stroke-width',3).attr('opacity',1);
+      })
+      .on('mousemove',function(event){
+        const mx=x.invert(d3.pointer(event,this)[0]);
+        let closest=0,closestDist=Infinity;
+        b.times.forEach((t,i)=>{const d=Math.abs(t-mx);if(d<closestDist){closestDist=d;closest=i}});
+        const q=b.qualities[closest];
+        const t=b.trials[closest];
+        const isObs=t&&t.user_attrs&&t.user_attrs.phase==='observe_only';
+        let html='<b style="color:'+color+'">'+b.name+'</b> #'+(closest+1);
+        if(t&&t.datetime_start) html+=' ('+t.datetime_start.substring(11,19)+')';
+        html+='<br>quality: <span style="color:#c9d1d9">'+(q!=null?(q*100).toFixed(1)+'%':'—')+'</span>';
+        if(isObs) html+='<br><span style="color:#58a6ff">observe-only</span>';
+        showTip(html,event.clientX,event.clientY);
+      })
+      .on('mouseleave',function(){
+        d3.select(this).attr('stroke-width',1.5).attr('opacity',0.85);
+        hideTip();
+      });
+
+    b.trials.forEach((t,i)=>{
+      const q=b.qualities[i];
+      if(q==null||!isFinite(q)||b.times[i]==null) return;
+      const isObs=t.user_attrs&&t.user_attrs.phase==='observe_only';
+      g.append('circle').attr('cx',x(b.times[i])).attr('cy',y(q))
+        .attr('r',isObs?3:2)
+        .attr('fill',isObs?'#58a6ff':color)
+        .attr('opacity',isObs?0.8:0.4)
+        .style('cursor','pointer')
+        .on('mouseenter',function(event){
+          d3.select(this).attr('r',5).attr('opacity',1);
+          let html='<b style="color:'+color+'">'+b.name+'</b> #'+(i+1);
+          if(t.datetime_start) html+=' ('+t.datetime_start.substring(11,19)+')';
+          html+='<br>quality: '+(q*100).toFixed(1)+'%';
+          if(isObs) html+='<br><span style="color:#58a6ff">observe-only</span>';
+          if(t.values) t.values.forEach((v,vi)=>{
+            html+='<br>obj'+vi+': '+(v!=null?v.toFixed(3):'—');
+          });
+          showTip(html,event.clientX,event.clientY);
+        })
+        .on('mouseleave',function(){
+          d3.select(this).attr('r',isObs?3:2).attr('opacity',isObs?0.8:0.4);
+          hideTip();
+        });
+    });
+  });
+
+  g.append('g').attr('transform','translate(0,'+height+')')
+    .call(d3.axisBottom(x).ticks(6).tickFormat(d=>{
+      const dt=new Date(d*1000);
+      return dt.getHours().toString().padStart(2,'0')+':'+dt.getMinutes().toString().padStart(2,'0');
+    }))
+    .selectAll('text').attr('fill','#484f58').style('font','8px monospace');
+  g.selectAll('.domain').attr('stroke','#21262d');
+  g.selectAll('.tick line').attr('stroke','#21262d');
+  g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.0%')))
+    .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
+  g.append('text').attr('x',-height/2).attr('y',-36).attr('text-anchor','middle')
+    .attr('fill','#6e7681').style('font','9px monospace').attr('transform','rotate(-90)').text('quality');
+
+  const legend=parent.append('div').attr('class','legend').style('margin-top','4px');
+  breeders.forEach((b,bi)=>{
+    const color=BREEDER_COLORS[bi%BREEDER_COLORS.length];
+    legend.append('span').html('<div class="dot" style="background:'+color+'"></div>'+b.name);
+  });
+  legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>observe-only');
+  legend.append('span').html('<div class="dot" style="background:rgba(88,166,255,0.3)"></div>observe phase');
 }
 
 function showCrossPairDetail(pair){
@@ -1542,16 +1579,6 @@ function renderView(){
 
   d3.select('#content').html('');
 
-  if(obsTrialCount>0&&choreographyData&&choreographyData.choreographies){
-    const running=choreographyData.choreographies.find(c=>c.status==='running');
-    if(running&&running.phases){
-      const stepperDiv=d3.select('#content').append('div').style('margin-bottom','12px').style('padding','8px').style('background','#0d1117').style('border','1px solid #21262d').style('border-radius','4px');
-      stepperDiv.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','4px')
-        .text('choreography '+running.id.substring(0,8)+' — phase '+running.current_phase+'/'+running.total_phases);
-      renderBreederPhaseStepper(stepperDiv, running.phases, running.current_phase);
-    }
-  }
-
   if(currentView==='heatmap') renderHeatmap();
   else if(currentView==='spider') renderSpider();
   else if(currentView==='parallel') renderParallel();
@@ -1559,6 +1586,113 @@ function renderView(){
   else if(currentView==='trajectory') renderTrajectory();
   else if(currentView==='heartbeat') renderHeartbeat();
   else if(currentView==='guardrails') renderGuardrails();
+  else if(currentView==='choreography') renderChoreographyView();
+}
+
+function renderChoreographyView(){
+  const el=d3.select('#content');
+  if(!choreographyData||!choreographyData.choreographies||!choreographyData.choreographies.length){
+    el.html('<div class="info">no choreography data — choreography starts automatically when breeders detect each other</div>');
+    return;
+  }
+  const bid=$('breederId').value.trim();
+  let running=choreographyData.choreographies.find(c=>c.status==='running'&&c.participants&&c.participants.some(p=>p===bid||bid.startsWith(p.substring(0,8))||p.startsWith(bid.substring(0,8))));
+  if(!running) running=choreographyData.choreographies.find(c=>c.status==='running');
+  if(!running||!running.phases){
+    el.html('<div class="info">no active choreography</div>');
+    return;
+  }
+  const wrap=el.append('div').style('padding','12px').style('background','#0d1117').style('border','1px solid #21262d').style('border-radius','6px');
+  wrap.append('div').style('font','bold 12px monospace').style('color','#c9d1d9').style('margin-bottom','4px')
+    .text('Choreography '+running.id.substring(0,8));
+  wrap.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','10px')
+    .text('phase '+running.current_phase+'/'+running.total_phases+' ('+running.phase_label+') — participants: '+running.participants.join(', '));
+  renderChoreographyChart(wrap, running.phases, running.current_phase);
+  renderBreederPhaseStepper(wrap, running.phases, running.current_phase);
+}
+
+function renderChoreographyChart(parent, phases, currentPhase){
+  const objs=breederConfig.objectives||[];
+  if(!objs.length||!trials.length) return;
+
+  const phaseLabel={baseline:'rgba(63,185,80,0.08)',observe:'rgba(88,166,255,0.08)',recovery:'rgba(210,153,34,0.06)'};
+  const phaseBorder={baseline:'rgba(63,185,80,0.3)',observe:'rgba(88,166,255,0.3)',recovery:'rgba(210,153,34,0.2)'};
+
+  const margin={top:30,right:20,bottom:30,left:60};
+  const fullWidth=Math.min(880,window.innerWidth-60);
+  const perObjH=160;
+  const width=fullWidth-margin.left-margin.right;
+
+  objs.forEach((obj,oi)=>{
+    const height=perObjH-margin.top/2-margin.bottom/2;
+    const svg=parent.append('svg').attr('width',fullWidth).attr('height',perObjH).style('display','block').style('margin-bottom','8px');
+    const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top/2+')');
+
+    const vals=trials.map(t=>t.values?t.values[oi]:null).filter(v=>v!==null&&v!==undefined&&isFinite(v));
+    if(!vals.length) return;
+    const allVals=trials.map(t=>t.values?t.values[oi]:null);
+    const vMin=d3.min(vals),vMax=d3.max(vals);
+    const vPad=(vMax-vMin)*0.1||1;
+
+    const x=d3.scaleLinear().domain([0,trials.length-1]).range([0,width]);
+    const y=d3.scaleLinear().domain([vMin-vPad,vMax+vPad]).range([height,0]);
+
+    g.append('text').attr('x',0).attr('y',-6).attr('fill','#8b949e').style('font','9px monospace')
+      .text(obj.name);
+
+    const phaseRanges={};
+    trials.forEach((t,i)=>{
+      const pidx=t.user_attrs&&t.user_attrs.choreography_phase_idx!=null?t.user_attrs.choreography_phase_idx:null;
+      if(pidx!==null){
+        if(!phaseRanges[pidx]) phaseRanges[pidx]={start:i,end:i};
+        phaseRanges[pidx].end=i;
+      }
+    });
+    Object.entries(phaseRanges).forEach(([pidx,range])=>{
+      const phase=phases[parseInt(pidx)];
+      const label=phase?(phase.label||'baseline'):'baseline';
+      const fill=phaseLabel[label]||phaseLabel.baseline;
+      const stroke=phaseBorder[label]||phaseBorder.baseline;
+      g.append('rect').attr('x',x(range.start)).attr('y',0).attr('width',x(range.end)-x(range.start)+x(1)-x(0)).attr('height',height)
+        .attr('fill',fill);
+      g.append('line').attr('x1',x(range.start)).attr('y1',0).attr('x2',x(range.start)).attr('y2',height)
+        .attr('stroke',stroke).attr('stroke-width',1).attr('stroke-dasharray','2,3');
+    });
+
+    if(currentPhase in phaseRanges){
+      const r=phaseRanges[currentPhase];
+      g.append('line').attr('x1',x(r.start)).attr('y1',0).attr('x2',x(r.start)).attr('y2',height)
+        .attr('stroke','#c9d1d9').attr('stroke-width',2).attr('stroke-dasharray','4,2');
+    }
+
+    const lineData=allVals.map((v,i)=>({x:i,y:v}));
+    const line=d3.line().x(d=>x(d.x)).y(d=>y(d.y)).defined(d=>d.y!==null&&d.y!==undefined&&isFinite(d.y));
+    g.append('path').datum(lineData).attr('d',line)
+      .attr('fill','none').attr('stroke','#58a6ff').attr('stroke-width',1.5).attr('opacity',0.8);
+
+    trials.forEach((t,i)=>{
+      const v=t.values?t.values[oi]:null;
+      if(v===null||v===undefined||!isFinite(v)) return;
+      const isObs=t.user_attrs&&t.user_attrs.phase==='observe_only';
+      g.append('circle').attr('cx',x(i)).attr('cy',y(v)).attr('r',2.5)
+        .attr('fill',isObs?'#58a6ff':'#3fb950').attr('opacity',0.6);
+    });
+
+    g.append('g').attr('transform','translate(0,'+height+')').call(d3.axisBottom(x).ticks(6).tickFormat(d=>'#'+(d+1)))
+      .selectAll('text').attr('fill','#484f58').style('font','8px monospace');
+    g.selectAll('.domain').attr('stroke','#21262d');
+    g.selectAll('.tick line').attr('stroke','#21262d');
+    g.append('g').call(d3.axisLeft(y).ticks(4).tickFormat(d3.format('.2f')))
+      .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
+  });
+
+  parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
+    '<span><div class="dot" style="background:#3fb950"></div>active trial</span>'+
+    '<span><div class="dot" style="background:#58a6ff"></div>observe-only</span>'+
+    '<span><div class="dot" style="background:rgba(63,185,80,0.3)"></div>baseline phase</span>'+
+    '<span><div class="dot" style="background:rgba(88,166,255,0.3)"></div>observe phase</span>'+
+    '<span><div class="dot" style="background:rgba(210,153,34,0.2)"></div>recovery phase</span>'
+  );
 }
 
 function renderHeatmap(){
@@ -1581,43 +1715,10 @@ function renderHeatmap(){
     '<span><div class="dot" style="background:#30363d"></div>missing</span>'+
     '<span><div class="dot" style="background:#1a3a5c"></div>observe-only</span>'+
     '<span><div class="dot" style="background:none;border:2px dashed #f85149"></div>guardrail violation</span>'+
-    '<span><div class="dot" style="background:none;border:2px solid #fff"></div>best trial</span>'+
-    (obsTrialCount?'<span><div class="dot" style="background:rgba(63,185,80,0.4)"></div>baseline</span>'+
-      '<span><div class="dot" style="background:rgba(88,166,255,0.5)"></div>observe</span>'+
-      '<span><div class="dot" style="background:rgba(210,153,34,0.4)"></div>recovery</span>':'')
+    '<span><div class="dot" style="background:none;border:2px solid #fff"></div>best trial</span>'
   );
   const wrap=el.append('div').attr('class','chart-wrap');
-  const svg=wrap.append('svg').attr('width',width).attr('height',height+(obsTrialCount?14:0));
-
-  if(obsTrialCount){
-    const phaseTypeColor={baseline:'rgba(63,185,80,0.35)',observe:'rgba(88,166,255,0.45)',recovery:'rgba(210,153,34,0.35)'};
-    const phaseTypeText={baseline:'#3fb950',observe:'#58a6ff',recovery:'#d29922'};
-    const phaseBandH=8;
-    const phasesFromData=choreographyData&&choreographyData.choreographies?choreographyData.choreographies.find(c=>c.status==='running'):null;
-    const phaseTypes=phasesFromData?phasesFromData.phases.map(p=>p.label||'baseline'):[];
-    const trialsPerPhase={};
-    trials.forEach((t,i)=>{
-      const pidx=t.user_attrs&&t.user_attrs.choreography_phase_idx!=null?t.user_attrs.choreography_phase_idx:null;
-      if(pidx!==null){
-        if(!trialsPerPhase[pidx]) trialsPerPhase[pidx]={start:i,end:i};
-        trialsPerPhase[pidx].end=i;
-      }
-    });
-    Object.entries(trialsPerPhase).forEach(([pidx,range])=>{
-      const x1=margin.left+range.start*cellW;
-      const x2=margin.left+(range.end+1)*cellW;
-      const label=phaseTypes[parseInt(pidx)]||(parseInt(pidx)%3===0?'baseline':parseInt(pidx)%3===1?'observe':'recovery');
-      const isObs=label==='observe';
-      const c=phaseTypeColor[label]||phaseTypeColor.baseline;
-      const tc=phaseTypeText[label]||phaseTypeText.baseline;
-      svg.append('rect').attr('x',x1).attr('y',margin.top-12).attr('width',x2-x1).attr('height',phaseBandH)
-        .attr('fill',c).attr('rx',2);
-      if(x2-x1>20){
-        svg.append('text').attr('x',(x1+x2)/2).attr('y',margin.top-4).attr('text-anchor','middle')
-          .attr('fill',tc).style('font','7px monospace').text(label.substring(0,3)+' '+pidx);
-      }
-    });
-  }
+  const svg=wrap.append('svg').attr('width',width).attr('height',height);
 
   const objScales=objs.map((o,i)=>{
     const vals=objValues(i);
