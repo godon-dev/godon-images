@@ -562,8 +562,8 @@ async function loadCrossData(ids){
   }
 }
 
-const crossTierColor=t=>t==='high'?'#3fb950':t==='medium'?'#d29922':'#58a6ff';
-const crossTierBg=t=>t==='high'?'rgba(63,185,80,0.15)':t==='medium'?'rgba(210,153,34,0.12)':'rgba(88,166,255,0.08)';
+const crossTierColor=t=>t==='coupled'?'#f85149':t==='not_coupled'?'#3fb950':'#8b949e';
+const crossTierBg=t=>t==='coupled'?'rgba(248,81,73,0.15)':t==='not_coupled'?'rgba(63,185,80,0.12)':'rgba(139,148,158,0.08)';
 
 const BREEDER_COLORS=['#58a6ff','#f0883e','#bc8cff','#3fb950','#f85149','#d29922'];
 
@@ -649,12 +649,12 @@ function crossQ(t){
 }
 
 function crossRunAnalysis(){
-  const results={pairs:[],overall:{high:0,medium:0,low:0}};
+  const results={pairs:[],overall:{coupled:0,not_coupled:0,inconclusive:0}};
 
   for(let i=0;i<crossData.length;i++){
     for(let j=i+1;j<crossData.length;j++){
       const a=crossData[i],b=crossData[j];
-      const pair={a:a.name,b:b.name,idxA:i,idxB:j,methods:[],tier:'low',sigCount:0};
+      const pair={a:a.name,b:b.name,idxA:i,idxB:j,methods:[],tier:'inconclusive',sigCount:0};
 
       const aObsTrials=a.trials.filter(t=>t.user_attrs&&t.user_attrs.phase==='observe_only');
       const bObsTrials=b.trials.filter(t=>t.user_attrs&&t.user_attrs.phase==='observe_only');
@@ -688,24 +688,24 @@ function crossRunAnalysis(){
         const aDuringQ=aDuringBPause.map(t=>crossQ(t)).filter(q=>q!=null&&isFinite(q));
         const aOutsideQ=aOutsideBPause.map(t=>crossQ(t)).filter(q=>q!=null&&isFinite(q));
 
-        const shiftAtoB=(bDuringQ.length>=3&&bOutsideQ.length>=3)?computeShift(bDuringQ,bOutsideQ):null;
-        const shiftBtoA=(aDuringQ.length>=3&&aOutsideQ.length>=3)?computeShift(aDuringQ,aOutsideQ):null;
+        const testAtoB=(bDuringQ.length>=3&&bOutsideQ.length>=3)?permutationTest(bDuringQ,bOutsideQ):null;
+        const testBtoA=(aDuringQ.length>=3&&aOutsideQ.length>=3)?permutationTest(aDuringQ,aOutsideQ):null;
 
         pair.methods=[];
-        if(shiftAtoB!==null){
-          pair.methods.push({name:'A paused \u2192 B shift',value:shiftAtoB.shift,signal:shiftAtoB.signal});
+        if(testAtoB!==null){
+          pair.methods.push({name:'A paused \u2192 B shift',value:testAtoB.shift,signal:testAtoB.signal,pValue:testAtoB.pValue});
         } else {
-          pair.methods.push({name:'A paused \u2192 B shift',value:0,signal:false});
+          pair.methods.push({name:'A paused \u2192 B shift',value:0,signal:false,pValue:1});
         }
-        if(shiftBtoA!==null){
-          pair.methods.push({name:'B paused \u2192 A shift',value:shiftBtoA.shift,signal:shiftBtoA.signal});
+        if(testBtoA!==null){
+          pair.methods.push({name:'B paused \u2192 A shift',value:testBtoA.shift,signal:testBtoA.signal,pValue:testBtoA.pValue});
         } else {
-          pair.methods.push({name:'B paused \u2192 A shift',value:0,signal:false});
+          pair.methods.push({name:'B paused \u2192 A shift',value:0,signal:false,pValue:1});
         }
 
         pair.sigCount=pair.methods.filter(m=>m.signal).length;
-        pair.shiftA=shiftAtoB?shiftAtoB.shift:0;
-        pair.shiftB=shiftBtoA?shiftBtoA.shift:0;
+        pair.shiftA=testAtoB?testAtoB.shift:0;
+        pair.shiftB=testBtoA?testBtoA.shift:0;
         pair.maxShift=Math.max(pair.shiftA,pair.shiftB);
         pair.aActMean=aOutsideQ.length?d3.median(aOutsideQ):0;
         pair.aObsMean=aDuringQ.length?d3.median(aDuringQ):0;
@@ -718,11 +718,22 @@ function crossRunAnalysis(){
         pair.aDuringCount=aDuringQ.length;
         pair.aOutsideCount=aOutsideQ.length;
 
-        if(pair.maxShift>=0.3&&pair.sigCount>0) pair.tier='high';
-        else if(pair.maxShift>=0.1&&pair.sigCount>0) pair.tier='medium';
+        const observePairs=[];
+        aObsPhases.forEach(p=>{
+          if(bObsPhases.includes(p)) observePairs.push(p);
+        });
+        const replicateCount=observePairs.length;
+
+        if(pair.sigCount>0&&replicateCount>=2){
+          pair.tier='coupled';
+        } else if(pair.sigCount===0&&pair.methods.every(m=>m.pValue!==1)){
+          pair.tier='not_coupled';
+        } else {
+          pair.tier='inconclusive';
+        }
         pair.hasChoreography=true;
       } else {
-        pair.methods=[{name:'insufficient data (need 3+ observe trials each)',value:0,signal:false}];
+        pair.methods=[{name:'insufficient data (need 3+ observe trials each)',value:0,signal:false,pValue:1}];
         pair.hasChoreography=aObsTrials.length>0||bObsTrials.length>0;
       }
 
@@ -733,14 +744,30 @@ function crossRunAnalysis(){
   return results;
 }
 
-function computeShift(duringQ,outsideQ){
+function permutationTest(duringQ,outsideQ,nPerm=5000){
   const medDuring=d3.median(duringQ);
   const medOutside=d3.median(outsideQ);
+  const observedDiff=Math.abs(medDuring-medOutside);
+  const pooled=duringQ.concat(outsideQ);
+  const n1=duringQ.length;
+  let count=0;
+  for(let p=0;p<nPerm;p++){
+    const shuffled=pooled.slice();
+    for(let k=shuffled.length-1;k>0;k--){
+      const j=Math.floor(Math.random()*(k+1));
+      const tmp=shuffled[k];shuffled[k]=shuffled[j];shuffled[j]=tmp;
+    }
+    const permA=shuffled.slice(0,n1);
+    const permB=shuffled.slice(n1);
+    const permDiff=Math.abs(d3.median(permA)-d3.median(permB));
+    if(permDiff>=observedDiff) count++;
+  }
+  const pValue=(count+1)/(nPerm+1);
   const madOutside=d3.median(outsideQ.map(v=>Math.abs(v-medOutside)));
   const scale=madOutside>0?madOutside:(d3.max(outsideQ)-d3.min(outsideQ))||1;
-  const shift=Math.abs(medDuring-medOutside)/scale;
-  const signal=shift>0.5;
-  return{shift,signal,medDuring,medOutside,scale};
+  const shift=observedDiff/scale;
+  const signal=pValue<0.05;
+  return{shift,signal,pValue,medDuring,medOutside,scale,observedDiff};
 }
 
 function renderCross(){
@@ -784,12 +811,12 @@ function renderCross(){
     phaseSum.text(choreoPhases.filter(Boolean).length+' choreography phases | '+phaseInfo);
 
     const leg=el.append('div').attr('class','legend').style('margin-bottom','8px');
-    leg.append('span').html('<div class="dot" style="background:#3fb950"></div>strong');
-    leg.append('span').html('<div class="dot" style="background:#d29922"></div>moderate');
-    leg.append('span').html('<div class="dot" style="background:#58a6ff"></div>weak');
+    leg.append('span').html('<div class="dot" style="background:#f85149"></div>coupled');
+    leg.append('span').html('<div class="dot" style="background:#3fb950"></div>not coupled');
+    leg.append('span').html('<div class="dot" style="background:#8b949e"></div>inconclusive');
 
     const sum=el.append('div').style('margin-bottom','10px').style('font-size','10px').style('color','#6e7681');
-    sum.text(analysis.pairs.length+' pairs: '+analysis.overall.high+' strong, '+analysis.overall.medium+' moderate, '+analysis.overall.low+' weak');
+    sum.text(analysis.pairs.length+' pairs: '+analysis.overall.coupled+' coupled, '+analysis.overall.not_coupled+' not coupled, '+analysis.overall.inconclusive+' inconclusive');
   }
 
   if(crossView==='ranked') renderCrossRanked(el,analysis);
@@ -811,7 +838,7 @@ function renderCrossRanked(el,analysis){
     {key:'#',w:'30px',field:null},
     {key:'pair',w:'200px',field:'name'},
     {key:'magnitude',w:'160px',field:'score'},
-    {key:'certainty',w:'60px',field:'tier'},
+    {key:'verdict',w:'80px',field:'tier'},
     {key:'direction',w:'140px',field:'dir'},
     {key:'detail',w:'120px',field:null},
   ];
@@ -835,7 +862,7 @@ function renderCrossRanked(el,analysis){
     return items.slice().sort((a,b)=>{
       if(crossSort==='name') return crossSortDir*(a.pair.a+' '+a.pair.b).localeCompare(b.pair.a+' '+b.pair.b);
       if(crossSort==='score') return crossSortDir*(a.score-b.score);
-      if(crossSort==='tier'){const tw=t=>t==='high'?3:t==='medium'?2:1;return crossSortDir*(tw(a.pair.tier)-tw(b.pair.tier))}
+      if(crossSort==='tier'){const tw=t=>t==='coupled'?3:t==='not_coupled'?2:1;return crossSortDir*(tw(a.pair.tier)-tw(b.pair.tier))}
       return 0;
     });
   }
@@ -852,7 +879,7 @@ function renderCrossRanked(el,analysis){
       bar.append('span').style('display','block').style('height','100%')
         .style('width',(r.score/maxScore*100)+'%').style('background',crossTierColor(p.tier)).style('border-radius','3px');
     }
-    row.append('span').style('width','60px').style('font','9px monospace').style('color',crossTierColor(p.tier)).style('flex-shrink','0').text(p.hasChoreography?p.tier:'\u2014');
+    row.append('span').style('width','80px').style('font','9px monospace').style('color',crossTierColor(p.tier)).style('flex-shrink','0').text(p.hasChoreography?p.tier.replace('_',' '):'\u2014');
     row.append('span').style('width','140px').style('font','9px monospace').style('color','#8b949e').style('flex-shrink','0')
       .text(p.hasChoreography?r.bestDir+' '+(r.score*100).toFixed(0)+'%':'no choreography');
     row.append('span').style('width','120px').style('font','9px monospace').style('color','#6e7681').style('flex-shrink','0')
@@ -895,14 +922,14 @@ function renderCrossMatrix(el,analysis){
         g.append('text').attr('x',cx+cellSize/2).attr('y',cy+36).attr('text-anchor','middle')
           .attr('fill','#6e7681').style('font','8px monospace').text(obsCount+' obs');
         g.append('text').attr('x',cx+cellSize/2).attr('y',cy+52).attr('text-anchor','middle')
-          .attr('fill','#484f58').style('font','8px monospace').text(pair.tier);
+          .attr('fill','#484f58').style('font','8px monospace').text(pair.tier.replace('_',' '));
         g.on('click',()=>showCrossPairDetail(pair));
         g.on('mouseenter',function(event){
           d3.select(this).select('rect').attr('stroke-width',2.5);
           const from=isA?pair.a:pair.b,to=isA?pair.b:pair.a;
           let html='<div class="tt-title">'+from+' paused \u2192 '+to+'</div>';
           html+='<div class="tt-line">shift: <span>'+(shift*100).toFixed(1)+'%</span></div>';
-          html+='<div class="tt-line">certainty: <span>'+pair.tier+'</span></div>';
+          html+='<div class="tt-line">verdict: <span>'+pair.tier.replace('_',' ')+'</span></div>';
           showTip(html,event.clientX,event.clientY);
         })
         .on('mouseleave',function(){d3.select(this).select('rect').attr('stroke-width',1.5);hideTip()});
@@ -921,8 +948,8 @@ function renderCrossCausality(el,analysis){
   const edges=[];
   analysis.pairs.forEach(pair=>{
     if(!pair.hasChoreography) return;
-    if(pair.shiftB>0.1) edges.push({from:pair.a,to:pair.b,strength:pair.shiftB,tier:pair.tier,pair});
-    if(pair.shiftA>0.1) edges.push({from:pair.b,to:pair.a,strength:pair.shiftA,tier:pair.tier,pair});
+    if(pair.tier==='coupled'&&pair.shiftB>0.1) edges.push({from:pair.a,to:pair.b,strength:pair.shiftB,tier:pair.tier,pair});
+    if(pair.tier==='coupled'&&pair.shiftA>0.1) edges.push({from:pair.b,to:pair.a,strength:pair.shiftA,tier:pair.tier,pair});
   });
 
   const fromMap={};
@@ -1118,7 +1145,7 @@ function renderCrossCausality(el,analysis){
       lIso.forEach((b,bi)=>{pos[b]={x:isoGap*(bi+1),y:isoY+30}});
     }
     const defs=svg.append('defs');
-    ['high','medium','low'].forEach(t=>{const c=crossTierColor(t);defs.append('marker').attr('id','ct-'+t).attr('viewBox','0 0 10 10')
+    ['coupled','not_coupled','inconclusive'].forEach(t=>{const c=crossTierColor(t);defs.append('marker').attr('id','ct-'+t).attr('viewBox','0 0 10 10')
       .attr('refX',10).attr('refY',5).attr('markerWidth',5).attr('markerHeight',5).attr('orient','auto')
       .append('path').attr('d','M 0 1 L 10 5 L 0 9 z').attr('fill',c)});
     const eG=svg.append('g');
@@ -1376,7 +1403,7 @@ function showCrossPairDetail(pair){
   const el=d3.select('#crossPairDetail');
   el.html('').classed('show',true);
   const hdr=el.append('div').style('display','flex').style('align-items','center').style('gap','10px').style('margin-bottom','12px');
-  hdr.append('h3').style('margin','0').style('font-size','12px').style('color','#c9d1d9').text(pair.a+' \u00d7 '+pair.b+(pair.hasChoreography?' \u2014 '+pair.tier:''));
+  hdr.append('h3').style('margin','0').style('font-size','12px').style('color','#c9d1d9').text(pair.a+' \u00d7 '+pair.b+(pair.hasChoreography?' \u2014 '+pair.tier.replace('_',' '):''));
   hdr.append('button').attr('class','cross-close-btn').text('close').on('click',()=>{el.classed('show',false);el.html('')});
 
   if(pair.hasChoreography){
@@ -1395,6 +1422,9 @@ function showCrossPairDetail(pair){
     bar.append('span').style('display','block').style('height','100%').style('width',(m.value*100)+'%')
       .style('background',m.signal?'#3fb950':'#484f58').style('border-radius','1.5px');
     row.append('span').style('width','60px').style('text-align','right').style('font-size','10px').style('color','#6e7681').text((m.value*100).toFixed(1)+'%');
+    if(m.pValue!==undefined&&m.pValue!==1){
+      row.append('span').style('width','60px').style('text-align','right').style('font-size','10px').style('color',m.pValue<0.05?'#f85149':'#8b949e').text('p='+(m.pValue<0.001?'<0.001':m.pValue.toFixed(3)));
+    }
   });
 
   const aBreeder=crossData[pair.idxA];
