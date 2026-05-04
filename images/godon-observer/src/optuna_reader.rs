@@ -371,12 +371,12 @@ impl OptunaReader {
             }));
         }
 
-        let wm_start = wm_timestamps.first().unwrap_or(&"");
-        let wm_end = wm_timestamps.last().unwrap_or(&"");
-        let rcv_start = &receiver_quality.first().unwrap().0;
-        let rcv_end = &receiver_quality.last().unwrap().0;
-        let overlap_start = if wm_start > rcv_start { wm_start } else { rcv_start };
-        let overlap_end = if wm_end < rcv_end { wm_end } else { rcv_end };
+        let wm_start = wm_timestamps.first().copied().unwrap_or("");
+        let wm_end = wm_timestamps.last().copied().unwrap_or("");
+        let rcv_start = receiver_quality.first().map(|(ts, _)| ts.as_str()).unwrap_or("");
+        let rcv_end = receiver_quality.last().map(|(ts, _)| ts.as_str()).unwrap_or("");
+        let overlap_start = if wm_start.cmp(rcv_start).is_gt() { wm_start } else { rcv_start };
+        let overlap_end = if wm_end.cmp(rcv_end).is_lt() { wm_end } else { rcv_end };
 
         if overlap_start >= overlap_end {
             return Ok(serde_json::json!({
@@ -387,12 +387,15 @@ impl OptunaReader {
             }));
         }
 
-        let aligned_signal: Vec<f64> = wm_trials.iter()
-            .filter(|t| t.datetime_start.as_deref().unwrap_or("") >= overlap_start
-                      && t.datetime_start.as_deref().unwrap_or("") <= overlap_end)
-            .enumerate()
-            .map(|(i, _)| wm_signal.get(i).copied().unwrap_or(0.0))
-            .collect();
+        let mut aligned_signal: Vec<f64> = Vec::new();
+        for (i, t) in wm_trials.iter().enumerate() {
+            let ts = t.datetime_start.as_deref().unwrap_or("");
+            if ts >= overlap_start && ts <= overlap_end {
+                if let Some(&v) = wm_signal.get(i) {
+                    aligned_signal.push(v);
+                }
+            }
+        }
 
         let aligned_quality: Vec<f64> = receiver_quality.iter()
             .filter(|(ts, _)| ts.as_str() >= overlap_start && ts.as_str() <= overlap_end)
