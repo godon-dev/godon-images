@@ -191,6 +191,19 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
         };
     }
 
+    // /api/watermark-detection/<sender_id>/<receiver_id>
+    if path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "watermark-detection" {
+        let sender_id = path_parts[2].to_string();
+        let receiver_id = path_parts[3].to_string();
+        return match state.optuna.detect_watermark_coupling(&sender_id, &receiver_id).await {
+            Ok(result) => Ok(json_response(StatusCode::OK, &serde_json::to_string(&result).unwrap_or_default())),
+            Err(e) => {
+                error!("Watermark detection error: {}", e);
+                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{{\"error\": \"{}\"}}", e)))
+            }
+        };
+    }
+
     // /api/breeders — list all breeders with trial summaries
     if path_parts.len() == 2 && path_parts[0] == "api" && path_parts[1] == "breeders" {
         let url = format!("{}/breeders", state.api_url);
