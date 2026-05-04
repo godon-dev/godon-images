@@ -351,7 +351,7 @@ impl OptunaReader {
         let receiver_quality: Vec<(String, f64)> = receiver_trials.iter()
             .filter(|t| t.state == "COMPLETE")
             .filter(|t| t.datetime_start.is_some())
-            .filter(|t| t.values.first().map_or(false, |v| v.is_some() && v.is_finite()))
+            .filter(|t| t.values.first().map_or(false, |v| v.is_some_and(|f| f.is_finite())))
             .filter_map(|t| {
                 let ts = t.datetime_start.clone()?;
                 let val = t.values.first().and_then(|v| *v)?;
