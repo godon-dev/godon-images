@@ -790,6 +790,7 @@ function renderCross(){
   tabs.append('button').classed('active',crossView==='ranked').text('ranked').on('click',()=>{crossView='ranked';renderCross()});
   tabs.append('button').classed('active',crossView==='matrix').text('matrix').on('click',()=>{crossView='matrix';renderCross()});
   tabs.append('button').classed('active',crossView==='causality').text('causality').on('click',()=>{crossView='causality';renderCross()});
+  tabs.append('button').classed('active',crossView==='watermark').text('watermark').on('click',()=>{crossView='watermark';renderCross()});
   tabs.append('button').classed('active',crossView==='aba').text('ABA').on('click',()=>{crossView='aba';renderCross()});
 
   if(!hasAnyChoreography){
@@ -821,6 +822,7 @@ function renderCross(){
 
   if(crossView==='ranked') renderCrossRanked(el,analysis);
   else if(crossView==='matrix') renderCrossMatrix(el,analysis);
+  else if(crossView==='watermark') renderCrossWatermark(el);
   else if(crossView==='aba') renderCrossABA(el,analysis);
   else renderCrossCausality(el,analysis);
 
@@ -1183,6 +1185,75 @@ function renderCrossCausality(el,analysis){
       }).on('mouseleave',hideTip);
     });
   }
+}
+
+function renderCrossWatermark(el){
+  el.append('div').attr('class','info').style('margin-bottom','12px')
+    .text('watermark detection \u2014 active probing for coupling between breeder pairs');
+
+  const table=el.append('table').style('width','100%').style('border-collapse','collapse').style('font','11px monospace');
+  const thead=table.append('thead');
+  const hr=thead.append('tr');
+  hr.append('th').style('text-align','left').style('color','#484f58').style('padding','6px 8px').text('direction');
+  hr.append('th').style('text-align','center').style('color','#484f58').style('padding','6px 8px').text('verdict');
+  hr.append('th').style('text-align','center').style('color','#484f58').style('padding','6px 8px').text('correlation');
+  hr.append('th').style('text-align','center').style('color','#484f58').style('padding','6px 8px').text('method');
+  hr.append('th').style('text-align','center').style('color','#484f58').style('padding','6px 8px').text('lag');
+  hr.append('th').style('text-align','center').style('color','#484f58').style('padding','6px 8px').text('wm trials');
+  const tbody=table.append('tbody');
+
+  const demoResults={
+    'bench-s4-gh1 \u2192 bench-s4-gh2':{detected:true,correlation:0.427,method:'matched_filter',lag:-1,trials:31},
+    'bench-s4-gh2 \u2192 bench-s4-gh1':{detected:true,correlation:0.312,method:'spearman',lag:3,trials:28},
+    'bench-s3-gh1 \u2192 bench-s3-gh2':{detected:false,correlation:0.031,method:'pearson',lag:0,trials:44},
+    'bench-s3-gh2 \u2192 bench-s3-gh1':{detected:false,correlation:0.054,method:'matched_filter',lag:1,trials:41},
+    'bench-s4-gh1 \u2192 greenhouse-beta':{detected:true,correlation:0.389,method:'pearson',lag:0,trials:5},
+    'bench-s4-gh2 \u2192 greenhouse-beta':{detected:false,correlation:0.091,method:'matched_filter',lag:1,trials:5},
+  };
+
+  const pairs=[];
+  for(let i=0;i<crossData.length;i++){
+    for(let j=0;j<crossData.length;j++){
+      if(i!==j) pairs.push([crossData[i],crossData[j]]);
+    }
+  }
+
+  if(!pairs.length){
+    el.append('div').style('color','#6e7681').text('need at least 2 breeders');
+    return;
+  }
+
+  pairs.forEach(([a,b])=>{
+    const row=tbody.append('tr').style('border-bottom','1px solid #161b22');
+    const pairKey=a.name+' \u2192 '+b.name;
+    row.append('td').style('padding','6px 8px').style('color','#c9d1d9').text(pairKey);
+
+    const tdV=row.append('td').style('text-align','center').style('padding','6px 8px');
+    const tdC=row.append('td').style('text-align','center').style('padding','6px 8px').style('color','#484f58').text('\u2014');
+    const tdM=row.append('td').style('text-align','center').style('padding','6px 8px').style('color','#484f58').text('\u2014');
+    const tdL=row.append('td').style('text-align','center').style('padding','6px 8px').style('color','#484f58').text('\u2014');
+    const tdT=row.append('td').style('text-align','center').style('padding','6px 8px').style('color','#484f58').text('\u2014');
+
+    if(DEMO){
+      const d=demoResults[pairKey]||{detected:false,correlation:Math.random()*0.05,method:'pearson',lag:0,trials:Math.floor(Math.random()*30)+5};
+      tdV.text(d.detected?'detected':'not detected').style('color',d.detected?'#f85149':'#3fb950').style('font-weight','bold');
+      tdC.text(d.correlation.toFixed(3)).style('color',d.detected?'#f85149':'#8b949e');
+      tdM.text(d.method).style('color','#8b949e');
+      tdL.text(d.lag).style('color','#8b949e');
+      tdT.text(d.trials).style('color','#8b949e');
+    } else {
+      tdV.text('\u2026');
+      const url=API_BASE+'/api/watermark-detection/'+a.id+'/'+b.id;
+      fetch(url).then(r=>r.json()).then(d=>{
+        if(d.detected===undefined){tdV.text('error').style('color','#f85149');return;}
+        tdV.text(d.detected?'detected':'not detected').style('color',d.detected?'#f85149':'#3fb950').style('font-weight','bold');
+        tdC.text(d.best_correlation!==undefined?d.best_correlation.toFixed(3):'\u2014').style('color',d.detected?'#f85149':'#8b949e');
+        tdM.text(d.best_method||'\u2014').style('color','#8b949e');
+        tdL.text(d.best_lag!==undefined?d.best_lag:'\u2014').style('color','#8b949e');
+        tdT.text(d.watermark_trials||0).style('color','#8b949e');
+      }).catch(()=>{tdV.text('unavailable').style('color','#484f58');});
+    }
+  });
 }
 
 function renderCrossABA(el,analysis){
