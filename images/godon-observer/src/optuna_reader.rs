@@ -463,56 +463,8 @@ impl OptunaReader {
         }))
     }
 
-    pub async fn get_choreography_status(&self) -> Result<serde_json::Value, Error> {
+    pub async fn get_active_breeders(&self) -> Result<serde_json::Value, Error> {
         let client = self.connect("archive_db").await?;
-
-        let choreo_rows = client
-            .query(
-                "SELECT CAST(id AS TEXT), array_to_string(participants, ','), phases::text, current_phase, status, \
-                 CAST(created_at AS TEXT), CAST(updated_at AS TEXT) \
-                 FROM interference_choreography ORDER BY created_at DESC",
-                &[],
-            )
-            .await?;
-
-        let mut choreographies = Vec::new();
-        for row in &choreo_rows {
-            let id: String = row.get(0);
-            let participants_str: String = row.get(1);
-            let participants: Vec<String> = if participants_str.is_empty() { vec![] } else { participants_str.split(',').map(|s| s.to_string()).collect() };
-            let phases_str: String = row.get(2);
-            let current_phase: i32 = row.get(3);
-            let status: String = row.get(4);
-            let created_at: Option<String> = row.try_get(5).ok();
-            let updated_at: Option<String> = row.try_get(6).ok();
-
-            let phases: Vec<serde_json::Value> = serde_json::from_str(&phases_str).unwrap_or_default();
-
-            let total_phases = phases.len() as i32;
-            let phase_label = if (current_phase as usize) < phases.len() {
-                phases[current_phase as usize].get("label").and_then(|v| v.as_str()).unwrap_or("unknown").to_string()
-            } else {
-                "completed".to_string()
-            };
-            let observe_breeder = if (current_phase as usize) < phases.len() {
-                phases[current_phase as usize].get("observe_breeder").and_then(|v| v.as_str()).map(|s| s.to_string())
-            } else {
-                None
-            };
-
-            choreographies.push(serde_json::json!({
-                "id": id,
-                "participants": participants,
-                "current_phase": current_phase,
-                "total_phases": total_phases,
-                "phase_label": phase_label,
-                "observe_breeder": observe_breeder,
-                "status": status,
-                "phases": phases,
-                "created_at": created_at,
-                "updated_at": updated_at,
-            }));
-        }
 
         let breeder_rows = client
             .query(
@@ -532,7 +484,6 @@ impl OptunaReader {
         }
 
         Ok(serde_json::json!({
-            "choreographies": choreographies,
             "active_breeders": active_breeders,
         }))
     }
