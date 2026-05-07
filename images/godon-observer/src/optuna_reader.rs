@@ -419,22 +419,60 @@ impl OptunaReader {
         let sig = &aligned_signal[..n_align];
         let qual = &aligned_quality[..n_align];
 
-        let max_lag = (n_align / 3).max(1).min(20);
-        let (pearson, pearson_lag) = best_cross_correlation(sig, qual, max_lag);
-        let (spearman, spearman_lag) = best_spearman_lag(sig, qual, max_lag);
-        let matched = matched_filter(sig, qual);
+        let detrended = moving_median_detrend(qual, n_align.max(20));
+        let residuals = &detrended[..n_align];
 
-        let best_corr = pearson.abs().max(spearman.abs()).max(matched.abs());
-        let best_method = if best_corr == matched.abs() { "matched_filter" }
-                          else if best_corr == spearman.abs() { "spearman" }
-                          else { "pearson" };
-        let best_lag = if best_method == "spearman" { spearman_lag } else { pearson_lag };
+        let max_lag = (n_align / 3).max(1).min(20);
+        let (pearson, pearson_lag) = best_cross_correlation(sig, residuals, max_lag);
+        let (spearman, spearman_lag) = best_spearman_lag(sig, residuals, max_lag);
+        let matched = matched_filter(sig, residuals);
+
+        let mut corr_results = vec![
+            ("pearson", pearson.abs(), pearson_lag),
+            ("spearman", spearman.abs(), spearman_lag),
+            ("matched_filter", matched.abs(), 0),
+        ];
+
+        let mut mann_whitney_result: Option<serde_json::Value> = None;
+        if wm_type == "on_off" {
+            let on_vals: Vec<f64> = aligned_signal.iter().zip(residuals.iter())
+                .filter(|(s, _)| **s > 0.5)
+                .map(|(_, r)| **r)
+                .collect();
+            let off_vals: Vec<f64> = aligned_signal.iter().zip(residuals.iter())
+                .filter(|(s, _)| **s < 0.5)
+                .map(|(_, r)| **r)
+                .collect();
+            if on_vals.len() >= 3 && off_vals.len() >= 3 {
+                let (u_stat, mw_p) = mann_whitney_u_test(&on_vals, &off_vals);
+                let mw_effect = if on_vals.len() + off_vals.len() > 0 {
+                    let on_mean: f64 = on_vals.iter().sum::<f64>() / on_vals.len() as f64;
+                    let off_mean: f64 = off_vals.iter().sum::<f64>() / off_vals.len() as f64;
+                    (on_mean - off_mean).abs()
+                } else { 0.0 };
+                corr_results.push(("mann_whitney", mw_effect, 0));
+                mann_whitney_result = Some(serde_json::json!({
+                    "u_statistic": round4(u_stat),
+                    "p_value": round4(mw_p),
+                    "on_trials": on_vals.len(),
+                    "off_trials": off_vals.len(),
+                    "on_mean": round4(on_vals.iter().sum::<f64>() / on_vals.len() as f64),
+                    "off_mean": round4(off_vals.iter().sum::<f64>() / off_vals.len() as f64),
+                    "effect_size": round4(mw_effect),
+                }));
+            }
+        }
+
+        let best = corr_results.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)).unwrap();
+        let best_method = best.0;
+        let best_corr = best.1;
+        let best_lag = best.2;
 
         let n_perm = 5000usize;
         let mut rng = fastrand::Rng::new();
         let mut exceed_count = 0usize;
         for _ in 0..n_perm {
-            let mut shuffled: Vec<f64> = qual.to_vec();
+            let mut shuffled: Vec<f64> = residuals.to_vec();
             shuffle_vec(&mut shuffled, &mut rng);
             let perm_pearson = best_cross_correlation(sig, &shuffled, max_lag).0;
             let perm_spearman = best_spearman_lag(sig, &shuffled, max_lag).0;
@@ -448,7 +486,7 @@ impl OptunaReader {
 
         let detected = p_value < 0.05 && best_corr > 0.1;
 
-        Ok(serde_json::json!({
+        let mut result = serde_json::json!({
             "detected": detected,
             "sender_id": sender_id,
             "receiver_id": receiver_id,
@@ -465,7 +503,12 @@ impl OptunaReader {
             "best_lag": best_lag,
             "p_value": round4(p_value),
             "permutations": n_perm,
-        }))
+        });
+        if let Some(mw) = mann_whitney_result {
+            result.as_object_mut().map(|m| m.insert("mann_whitney".into(), mw));
+        }
+
+        Ok(result)
     }
 
     pub async fn get_active_breeders(&self) -> Result<serde_json::Value, Error> {
@@ -617,4 +660,77 @@ fn shuffle_vec(v: &mut [f64], rng: &mut fastrand::Rng) {
         let j = rng.usize(..=i);
         v.swap(i, j);
     }
+}
+
+fn moving_median_detrend(data: &[f64], window: usize) -> Vec<f64> {
+    let n = data.len();
+    if n == 0 { return vec![]; }
+    let half = window / 2;
+    let mut trend = vec![0.0_f64; n];
+    for i in 0..n {
+        let lo = if i >= half { i - half } else { 0 };
+        let hi = (i + half + 1).min(n);
+        let mut w: Vec<f64> = data[lo..hi].to_vec();
+        w.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        trend[i] = w[w.len() / 2];
+    }
+    data.iter().zip(trend.iter()).map(|(v, t)| v - t).collect()
+}
+
+fn mann_whitney_u_test(x: &[f64], y: &[f64]) -> (f64, f64) {
+    let nx = x.len();
+    let ny = y.len();
+    let n = nx + ny;
+    if nx == 0 || ny == 0 { return (0.0, 1.0); }
+
+    let mut combined: Vec<(usize, f64)> = x.iter().enumerate()
+        .map(|(i, &v)| (0, v))
+        .chain(y.iter().enumerate().map(|(_, &v)| (1, v)))
+        .collect();
+
+    combined.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut ranks = vec![0.0_f64; n];
+    let mut i = 0;
+    while i < n {
+        let mut j = i + 1;
+        while j < n && combined[j].1 == combined[i].1 { j += 1; }
+        let avg_rank = (i + j - 1) as f64 / 2.0 + 1.0;
+        for k in i..j { ranks[k] = avg_rank; }
+        i = j;
+    }
+
+    let r1: f64 = combined.iter().zip(ranks.iter())
+        .filter(|(c, _)| c.0 == 0)
+        .map(|(_, r)| *r)
+        .sum();
+
+    let u1 = r1 - (nx as f64 * (nx as f64 + 1.0)) / 2.0;
+    let u2 = (nx as f64 * ny as f64) - u1;
+    let u_stat = u1.min(u2);
+
+    let mu_u = (nx as f64 * ny as f64) / 2.0;
+    let sigma_u = ((nx as f64 * ny as f64 * (n as f64 + 1.0)) / 12.0).sqrt();
+
+    if sigma_u == 0.0 { return (u_stat, 1.0); }
+
+    let z = (u_stat - mu_u).abs() / sigma_u;
+    let p_value = 2.0 * (1.0 - normal_cdf(z));
+
+    (u_stat, p_value)
+}
+
+fn normal_cdf(x: f64) -> f64 {
+    let a1 = 0.254829592;
+    let a2 = -0.284496736;
+    let a3 = 1.421413741;
+    let a4 = -1.453152027;
+    let a5 = 1.061405429;
+    let p = 0.3275911;
+
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let x = x.abs() / std::f64::consts::SQRT_2;
+    let t = 1.0 / (1.0 + p * x);
+    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x * x).exp();
+    0.5 * (1.0 + sign * y)
 }
