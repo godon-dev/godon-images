@@ -293,7 +293,12 @@ impl OptunaReader {
             }));
         }
 
-        let wm_meta = &wm_trials[0].user_attrs["watermark"];
+        let wm_raw = &wm_trials[0].user_attrs["watermark"];
+        let wm_meta: serde_json::Value = if wm_raw.is_string() {
+            serde_json::from_str(wm_raw.as_str().unwrap_or("{}")).unwrap_or(serde_json::json!({}))
+        } else {
+            wm_raw.clone()
+        };
         let wm_type = wm_meta.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
 
         let wm_signal: Vec<f64> = match wm_type {
