@@ -180,12 +180,12 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
             .unwrap());
     }
 
-    // /api/choreography — interference choreography status
-    if path_parts.len() == 2 && path_parts[0] == "api" && path_parts[1] == "choreography" {
-        return match state.optuna.get_choreography_status().await {
+    // /api/active-breeders — interference active breeders
+    if path_parts.len() == 2 && path_parts[0] == "api" && path_parts[1] == "active-breeders" {
+        return match state.optuna.get_active_breeders().await {
             Ok(status) => Ok(json_response(StatusCode::OK, &serde_json::to_string(&status).unwrap_or_default())),
             Err(e) => {
-                error!("Choreography status error: {}", e);
+                error!("Active breeders error: {}", e);
                 Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{{\"error\": \"{}\"}}", e)))
             }
         };
