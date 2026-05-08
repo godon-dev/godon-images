@@ -300,10 +300,11 @@ impl OptunaReader {
             wm_raw.clone()
         };
         let wm_type = wm_meta.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let wm_period = wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(10.0) as usize;
 
         let wm_signal: Vec<f64> = match wm_type {
             "on_off" => {
-                let period = wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(10.0) as usize;
+                let period = wm_period;
                 wm_trials.iter().map(|t| {
                     let idx = t.user_attrs.get("watermark_trial_idx")
                         .and_then(|v| as_f64(v)).unwrap_or(0.0) as usize;
@@ -419,7 +420,8 @@ impl OptunaReader {
         let sig = &aligned_signal[..n_align];
         let qual = &aligned_quality[..n_align];
 
-        let detrended = moving_median_detrend(qual, n_align.max(20));
+        let detrend_window = (wm_period * 2).max(4).min(qual.len());
+        let detrended = moving_median_detrend(qual, detrend_window);
         let residuals = &detrended[..n_align];
 
         let max_lag = (n_align / 3).max(1).min(20);
