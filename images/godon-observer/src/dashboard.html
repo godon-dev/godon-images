@@ -148,15 +148,14 @@ const DEMO_TRIALS=(function(){
   const params=['co2_injection','heating_setpoints','irrigation','light_intensity','shading','vent_openings'];
   const out=[];
   for(let i=0;i<100;i++){
-    const isWmOn=i%6<4;
     const p=(()=>{const o={};params.forEach(k=>{o[k]=+(Math.random()*10).toFixed(2)});return o})();
     const h=Math.floor(i/6),m=i%6;
     const max_temp=+(33+Math.random()*12).toFixed(1);
     const max_humidity=+(0.78+Math.random()*0.2).toFixed(3);
     const max_co2=+(1000+Math.random()*700).toFixed(0);
     const attrs={};
-    attrs.watermark=isWmOn?'on_off':'off';
-    attrs.watermark_trial_idx=isWmOn?Math.floor(i/2):null;
+    attrs.watermark='{"type":"sinusoidal","param_name":"light_intensity","amplitude":75,"period":20}';
+    attrs.watermark_trial_idx=i;
     attrs.guardrails=JSON.stringify({max_temp:{value:max_temp,hard_limit:40,violated:max_temp>40},max_humidity:{value:max_humidity,hard_limit:0.9,violated:max_humidity>0.9},max_co2:{value:+max_co2,hard_limit:1500,violated:+max_co2>1500}});
     out.push({
       number:i,state:'COMPLETE',
@@ -458,11 +457,10 @@ async function loadCrossData(ids){
         b.qualities=allQ[idx];
         b.times=allT[idx];
         b.trials=allQ[idx].map((q,i)=>{
-          const isWmOn=i%6<4;
           const growth=q;
           const energy=200+q*400+Math.random()*30;
           const water=50+q*80+Math.random()*10;
-          return{number:i,state:'COMPLETE',datetime_start:new Date(allT[idx][i]*1000).toISOString(),params:{},values:[growth,energy,water],user_attrs:{watermark:isWmOn?'{"type":"sinusoidal","param_name":"light_intensity","amplitude":75,"period":20}':'off',watermark_trial_idx:isWmOn?i:null}};
+          return{number:i,state:'COMPLETE',datetime_start:new Date(allT[idx][i]*1000).toISOString(),params:{},values:[growth,energy,water],user_attrs:{watermark:'{"type":"sinusoidal","param_name":"light_intensity","amplitude":75,"period":20}',watermark_trial_idx:i}};
         });
         b.trialCount=b.trials.length;
         b.perObjQualities=b.config.objectives.map((_,oi)=>b.trials.map(t=>t.values?t.values[oi]:null));
@@ -588,7 +586,13 @@ async function renderCross(){
     const detected=Object.values(wmDetections).filter(d=>d.detected).length;
     const total=Object.keys(wmDetections).length;
     const sum=el.append('div').style('margin-bottom','10px').style('font-size','10px').style('color','#6e7681');
-    sum.text(crossData.length+' breeders — '+wmOn+' probing, '+wmOff+' reconnaissance — '+detected+'/'+total+' directions detected');
+    const sampleWm=crossData.find(b=>b.trials.some(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{')));
+    const wmType=sampleWm?(() => { try { return JSON.parse(sampleWm.trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{')).user_attrs.watermark).type } catch(e) { return 'on_off' } })() : 'on_off';
+    if(wmType==='sinusoidal'){
+      sum.text(crossData.length+' breeders — '+wmOn+' watermark trials — '+detected+'/'+total+' directions detected');
+    } else {
+      sum.text(crossData.length+' breeders — '+wmOn+' probing, '+wmOff+' reconnaissance — '+detected+'/'+total+' directions detected');
+    }
   } else {
     el.append('div').attr('class','info').style('margin-bottom','8px').text('no interference probing data — probing activates automatically when neighbors are detected');
   }
@@ -1110,18 +1114,6 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
     const paramName=wmInfo.param_name||'';
     g.append('text').attr('x',0).attr('y',-8).style('font','9px monospace').style('fill','#6e7681')
       .text('watermark: sinusoidal '+paramName+' (period='+period+', amplitude='+amplitude+')');
-    trials.forEach((t,i)=>{
-      const wm=t.user_attrs&&t.user_attrs.watermark;
-      if(!wm||wm==='off') return;
-      const idx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
-      if(idx==null) return;
-      const sinVal=Math.sin(2*Math.PI*idx/period);
-      const opacity=0.04+Math.abs(sinVal)*0.12;
-      const color=sinVal>0?'63,185,80':'88,166,255';
-      const cx=x(allTimes[i]);
-      g.append('rect').attr('x',cx-2).attr('y',0).attr('width',4).attr('height',height)
-        .attr('fill','rgba('+color+','+opacity+')').style('pointer-events','none');
-    });
   }
 
   const lineQ=useRaw?objValues:perObjQ;
@@ -1138,7 +1130,14 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
     const wmInfo=wmMeta?JSON.parse(wmMeta.user_attrs.watermark):{};
     const wmPeriod=wmInfo.period||20;
     const isOff=!wm||wm==='off';
-    const dotColor=wmType==='sinusoidal'?'#3fb950':isOff?'#58a6ff':'#3fb950';
+    const wmIdx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
+    let dotColor;
+    if(wmType==='sinusoidal'&&wmIdx!=null){
+      const sinVal=Math.sin(2*Math.PI*wmIdx/(wmMeta?JSON.parse(wmMeta.user_attrs.watermark).period||20:20));
+      dotColor=sinVal>0.3?'#3fb950':sinVal<-0.3?'#58a6ff':'#8b949e';
+    } else {
+      dotColor=isOff?'#58a6ff':'#3fb950';
+    }
     g.append('circle').attr('cx',x(allTimes[i])).attr('cy',y(q))
       .attr('r',2.5).attr('fill',dotColor).attr('opacity',0.6)
       .style('cursor','pointer')
@@ -1181,8 +1180,14 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
     .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
 
   const legend=parent.append('div').attr('class','legend').style('margin-top','4px');
-  legend.append('span').html('<div class="dot" style="background:#3fb950"></div>probing');
-  legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>reconnaissance');
+  if(wmType==='sinusoidal'){
+    legend.append('span').html('<div class="dot" style="background:#3fb950"></div>positive modulation');
+    legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>negative modulation');
+    legend.append('span').html('<div class="dot" style="background:#8b949e"></div>baseline');
+  } else {
+    legend.append('span').html('<div class="dot" style="background:#3fb950"></div>probing');
+    legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>reconnaissance');
+  }
 }
 
 function showWmPairDetail(r){
@@ -1591,15 +1596,6 @@ function renderInterferenceChart(parent){
       const sinParam=chartWmInfo.param_name||'';
       g.append('text').attr('x',60).attr('y',-6).style('font','8px monospace').style('fill','#484f58')
         .text('sinusoidal: '+sinParam+' (period='+sinPeriod+')');
-      trials.forEach((t,i)=>{
-        const idx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
-        if(idx==null) return;
-        const sinVal=Math.sin(2*Math.PI*idx/sinPeriod);
-        const opacity=0.04+Math.abs(sinVal)*0.1;
-        const color=sinVal>0?'63,185,80':'88,166,255';
-        g.append('rect').attr('x',x(i)-1).attr('y',0).attr('width',3).attr('height',height)
-          .attr('fill','rgba('+color+','+opacity+')').style('pointer-events','none');
-      });
     }
 
     const lineData=allVals.map((v,i)=>({x:i,y:v}));
@@ -1657,7 +1653,7 @@ function renderInterferenceChart(parent){
     parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
       '<span><div class="dot" style="background:#3fb950"></div>positive modulation</span>'+
       '<span><div class="dot" style="background:#58a6ff"></div>negative modulation</span>'+
-      '<span><div class="dot" style="background:#8b949e"></div>near zero</span>'
+      '<span><div class="dot" style="background:#8b949e"></div>baseline</span>'
     );
   } else {
     parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
