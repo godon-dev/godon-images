@@ -439,11 +439,11 @@ impl OptunaReader {
         if wm_type == "on_off" {
             let on_vals: Vec<f64> = aligned_signal.iter().zip(residuals.iter())
                 .filter(|(s, _)| **s > 0.5)
-                .map(|(_, r)| **r)
+                .map(|(_, r)| *r)
                 .collect();
             let off_vals: Vec<f64> = aligned_signal.iter().zip(residuals.iter())
                 .filter(|(s, _)| **s < 0.5)
-                .map(|(_, r)| **r)
+                .map(|(_, r)| *r)
                 .collect();
             if on_vals.len() >= 3 && off_vals.len() >= 3 {
                 let (u_stat, mw_p) = mann_whitney_u_test(&on_vals, &off_vals);
