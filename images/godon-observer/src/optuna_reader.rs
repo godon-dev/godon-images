@@ -468,6 +468,30 @@ impl OptunaReader {
                 }
             }
 
+            let (te_value, te_p) = if n_align >= 20 {
+                let te_observed = transfer_entropy(sig, residuals, 1);
+                let te_base = transfer_entropy(sig, residuals, 0);
+                let te_effect = te_observed - te_base;
+                let mut te_exceed = 0usize;
+                let mut rng_te = fastrand::Rng::new();
+                for _ in 0..1000 {
+                    let mut shuf: Vec<f64> = residuals.to_vec();
+                    shuffle_vec(&mut shuf, &mut rng_te);
+                    let te_perm = transfer_entropy(sig, &shuf, 1);
+                    let te_perm_base = transfer_entropy(sig, &shuf, 0);
+                    if te_perm - te_perm_base >= te_effect {
+                        te_exceed += 1;
+                    }
+                }
+                let te_p_val = (te_exceed + 1) as f64 / 1001.0;
+                if te_p_val < 0.05 && te_effect > 0.001 {
+                    corr_results.push(("transfer_entropy", te_effect, 0));
+                }
+                (round4(te_effect), round4(te_p_val))
+            } else {
+                (0.0, 1.0)
+            };
+
             let best = corr_results.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)).unwrap();
             let best_method = best.0;
             let best_corr = best.1;
@@ -499,6 +523,7 @@ impl OptunaReader {
                 "pearson": {"correlation": round4(pearson), "lag": pearson_lag},
                 "spearman": {"correlation": round4(spearman), "lag": spearman_lag},
                 "matched_filter": round4(matched),
+                "transfer_entropy": {"value": te_value, "p_value": te_p},
                 "best_method": best_method,
                 "best_correlation": round4(best_corr),
                 "best_lag": best_lag,
@@ -775,4 +800,72 @@ fn normal_cdf(x: f64) -> f64 {
     let t = 1.0 / (1.0 + p * x);
     let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x * x).exp();
     0.5 * (1.0 + sign * y)
+}
+
+fn transfer_entropy(source: &[f64], target: &[f64], lag: usize) -> f64 {
+    let n = source.len();
+    if n < lag + 2 { return 0.0; }
+    let n_bins = (n as f64).sqrt().max(3.0) as usize;
+
+    let src_min = source.iter().cloned().fold(f64::INFINITY, f64::min);
+    let src_max = source.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let tgt_min = target.iter().cloned().fold(f64::INFINITY, f64::min);
+    let tgt_max = target.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+    if src_max - src_min < 1e-12 || tgt_max - tgt_min < 1e-12 { return 0.0; }
+
+    let bin_src = |v: f64| -> usize {
+        let b = ((v - src_min) / (src_max - src_min) * (n_bins as f64 - 1.0)).round() as usize;
+        b.min(n_bins - 1)
+    };
+    let bin_tgt = |v: f64| -> usize {
+        let b = ((v - tgt_min) / (tgt_max - tgt_min) * (n_bins as f64 - 1.0)).round() as usize;
+        b.min(n_bins - 1)
+    };
+
+    let n_bins_cubed = n_bins * n_bins * n_bins;
+    let mut count_joint = vec![0u32; n_bins_cubed];
+    let mut count_tgt_next_given_tgt = vec![0u32; n_bins * n_bins];
+    let mut count_tgt_next = vec![0u32; n_bins];
+    let mut count_src_given_tgt = vec![0u32; n_bins * n_bins];
+    let mut count_tgt = vec![0u32; n_bins];
+    let mut total: u32 = 0;
+
+    for i in lag..n - 1 {
+        let s = bin_src(source[i]);
+        let t_curr = bin_tgt(target[i]);
+        let t_next = bin_tgt(target[i + 1]);
+
+        count_joint[s * n_bins * n_bins + t_curr * n_bins + t_next] += 1;
+        count_tgt_next_given_tgt[t_curr * n_bins + t_next] += 1;
+        count_tgt_next[t_next] += 1;
+        count_src_given_tgt[s * n_bins + t_curr] += 1;
+        count_tgt[t_curr] += 1;
+        total += 1;
+    }
+
+    if total == 0 { return 0.0; }
+
+    let mut te = 0.0_f64;
+    for i in lag..n - 1 {
+        let s = bin_src(source[i]);
+        let t_curr = bin_tgt(target[i]);
+        let t_next = bin_tgt(target[i + 1]);
+
+        let c_joint = count_joint[s * n_bins * n_bins + t_curr * n_bins + t_next] as f64;
+        let c_tgt_next_tgt = count_tgt_next_given_tgt[t_curr * n_bins + t_next] as f64;
+        let c_src_tgt = count_src_given_tgt[s * n_bins + t_curr] as f64;
+        let c_tgt = count_tgt[t_curr] as f64;
+
+        if c_joint > 0 && c_tgt_next_tgt > 0 && c_src_tgt > 0 && c_tgt > 0 {
+            let p_joint = c_joint / total as f64;
+            let p_tgt_next_given_tgt = c_tgt_next_tgt / c_tgt;
+            let p_src_given_tgt = c_src_tgt / c_tgt;
+            let p_cond_joint = c_joint / c_tgt;
+
+            te += p_joint * (p_tgt_next_given_tgt / p_cond_joint).ln();
+        }
+    }
+
+    te.max(0.0)
 }
