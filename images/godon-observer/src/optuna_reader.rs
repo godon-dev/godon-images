@@ -686,7 +686,7 @@ fn mann_whitney_u_test(x: &[f64], y: &[f64]) -> (f64, f64) {
     if nx == 0 || ny == 0 { return (0.0, 1.0); }
 
     let mut combined: Vec<(usize, f64)> = x.iter().enumerate()
-        .map(|(i, &v)| (0, v))
+        .map(|(_, &v)| (0, v))
         .chain(y.iter().enumerate().map(|(_, &v)| (1, v)))
         .collect();
 
