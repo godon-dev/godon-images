@@ -505,8 +505,8 @@ impl OptunaReader {
                 "p_value": round4(p_value),
                 "permutations": n_perm,
             });
-            if let Some(mw) = mann_whitney_result {
-                obj_result.as_object_mut().map(|m| m.insert("mann_whitney".into(), mw));
+            if let Some(ref mw) = mann_whitney_result {
+                obj_result.as_object_mut().map(|m| m.insert("mann_whitney".into(), mw.clone()));
             }
 
             if detected && !overall_detected {
