@@ -1115,15 +1115,26 @@ function showWmPairDetail(r){
 
   const summary=el.append('div').style('display','grid').style('grid-template-columns','1fr 1fr 1fr'+(d.mann_whitney?' 1fr':'')).style('gap','8px').style('margin-bottom','12px');
   summary.append('div').attr('class','info')
-    .html('best method: <b style="color:#c9d1d9">'+(d.best_method||'\u2014')+'</b><br>correlation: <b style="color:'+crossTierColor(tier)+'">'+d.best_correlation.toFixed(3)+'</b><br>lag: '+d.best_lag);
+    .html('best method: <b style="color:#c9d1d9">'+(d.best_method||'\u2014')+'</b><br>correlation: <b style="color:'+crossTierColor(tier)+'">'+d.best_correlation.toFixed(3)+'</b><br>lag: '+(d.best_lag||'\u2014'));
   summary.append('div').attr('class','info')
-    .html('p-value: <b style="color:'+(d.p_value<0.05?'#f85149':'#8b949e')+'">'+(d.p_value!=null?(d.p_value<0.001?'<0.001':d.p_value.toFixed(3)):'\u2014')+'</b><br>watermark trials: '+d.watermark_trials+'<br>receiver trials: '+d.receiver_trials);
+    .html('p-value: <b style="color:'+(d.p_value<0.05?'#f85149':'#8b949e')+'">'+(d.p_value!=null?(d.p_value<0.001?'<0.001':d.p_value.toFixed(3)):'\u2014')+'</b><br>watermark trials: '+(d.watermark_trials||'\u2014')+'<br>objectives tested: '+(d.per_objective?d.per_objective.length:'\u2014'));
+  const bestObj=d.per_objective?d.per_objective.reduce((a,b)=>(b.best_correlation||0)>(a.best_correlation||0)?b:a,{best_correlation:0}):null;
   summary.append('div').attr('class','info')
-    .html('pearson: <b>'+(d.pearson?d.pearson.correlation.toFixed(3):'\u2014')+'</b> (lag '+(d.pearson?d.pearson.lag:'\u2014')+')<br>spearman: <b>'+(d.spearman?d.spearman.correlation.toFixed(3):'\u2014')+'</b> (lag '+(d.spearman?d.spearman.lag:'\u2014')+')<br>matched filter: <b>'+(typeof d.matched_filter==='number'?d.matched_filter.toFixed(3):'\u2014')+'</b>');
+    .html('pearson: <b>'+(bestObj&&bestObj.pearson?bestObj.pearson.correlation.toFixed(3):'\u2014')+'</b> (lag '+(bestObj&&bestObj.pearson?bestObj.pearson.lag:'\u2014')+')<br>spearman: <b>'+(bestObj&&bestObj.spearman?bestObj.spearman.correlation.toFixed(3):'\u2014')+'</b> (lag '+(bestObj&&bestObj.spearman?bestObj.spearman.lag:'\u2014')+')<br>matched filter: <b>'+(bestObj&&typeof bestObj.matched_filter==='number'?bestObj.matched_filter.toFixed(3):'\u2014')+'</b>'+(bestObj?'<br><span style="color:#6e7681">objective #'+bestObj.objective_index+'</span>':''));
   if(d.mann_whitney){
     const mwSig=d.mann_whitney.p_value<0.05;
     summary.append('div').attr('class','info')
       .html('on/off test: <b style="color:'+(mwSig?'#f85149':'#8b949e')+'">'+(mwSig?'different':'no difference')+'</b><br>p-value: <b>'+(d.mann_whitney.p_value<0.001?'<0.001':d.mann_whitney.p_value.toFixed(3))+'</b><br>on mean: '+d.mann_whitney.on_mean.toFixed(3)+' | off mean: '+d.mann_whitney.off_mean.toFixed(3));
+  }
+  if(d.per_objective&&d.per_objective.length>1){
+    const objTable=el.append('div').style('margin-bottom','12px');
+    objTable.append('div').style('font','bold 10px monospace').style('color','#8b949e').style('margin-bottom','4px').text('per-objective results');
+    const objGrid=objTable.append('div').style('display','grid').style('grid-template-columns','repeat('+(d.per_objective.length)+',1fr)').style('gap','4px');
+    d.per_objective.forEach(o=>{
+      const oTier=o.detected?'detected':'not_detected';
+      objGrid.append('div').attr('class','info').style('text-align','center')
+        .html('<span style="color:#6e7681">obj '+o.objective_index+'</span><br><b style="color:'+crossTierColor(oTier)+'">'+o.best_correlation.toFixed(3)+'</b><br><span style="font:8px monospace;color:#8b949e">'+o.best_method+'</span><br><span style="font:8px monospace;color:#6e7681">p='+(o.p_value<0.001?'<0.001':o.p_value.toFixed(2))+'</span>'+(o.transfer_entropy?'<br><span style="font:8px monospace;color:#6e7681">TE='+o.transfer_entropy.value.toFixed(3)+'</span>':''));
+    });
   }
 
   const aBreeder=crossData[r.fromIdx];
