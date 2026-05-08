@@ -1121,9 +1121,12 @@ function showWmPairDetail(r){
     .html('best method: <b style="color:#c9d1d9">'+(d.best_method||'\u2014')+'</b><br>correlation: <b style="color:'+crossTierColor(tier)+'">'+d.best_correlation.toFixed(3)+'</b><br>lag: '+(d.best_lag||'\u2014'));
   summary.append('div').attr('class','info')
     .html('p-value: <b style="color:'+(d.p_value<0.05?'#f85149':'#8b949e')+'">'+(d.p_value!=null?(d.p_value<0.001?'<0.001':d.p_value.toFixed(3)):'\u2014')+'</b><br>watermark trials: '+(d.watermark_trials||'\u2014')+'<br>objectives tested: '+(d.per_objective?d.per_objective.length:'\u2014'));
+  const receiverConfig=crossData[r.toIdx];
+  const objNames=receiverConfig&&receiverConfig.config&&receiverConfig.config.objectives?receiverConfig.config.objectives.map(o=>o.name):[];
   const bestObj=d.per_objective?d.per_objective.reduce((a,b)=>(b.best_correlation||0)>(a.best_correlation||0)?b:a,{best_correlation:0}):null;
+  const bestObjName=bestObj&&objNames[bestObj.objective_index]?objNames[bestObj.objective_index]:'obj '+(bestObj?bestObj.objective_index:'?');
   summary.append('div').attr('class','info')
-    .html('pearson: <b>'+(bestObj&&bestObj.pearson?bestObj.pearson.correlation.toFixed(3):'\u2014')+'</b> (lag '+(bestObj&&bestObj.pearson?bestObj.pearson.lag:'\u2014')+')<br>spearman: <b>'+(bestObj&&bestObj.spearman?bestObj.spearman.correlation.toFixed(3):'\u2014')+'</b> (lag '+(bestObj&&bestObj.spearman?bestObj.spearman.lag:'\u2014')+')<br>matched filter: <b>'+(bestObj&&typeof bestObj.matched_filter==='number'?bestObj.matched_filter.toFixed(3):'\u2014')+'</b>'+(bestObj?'<br><span style="color:#6e7681">objective #'+bestObj.objective_index+'</span>':''));
+    .html('pearson: <b>'+(bestObj&&bestObj.pearson?bestObj.pearson.correlation.toFixed(3):'\u2014')+'</b> (lag '+(bestObj&&bestObj.pearson?bestObj.pearson.lag:'\u2014')+')<br>spearman: <b>'+(bestObj&&bestObj.spearman?bestObj.spearman.correlation.toFixed(3):'\u2014')+'</b> (lag '+(bestObj&&bestObj.spearman?bestObj.spearman.lag:'\u2014')+')<br>matched filter: <b>'+(bestObj&&typeof bestObj.matched_filter==='number'?bestObj.matched_filter.toFixed(3):'\u2014')+'</b>'+(bestObj?'<br><span style="color:#6e7681">'+bestObjName+'</span>':''));
   if(d.mann_whitney){
     const mwSig=d.mann_whitney.p_value<0.05;
     summary.append('div').attr('class','info')
@@ -1135,8 +1138,9 @@ function showWmPairDetail(r){
     const objGrid=objTable.append('div').style('display','grid').style('grid-template-columns','repeat('+(d.per_objective.length)+',1fr)').style('gap','4px');
     d.per_objective.forEach(o=>{
       const oTier=o.detected?'detected':'not_detected';
+      const oName=objNames[o.objective_index]||('obj '+o.objective_index);
       objGrid.append('div').attr('class','info').style('text-align','center')
-        .html('<span style="color:#6e7681">obj '+o.objective_index+'</span><br><b style="color:'+crossTierColor(oTier)+'">'+o.best_correlation.toFixed(3)+'</b><br><span style="font:8px monospace;color:#8b949e">'+o.best_method+'</span><br><span style="font:8px monospace;color:#6e7681">p='+(o.p_value<0.001?'<0.001':o.p_value.toFixed(2))+'</span>'+(o.transfer_entropy?'<br><span style="font:8px monospace;color:#6e7681">TE='+o.transfer_entropy.value.toFixed(3)+'</span>':''));
+        .html('<span style="color:#6e7681">'+oName+'</span><br><b style="color:'+crossTierColor(oTier)+'">'+o.best_correlation.toFixed(3)+'</b><br><span style="font:8px monospace;color:#8b949e">'+o.best_method+'</span><br><span style="font:8px monospace;color:#6e7681">p='+(o.p_value<0.001?'<0.001':o.p_value.toFixed(2))+'</span>'+(o.transfer_entropy?'<br><span style="font:8px monospace;color:#6e7681">TE='+o.transfer_entropy.value.toFixed(3)+'</span>':''));
     });
   }
 
