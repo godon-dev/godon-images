@@ -1000,7 +1000,33 @@ function renderCrossInterference(el){
   el.append('div').attr('class','info').style('margin-bottom','12px')
     .text('interference probing overlay — per-objective quality traces with watermark modulation shading');
 
-  crossData.forEach(b=>{
+  const sampleB=crossData.find(b=>b.trials.some(t=>t.user_attrs&&t.user_attrs.watermark));
+  const allObjNames=sampleB&&sampleB.config&&sampleB.config.objectives?sampleB.config.objectives.map(o=>o.name):[];
+  const objCount=allObjNames.length;
+
+  if(objCount>1){
+    const objBar=el.append('div').style('margin-bottom','10px').style('display','flex').style('gap','4px').style('align-items','center');
+    objBar.append('span').style('font','9px monospace').style('color','#8b949e').text('objective:');
+    allObjNames.forEach((oName,oi)=>{
+      objBar.append('button').attr('class','cross-interf-global-obj').attr('data-oi',oi)
+        .style('font','9px monospace').style('padding','2px 8px')
+        .style('border','1px solid #30363d').style('border-radius','3px')
+        .style('background',oi===0?'#21262d':'transparent')
+        .style('color',oi===0?'#c9d1d9':'#6e7681').style('cursor','pointer').text(oName)
+        .on('click',function(){
+          objBar.selectAll('.cross-interf-global-obj').style('background','transparent').style('color','#6e7681');
+          d3.select(this).style('background','#21262d').style('color','#c9d1d9');
+          const newOi=+d3.select(this).attr('data-oi');
+          el.selectAll('.interf-trace-container').each(function(){
+            d3.select(this).html('');
+            const bIdx=+d3.select(this).attr('data-bidx');
+            renderInterferenceTraceOverlay(d3.select(this),crossData[bIdx],newOi);
+          });
+        });
+    });
+  }
+
+  crossData.forEach((b,bIdx)=>{
     const wmTrials=b.trials.filter(t=>t.user_attrs&&t.user_attrs.watermark);
     if(!wmTrials.length) return;
 
@@ -1010,24 +1036,7 @@ function renderCrossInterference(el){
 
     section.append('div').style('font','bold 11px monospace').style('color','#c9d1d9').style('margin-bottom','4px')
       .text(b.name);
-    const bObjs=b.config&&b.config.objectives?b.config.objectives:[];
-    const bNames=bObjs.map(o=>o.name);
-    if(b.perObjQualities&&b.perObjQualities.length>1){
-      const objSel=section.append('div').style('margin-bottom','6px').style('display','flex').style('gap','4px').style('align-items','center');
-      objSel.append('span').style('font','9px monospace').style('color','#8b949e').text('objective:');
-      bNames.forEach((oName,oi)=>{
-        const btn=objSel.append('button').attr('class','cross-interf-obj-btn-'+crossData.indexOf(b)).style('font','9px monospace').style('padding','2px 6px')
-          .style('border','1px solid #30363d').style('border-radius','3px').style('background',oi===0?'#21262d':'transparent')
-          .style('color',oi===0?'#c9d1d9':'#6e7681').style('cursor','pointer').text(oName);
-        btn.on('click',function(){
-          section.selectAll('.cross-interf-obj-btn-'+crossData.indexOf(b)).style('background','transparent').style('color','#6e7681');
-          d3.select(this).style('background','#21262d').style('color','#c9d1d9');
-          section.select('.interf-trace-container').html('');
-          renderInterferenceTraceOverlay(section.select('.interf-trace-container'),b,oi);
-        });
-      });
-    }
-    const container=section.append('div').attr('class','interf-trace-container');
+    const container=section.append('div').attr('class','interf-trace-container').attr('data-bidx',bIdx);
     renderInterferenceTraceOverlay(container,b,0);
   });
 }
