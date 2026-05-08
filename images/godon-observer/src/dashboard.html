@@ -1031,33 +1031,57 @@ function renderInterferenceTraceOverlay(parent,breeder){
   const qPad=(qMax-qMin)*0.1||0.05;
   const y=d3.scaleLinear().domain([qMin-qPad,qMax+qPad]).range([height,0]);
 
-  const wmRanges=[];
-  let curRange=null;
-  trials.forEach((t,i)=>{
-    const wm=t.user_attrs&&t.user_attrs.watermark;
-    const isOff=!wm||wm==='off';
-    if(curRange===null){
-      curRange={start:i,end:i,isOff:isOff};
-    } else if(isOff!==curRange.isOff){
-      wmRanges.push(curRange);
-      curRange={start:i,end:i,isOff:isOff};
-    } else {
-      curRange.end=i;
-    }
-  });
-  if(curRange!==null) wmRanges.push(curRange);
+  const wmMeta=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
+  const wmType=wmMeta?(() => { try { return JSON.parse(wmMeta.user_attrs.watermark).type } catch(e) { return 'unknown' } })() : 'unknown';
 
-  wmRanges.forEach(range=>{
-    const s=range.isOff?null:activeBorder;
-    const f=range.isOff?'rgba(88,166,255,0.03)':activeFill;
-    const sx=x(allTimes[range.start]),ex=x(allTimes[range.end])+1;
-    g.append('rect').attr('x',sx).attr('y',0).attr('width',Math.max(ex-sx,2)).attr('height',height)
-      .attr('fill',f).style('pointer-events','none');
-    if(s){
-      g.append('line').attr('x1',sx).attr('y1',0).attr('x2',sx).attr('y2',height)
-        .attr('stroke',s).attr('stroke-width',1).attr('stroke-dasharray','2,3').style('pointer-events','none');
-    }
-  });
+  if(wmType==='on_off'){
+    const wmRanges=[];
+    let curRange=null;
+    trials.forEach((t,i)=>{
+      const wm=t.user_attrs&&t.user_attrs.watermark;
+      const isOff=!wm||wm==='off';
+      if(curRange===null){
+        curRange={start:i,end:i,isOff:isOff};
+      } else if(isOff!==curRange.isOff){
+        wmRanges.push(curRange);
+        curRange={start:i,end:i,isOff:isOff};
+      } else {
+        curRange.end=i;
+      }
+    });
+    if(curRange!==null) wmRanges.push(curRange);
+
+    wmRanges.forEach(range=>{
+      const s=range.isOff?null:activeBorder;
+      const f=range.isOff?'rgba(88,166,255,0.03)':activeFill;
+      const sx=x(allTimes[range.start]),ex=x(allTimes[range.end])+1;
+      g.append('rect').attr('x',sx).attr('y',0).attr('width',Math.max(ex-sx,2)).attr('height',height)
+        .attr('fill',f).style('pointer-events','none');
+      if(s){
+        g.append('line').attr('x1',sx).attr('y1',0).attr('x2',sx).attr('y2',height)
+          .attr('stroke',s).attr('stroke-width',1).attr('stroke-dasharray','2,3').style('pointer-events','none');
+      }
+    });
+  } else if(wmType==='sinusoidal'){
+    const wmInfo=wmMeta?JSON.parse(wmMeta.user_attrs.watermark):{};
+    const period=wmInfo.period||20;
+    const amplitude=wmInfo.amplitude||75;
+    const paramName=wmInfo.param_name||'';
+    g.append('text').attr('x',0).attr('y',-8).style('font','9px monospace').style('fill','#6e7681')
+      .text('watermark: sinusoidal '+paramName+' (period='+period+', amplitude='+amplitude+')');
+    trials.forEach((t,i)=>{
+      const wm=t.user_attrs&&t.user_attrs.watermark;
+      if(!wm||wm==='off') return;
+      const idx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
+      if(idx==null) return;
+      const sinVal=Math.sin(2*Math.PI*idx/period);
+      const opacity=0.04+Math.abs(sinVal)*0.12;
+      const color=sinVal>0?'63,185,80':'88,166,255';
+      const cx=x(allTimes[i]);
+      g.append('rect').attr('x',cx-2).attr('y',0).attr('width',4).attr('height',height)
+        .attr('fill','rgba('+color+','+opacity+')').style('pointer-events','none');
+    });
+  }
 
   const line=d3.line().x((d,i)=>x(d.time)).y(d=>y(d.q)).defined(d=>d.q!=null&&isFinite(d.q));
   const pts=breeder.qualities.map((q,i)=>({q,time:allTimes[i]}));
@@ -1068,17 +1092,27 @@ function renderInterferenceTraceOverlay(parent,breeder){
     const q=breeder.qualities[i];
     if(q==null||!isFinite(q)||allTimes[i]==null) return;
     const wm=t.user_attrs&&t.user_attrs.watermark;
+    const wmInfo=wmMeta?JSON.parse(wmMeta.user_attrs.watermark):{};
+    const wmPeriod=wmInfo.period||20;
     const isOff=!wm||wm==='off';
+    const dotColor=wmType==='sinusoidal'?'#3fb950':isOff?'#58a6ff':'#3fb950';
     g.append('circle').attr('cx',x(allTimes[i])).attr('cy',y(q))
-      .attr('r',2.5).attr('fill',isOff?'#58a6ff':'#3fb950').attr('opacity',0.6)
+      .attr('r',2.5).attr('fill',dotColor).attr('opacity',0.6)
       .style('cursor','pointer')
       .on('mouseenter',function(event){
         d3.select(this).attr('r',5).attr('opacity',1);
         let html='<b>'+breeder.name+'</b> #'+(i+1);
         if(t.datetime_start) html+=' ('+t.datetime_start.substring(11,19)+')';
         html+='<br>quality: '+(q*100).toFixed(1)+'%';
-        if(!isOff) html+='<br><span style="color:#3fb950">probing ('+wm+')</span>';
-        else html+='<br><span style="color:#58a6ff">reconnaissance</span>';
+        if(wmType==='on_off'){
+          if(!isOff) html+='<br><span style="color:#3fb950">probing</span>';
+          else html+='<br><span style="color:#58a6ff">reconnaissance</span>';
+        } else if(wmType==='sinusoidal'){
+          const idx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
+          const period=wmPeriod;
+          const sinVal=idx!=null?Math.sin(2*Math.PI*idx/period):0;
+          html+='<br><span style="color:#6e7681">modulation: '+(sinVal>=0?'+':'')+sinVal.toFixed(2)+'</span>';
+        }
         if(t.values) t.values.forEach((v,vi)=>{
           html+='<br>obj'+vi+': '+(v!=null?v.toFixed(3):'\u2014');
         });
