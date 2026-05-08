@@ -410,10 +410,20 @@ async function loadCrossData(ids){
         });
         return cnt?sum/cnt:0;
       }):[];
+      const perObjQualities=config.objectives?config.objectives.map((_,oi)=>{
+        return trialList?trialList.map(t=>{
+          const v=t.values?t.values[oi]:null;
+          if(v===null||v===undefined) return null;
+          const vals=trialList.map(tt=>tt.values?tt.values[oi]:null).filter(x=>x!==null);
+          const mn=d3.min(vals),mx=d3.max(vals),rng=mx-mn||1;
+          const norm=(v-mn)/rng;
+          return (config._directions&&config._directions[oi]==='MINIMIZE')?1-norm:norm;
+        }):[];
+      }):[];
       const times=trialList?trialList.map(t=>new Date(t.datetime_start).getTime()/1000):[];
       breeders.push({
         id,name:config.name||id,config,
-        trials:trialList||[],qualities,times,
+        trials:trialList||[],qualities,perObjQualities,times,
         trialCount:trialList?trialList.length:0
       });
     }
@@ -1181,28 +1191,65 @@ function showWmPairDetail(r){
   const aBreeder=crossData[r.fromIdx];
   const bBreeder=crossData[r.toIdx];
   if(aBreeder&&bBreeder){
+    const aObjs=aBreeder.perObjQualities||[];
+    const bObjs=bBreeder.perObjQualities||[];
+    const objCount=aObjs.length||bObjs.length||1;
+    const aNames=aBreeder.config&&aBreeder.config.objectives?aBreeder.config.objectives.map(o=>o.name):[];
+    const bNames=bBreeder.config&&bBreeder.config.objectives?bBreeder.config.objectives.map(o=>o.name):[];
+
+    if(objCount>1){
+      const objSel=el.append('div').style('margin-bottom','6px').style('display','flex').style('gap','4px').style('align-items','center');
+      objSel.append('span').style('font','9px monospace').style('color','#8b949e').text('show:');
+      for(let oi=0;oi<objCount;oi++){
+        const oName=aNames[oi]||('obj '+oi);
+        const btn=objSel.append('button').style('font','9px monospace').style('padding','2px 6px')
+          .style('border','1px solid #30363d').style('border-radius','3px').style('background',oi===0?'#21262d':'transparent')
+          .style('color',oi===0?'#c9d1d9':'#6e7681').style('cursor','pointer').text(oName);
+        btn.on('click',function(){
+          objSel.selectAll('button').style('background','transparent').style('color','#6e7681');
+          d3.select(this).style('background','#21262d').style('color','#c9d1d9');
+          el.select('.pair-chart-obj').text(oi);
+          el.select('.pair-chart-svg').remove();
+          drawChart(oi);
+        });
+      }
+      el.append('span').attr('class','pair-chart-obj').style('display','none').text('0');
+    }
+
     const COLORS=['#58a6ff','#f0883e'];
     const margin={top:20,right:20,bottom:30,left:45};
     const width=Math.min(600,window.innerWidth-160)-margin.left-margin.right;
     const height=180-margin.top-margin.bottom;
-    const svg=el.append('svg').attr('width',width+margin.left+margin.right).attr('height',height+margin.top+margin.bottom);
-    const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
-    const n=Math.min(aBreeder.qualities.length,bBreeder.qualities.length);
-    if(n>1){
+
+    function drawChart(objIdx){
+      const svg=el.append('svg').attr('class','pair-chart-svg').attr('width',width+margin.left+margin.right).attr('height',height+margin.top+margin.bottom);
+      const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
+      const aQ=aObjs[objIdx]||aBreeder.qualities;
+      const bQ=bObjs[objIdx]||bBreeder.qualities;
+      const n=Math.min(aQ.length,bQ.length);
+      if(n<2) return;
       const allTimes=[...aBreeder.times.slice(0,n),...bBreeder.times.slice(0,n)];
       const x=d3.scaleLinear().domain(d3.extent(allTimes)).range([0,width]);
-      const y=d3.scaleLinear().domain([0,1]).range([height,0]);
+      const allVals=[...aQ.slice(0,n).filter(v=>v!=null),...bQ.slice(0,n).filter(v=>v!=null)];
+      const yMin=d3.min(allVals)||0,yMax=d3.max(allVals)||1;
+      const yPad=(yMax-yMin)*0.1||0.05;
+      const y=d3.scaleLinear().domain([yMin-yPad,yMax+yPad]).range([height,0]);
       g.append('g').attr('transform','translate(0,'+height+')').call(d3.axisBottom(x).ticks(5).tickFormat(d=>{const dt=new Date(d*1000);return dt.getHours().toString().padStart(2,'0')+':'+dt.getMinutes().toString().padStart(2,'0')}))
         .selectAll('text').attr('fill','#6e7681').style('font','9px monospace');
       g.selectAll('.domain').attr('stroke','#30363d');g.selectAll('.tick line').attr('stroke','#30363d');
-      g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.0%'))).selectAll('text').attr('fill','#6e7681').style('font','9px monospace');
+      g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.2f'))).selectAll('text').attr('fill','#6e7681').style('font','9px monospace');
+      const oName=aNames[objIdx]||'';
+      g.append('text').attr('x',0).attr('y',-6).style('font','9px monospace').style('fill','#6e7681').text(oName);
       [0,1].forEach(idx=>{
-        const q=idx===0?aBreeder.qualities:bBreeder.qualities;
+        const q=idx===0?aQ:bQ;
         const t=idx===0?aBreeder.times:bBreeder.times;
-        const line=d3.line().x((_,i)=>x(t[i])).y(d=>y(d)).curve(d3.curveMonotoneX);
-        g.append('path').datum(q.slice(0,n)).attr('d',line).attr('fill','none').attr('stroke',COLORS[idx]).attr('stroke-width',1.5).attr('opacity',0.8);
+        const pts=q.slice(0,n).map((v,i)=>({v,t:t[i]})).filter(p=>p.v!=null);
+        const line=d3.line().x(d=>x(d.t)).y(d=>y(d.v)).curve(d3.curveMonotoneX);
+        g.append('path').datum(pts).attr('d',line).attr('fill','none').attr('stroke',COLORS[idx]).attr('stroke-width',1.5).attr('opacity',0.8);
       });
     }
+    drawChart(0);
+
     const leg2=el.append('div').attr('class','legend').style('margin-top','6px');
     leg2.append('span').html('<div class="dot" style="background:'+COLORS[0]+'"></div>'+r.from);
     leg2.append('span').html('<div class="dot" style="background:'+COLORS[1]+'"></div>'+r.to);
