@@ -459,9 +459,13 @@ async function loadCrossData(ids){
         b.times=allT[idx];
         b.trials=allQ[idx].map((q,i)=>{
           const isWmOn=i%6<4;
-          return{number:i,state:'COMPLETE',datetime_start:new Date(allT[idx][i]*1000).toISOString(),params:{},values:[q],user_attrs:{watermark:isWmOn?'on_off':'off',watermark_trial_idx:isWmOn?Math.floor(i/2):null}};
+          const growth=q;
+          const energy=200+q*400+Math.random()*30;
+          const water=50+q*80+Math.random()*10;
+          return{number:i,state:'COMPLETE',datetime_start:new Date(allT[idx][i]*1000).toISOString(),params:{},values:[growth,energy,water],user_attrs:{watermark:isWmOn?'{"type":"sinusoidal","param_name":"light_intensity","amplitude":75,"period":20}':'off',watermark_trial_idx:isWmOn?i:null}};
         });
         b.trialCount=b.trials.length;
+        b.perObjQualities=b.config.objectives.map((_,oi)=>b.trials.map(t=>t.values?t.values[oi]:null));
       });
     }
     crossData=breeders;
@@ -1123,8 +1127,9 @@ function renderInterferenceTraceOverlay(parent,breeder){
           const sinVal=idx!=null?Math.sin(2*Math.PI*idx/period):0;
           html+='<br><span style="color:#6e7681">modulation: '+(sinVal>=0?'+':'')+sinVal.toFixed(2)+'</span>';
         }
+        const tObjNames=breederConfig?breederConfig.objectives.map(o=>o.name):[];
         if(t.values) t.values.forEach((v,vi)=>{
-          html+='<br>obj'+vi+': '+(v!=null?v.toFixed(3):'\u2014');
+          html+='<br>'+(tObjNames[vi]||('obj'+vi))+': '+(v!=null?v.toFixed(3):'\u2014');
         });
         showTip(html,event.clientX,event.clientY);
       })
