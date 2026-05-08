@@ -1472,13 +1472,19 @@ function renderInterferenceView(){
   const wmOff=trials.filter(t=>t.user_attrs&&t.user_attrs.watermark==='off');
   const wmOn=trials.filter(t=>t.user_attrs&&t.user_attrs.watermark&&t.user_attrs.watermark!=='off');
   const pctOn=trials.length?Math.round(wmOn.length/trials.length*100):0;
-  const wmType=wmOn.length?wmOn[0].user_attrs.watermark:'on';
+  const firstWmTrial=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
+  const headerWmType=firstWmTrial?(() => { try { return JSON.parse(firstWmTrial.user_attrs.watermark) } catch(e) { return {type:'on_off'} } })() : {type:'on_off'};
 
   const wrap=el.append('div').style('padding','12px').style('background','#0d1117').style('border','1px solid #21262d').style('border-radius','6px');
   wrap.append('div').style('font','bold 12px monospace').style('color','#c9d1d9').style('margin-bottom','4px')
     .text('interference probing');
-  wrap.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','10px')
-    .text(wmType+' pattern — '+wmOn.length+' active / '+wmOff.length+' reconnaissance / '+trials.length+' total ('+pctOn+'% probing)');
+  if(headerWmType.type==='sinusoidal'){
+    wrap.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','10px')
+      .text('sinusoidal pattern — '+headerWmType.param_name+' (period='+headerWmType.period+', amplitude='+headerWmType.amplitude+') — '+wmOn.length+' watermark trials / '+trials.length+' total');
+  } else {
+    wrap.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','10px')
+      .text(headerWmType.type+' pattern — '+wmOn.length+' active / '+wmOff.length+' reconnaissance / '+trials.length+' total ('+pctOn+'% probing)');
+  }
 
   renderInterferenceChart(wrap);
 }
@@ -1513,37 +1519,58 @@ function renderInterferenceChart(parent){
     g.append('text').attr('x',0).attr('y',-6).attr('fill','#8b949e').style('font','9px monospace')
       .text(obj.name);
 
-    const wmRanges=[];
-    let curRange=null;
-    trials.forEach((t,i)=>{
-      const wm=t.user_attrs&&t.user_attrs.watermark;
-      const isOff=!wm||wm==='off';
-      if(curRange===null){
-        curRange={start:i,end:i,isOff:isOff};
-      } else if(isOff!==curRange.isOff){
-        wmRanges.push(curRange);
-        curRange={start:i,end:i,isOff:isOff};
-      } else {
-        curRange.end=i;
-      }
-    });
-    if(curRange!==null) wmRanges.push(curRange);
+    const firstWm=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
+    const chartWmType=firstWm?(() => { try { return JSON.parse(firstWm.user_attrs.watermark).type } catch(e) { return 'unknown' } })() : 'unknown';
+    const chartWmInfo=firstWm?(() => { try { return JSON.parse(firstWm.user_attrs.watermark) } catch(e) { return {} } })() : {};
+    const chartWmPeriod=chartWmInfo.period||20;
 
-    wmRanges.forEach(range=>{
-      const fill=range.isOff?reconFill:activeFill;
-      const stroke=range.isOff?null:activeBorder;
-      const rw=x(range.end)-x(range.start)+x(1)-x(0);
-      g.append('rect').attr('x',x(range.start)).attr('y',0).attr('width',rw).attr('height',height)
-        .attr('fill',fill).style('pointer-events','none');
-      if(stroke){
-        g.append('line').attr('x1',x(range.start)).attr('y1',0).attr('x2',x(range.start)).attr('y2',height)
-          .attr('stroke',stroke).attr('stroke-width',1).attr('stroke-dasharray','2,3').style('pointer-events','none');
-        if(range.end< trials.length-1){
-          g.append('line').attr('x1',x(range.end)+x(1)-x(0)).attr('y1',0).attr('x2',x(range.end)+x(1)-x(0)).attr('y2',height)
-            .attr('stroke',stroke).attr('stroke-width',1).attr('stroke-dasharray','2,3').style('pointer-events','none');
+    if(chartWmType==='on_off'){
+      const wmRanges=[];
+      let curRange=null;
+      trials.forEach((t,i)=>{
+        const wm=t.user_attrs&&t.user_attrs.watermark;
+        const isOff=!wm||wm==='off';
+        if(curRange===null){
+          curRange={start:i,end:i,isOff:isOff};
+        } else if(isOff!==curRange.isOff){
+          wmRanges.push(curRange);
+          curRange={start:i,end:i,isOff:isOff};
+        } else {
+          curRange.end=i;
         }
-      }
-    });
+      });
+      if(curRange!==null) wmRanges.push(curRange);
+
+      wmRanges.forEach(range=>{
+        const fill=range.isOff?reconFill:activeFill;
+        const stroke=range.isOff?null:activeBorder;
+        const rw=x(range.end)-x(range.start)+x(1)-x(0);
+        g.append('rect').attr('x',x(range.start)).attr('y',0).attr('width',rw).attr('height',height)
+          .attr('fill',fill).style('pointer-events','none');
+        if(stroke){
+          g.append('line').attr('x1',x(range.start)).attr('y1',0).attr('x2',x(range.start)).attr('y2',height)
+            .attr('stroke',stroke).attr('stroke-width',1).attr('stroke-dasharray','2,3').style('pointer-events','none');
+          if(range.end< trials.length-1){
+            g.append('line').attr('x1',x(range.end)+x(1)-x(0)).attr('y1',0).attr('x2',x(range.end)+x(1)-x(0)).attr('y2',height)
+              .attr('stroke',stroke).attr('stroke-width',1).attr('stroke-dasharray','2,3').style('pointer-events','none');
+          }
+        }
+      });
+    } else if(chartWmType==='sinusoidal'){
+      const sinPeriod=chartWmPeriod;
+      const sinParam=chartWmInfo.param_name||'';
+      g.append('text').attr('x',60).attr('y',-6).style('font','8px monospace').style('fill','#484f58')
+        .text('sinusoidal: '+sinParam+' (period='+sinPeriod+')');
+      trials.forEach((t,i)=>{
+        const idx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
+        if(idx==null) return;
+        const sinVal=Math.sin(2*Math.PI*idx/sinPeriod);
+        const opacity=0.04+Math.abs(sinVal)*0.1;
+        const color=sinVal>0?'63,185,80':'88,166,255';
+        g.append('rect').attr('x',x(i)-1).attr('y',0).attr('width',3).attr('height',height)
+          .attr('fill','rgba('+color+','+opacity+')').style('pointer-events','none');
+      });
+    }
 
     const lineData=allVals.map((v,i)=>({x:i,y:v}));
     const line=d3.line().x(d=>x(d.x)).y(d=>y(d.y)).defined(d=>d.y!==null&&d.y!==undefined&&isFinite(d.y));
@@ -1555,17 +1582,29 @@ function renderInterferenceChart(parent){
       if(v===null||v===undefined||!isFinite(v)) return;
       const wm=t.user_attrs&&t.user_attrs.watermark;
       const isOff=!wm||wm==='off';
+      let dotColor='#58a6ff';
+      let phaseLabel='watermark active';
+      if(chartWmType==='on_off'){
+        dotColor=isOff?'#58a6ff':'#3fb950';
+        phaseLabel=isOff?'reconnaissance':'probing';
+      } else if(chartWmType==='sinusoidal'){
+        const idx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
+        if(idx!=null){
+          const sinVal=Math.sin(2*Math.PI*idx/chartWmPeriod);
+          dotColor=sinVal>0.3?'#3fb950':sinVal<-0.3?'#58a6ff':'#8b949e';
+          phaseLabel='modulation: '+(sinVal>=0?'+':'')+sinVal.toFixed(2);
+        }
+      }
       g.append('circle').attr('cx',x(i)).attr('cy',y(v)).attr('r',2.5)
-        .attr('fill',isOff?'#58a6ff':'#3fb950').attr('opacity',0.6)
+        .attr('fill',dotColor).attr('opacity',0.6)
         .style('cursor','pointer')
         .on('mouseenter',function(event){
           d3.select(this).attr('r',5).attr('opacity',1);
           let html='<b>T'+t.number+'</b>';
           if(t.datetime_start) html+=' ('+t.datetime_start.substring(11,19)+')';
           html+='<br>'+obj.name+': '+v.toFixed(3);
-          if(!isOff) html+='<br><span style="color:#3fb950">probing ('+wm+')</span>';
-          else html+='<br><span style="color:#58a6ff">reconnaissance</span>';
-          if(t.user_attrs&&t.user_attrs.watermark_trial_idx!=null) html+='<br>probing trial #'+t.user_attrs.watermark_trial_idx;
+          html+='<br><span style="color:#8b949e">'+phaseLabel+'</span>';
+          if(t.user_attrs&&t.user_attrs.watermark_trial_idx!=null) html+='<br>watermark trial #'+t.user_attrs.watermark_trial_idx;
           objs.forEach((o,oi2)=>{
             if(oi2!==oi){const v2=t.values?t.values[oi2]:null;if(v2!=null) html+='<br>'+o.name+': '+v2.toFixed(3)}
           });
@@ -1582,11 +1621,21 @@ function renderInterferenceChart(parent){
       .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
   });
 
-  parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
-    '<span><div class="dot" style="background:#3fb950"></div>probing trial</span>'+
-    '<span><div class="dot" style="background:#58a6ff"></div>reconnaissance</span>'+
-    '<span><div class="dot" style="background:rgba(63,185,80,0.25)"></div>active probing window</span>'
-  );
+  const firstWm2=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
+  const legendWmType=firstWm2?(() => { try { return JSON.parse(firstWm2.user_attrs.watermark).type } catch(e) { return 'on_off' } })() : 'on_off';
+  if(legendWmType==='sinusoidal'){
+    parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
+      '<span><div class="dot" style="background:#3fb950"></div>positive modulation</span>'+
+      '<span><div class="dot" style="background:#58a6ff"></div>negative modulation</span>'+
+      '<span><div class="dot" style="background:#8b949e"></div>near zero</span>'
+    );
+  } else {
+    parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
+      '<span><div class="dot" style="background:#3fb950"></div>probing trial</span>'+
+      '<span><div class="dot" style="background:#58a6ff"></div>reconnaissance</span>'+
+      '<span><div class="dot" style="background:rgba(63,185,80,0.25)"></div>active probing window</span>'
+    );
+  }
 }
 
 function renderHeatmap(){
