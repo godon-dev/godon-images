@@ -1113,13 +1113,18 @@ function showWmPairDetail(r){
     .text(r.from+' \u2192 '+r.to+' \u2014 '+(d.detected?'detected':'not detected'));
   hdr.append('button').attr('class','cross-close-btn').text('close').on('click',()=>{el.classed('show',false);el.html('')});
 
-  const summary=el.append('div').style('display','grid').style('grid-template-columns','1fr 1fr 1fr').style('gap','8px').style('margin-bottom','12px');
+  const summary=el.append('div').style('display','grid').style('grid-template-columns','1fr 1fr 1fr'+(d.mann_whitney?' 1fr':'')).style('gap','8px').style('margin-bottom','12px');
   summary.append('div').attr('class','info')
     .html('best method: <b style="color:#c9d1d9">'+(d.best_method||'\u2014')+'</b><br>correlation: <b style="color:'+crossTierColor(tier)+'">'+d.best_correlation.toFixed(3)+'</b><br>lag: '+d.best_lag);
   summary.append('div').attr('class','info')
     .html('p-value: <b style="color:'+(d.p_value<0.05?'#f85149':'#8b949e')+'">'+(d.p_value!=null?(d.p_value<0.001?'<0.001':d.p_value.toFixed(3)):'\u2014')+'</b><br>watermark trials: '+d.watermark_trials+'<br>receiver trials: '+d.receiver_trials);
   summary.append('div').attr('class','info')
     .html('pearson: <b>'+(d.pearson?d.pearson.correlation.toFixed(3):'\u2014')+'</b> (lag '+(d.pearson?d.pearson.lag:'\u2014')+')<br>spearman: <b>'+(d.spearman?d.spearman.correlation.toFixed(3):'\u2014')+'</b> (lag '+(d.spearman?d.spearman.lag:'\u2014')+')<br>matched filter: <b>'+(typeof d.matched_filter==='number'?d.matched_filter.toFixed(3):'\u2014')+'</b>');
+  if(d.mann_whitney){
+    const mwSig=d.mann_whitney.p_value<0.05;
+    summary.append('div').attr('class','info')
+      .html('on/off test: <b style="color:'+(mwSig?'#f85149':'#8b949e')+'">'+(mwSig?'different':'no difference')+'</b><br>p-value: <b>'+(d.mann_whitney.p_value<0.001?'<0.001':d.mann_whitney.p_value.toFixed(3))+'</b><br>on mean: '+d.mann_whitney.on_mean.toFixed(3)+' | off mean: '+d.mann_whitney.off_mean.toFixed(3));
+  }
 
   const aBreeder=crossData[r.fromIdx];
   const bBreeder=crossData[r.toIdx];
