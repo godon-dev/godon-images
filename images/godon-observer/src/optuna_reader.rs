@@ -855,10 +855,9 @@ fn transfer_entropy(source: &[f64], target: &[f64], lag: usize) -> f64 {
         let c_src_tgt = count_src_given_tgt[s * n_bins + t_curr] as f64;
         let c_tgt = count_tgt[t_curr] as f64;
 
-        if c_joint > 0 && c_tgt_next_tgt > 0 && c_src_tgt > 0 && c_tgt > 0 {
+        if c_joint > 0.0 && c_tgt_next_tgt > 0.0 && c_src_tgt > 0.0 && c_tgt > 0.0 {
             let p_joint = c_joint / total as f64;
             let p_tgt_next_given_tgt = c_tgt_next_tgt / c_tgt;
-            let p_src_given_tgt = c_src_tgt / c_tgt;
             let p_cond_joint = c_joint / c_tgt;
 
             te += p_joint * (p_tgt_next_given_tgt / p_cond_joint).ln();
