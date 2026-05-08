@@ -998,7 +998,7 @@ function renderCrossInterference(el){
   }
 
   el.append('div').attr('class','info').style('margin-bottom','12px')
-    .text('interference probing overlay — quality traces with watermark on/off shading for each breeder');
+    .text('interference probing overlay — per-objective quality traces with watermark modulation shading');
 
   crossData.forEach(b=>{
     const wmTrials=b.trials.filter(t=>t.user_attrs&&t.user_attrs.watermark);
@@ -1010,18 +1010,33 @@ function renderCrossInterference(el){
 
     section.append('div').style('font','bold 11px monospace').style('color','#c9d1d9').style('margin-bottom','4px')
       .text(b.name);
-    const wmOn=b.trials.filter(t=>t.user_attrs&&t.user_attrs.watermark&&t.user_attrs.watermark!=='off');
-    section.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','8px')
-      .text(wmTrials.length+' probing trials ('+wmOn.length+' active, '+(wmTrials.length-wmOn.length)+' reconnaissance)');
-
-    renderInterferenceTraceOverlay(section,b);
+    const bObjs=b.config&&b.config.objectives?b.config.objectives:[];
+    const bNames=bObjs.map(o=>o.name);
+    if(b.perObjQualities&&b.perObjQualities.length>1){
+      const objSel=section.append('div').style('margin-bottom','6px').style('display','flex').style('gap','4px').style('align-items','center');
+      objSel.append('span').style('font','9px monospace').style('color','#8b949e').text('objective:');
+      bNames.forEach((oName,oi)=>{
+        const btn=objSel.append('button').attr('class','cross-interf-obj-btn-'+crossData.indexOf(b)).style('font','9px monospace').style('padding','2px 6px')
+          .style('border','1px solid #30363d').style('border-radius','3px').style('background',oi===0?'#21262d':'transparent')
+          .style('color',oi===0?'#c9d1d9':'#6e7681').style('cursor','pointer').text(oName);
+        btn.on('click',function(){
+          section.selectAll('.cross-interf-obj-btn-'+crossData.indexOf(b)).style('background','transparent').style('color','#6e7681');
+          d3.select(this).style('background','#21262d').style('color','#c9d1d9');
+          section.select('.interf-trace-container').html('');
+          renderInterferenceTraceOverlay(section.select('.interf-trace-container'),b,oi);
+        });
+      });
+    }
+    const container=section.append('div').attr('class','interf-trace-container');
+    renderInterferenceTraceOverlay(container,b,0);
   });
 }
 
-function renderInterferenceTraceOverlay(parent,breeder){
-  const objs=breederConfig?breederConfig.objectives:[{name:'quality'}];
+function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
+  const objs=breeder.config?breeder.config.objectives:[{name:'quality'}];
   const trials=breeder.trials;
   if(!trials.length) return;
+  const objIdx=selObjIdx!=null?selObjIdx:0;
 
   const margin={top:28,right:20,bottom:30,left:50};
   const fullWidth=Math.min(900,window.innerWidth-60);
@@ -1039,7 +1054,10 @@ function renderInterferenceTraceOverlay(parent,breeder){
   const tMin=d3.min(allTimes),tMax=d3.max(allTimes);
   const x=d3.scaleLinear().domain([tMin,tMax]).range([0,width]);
 
-  const qVals=breeder.qualities.filter(q=>q!=null&&isFinite(q));
+  const perObjQ=breeder.perObjQualities&&breeder.perObjQualities[objIdx]?breeder.perObjQualities[objIdx]:breeder.qualities;
+  const objValues=trials.map(t=>t.values&&t.values[objIdx]!=null?t.values[objIdx]:null);
+  const useRaw=trials.some(t=>t.values&&t.values[objIdx]!=null);
+  const qVals=useRaw?objValues.filter(q=>q!=null&&isFinite(q)):perObjQ.filter(q=>q!=null&&isFinite(q));
   if(!qVals.length) return;
   const qMin=d3.min(qVals),qMax=d3.max(qVals);
   const qPad=(qMax-qMin)*0.1||0.05;
@@ -1097,13 +1115,15 @@ function renderInterferenceTraceOverlay(parent,breeder){
     });
   }
 
+  const lineQ=useRaw?objValues:perObjQ;
   const line=d3.line().x((d,i)=>x(d.time)).y(d=>y(d.q)).defined(d=>d.q!=null&&isFinite(d.q));
-  const pts=breeder.qualities.map((q,i)=>({q,time:allTimes[i]}));
+  const pts=lineQ.map((q,i)=>({q,time:allTimes[i]}));
   g.append('path').datum(pts).attr('d',line)
     .attr('fill','none').attr('stroke','#58a6ff').attr('stroke-width',1.5).attr('opacity',0.8);
 
+  const tObjNames=breeder.config?breeder.config.objectives.map(o=>o.name):[];
   trials.forEach((t,i)=>{
-    const q=breeder.qualities[i];
+    const q=lineQ[i];
     if(q==null||!isFinite(q)||allTimes[i]==null) return;
     const wm=t.user_attrs&&t.user_attrs.watermark;
     const wmInfo=wmMeta?JSON.parse(wmMeta.user_attrs.watermark):{};
@@ -1117,7 +1137,8 @@ function renderInterferenceTraceOverlay(parent,breeder){
         d3.select(this).attr('r',5).attr('opacity',1);
         let html='<b>'+breeder.name+'</b> #'+(i+1);
         if(t.datetime_start) html+=' ('+t.datetime_start.substring(11,19)+')';
-        html+='<br>quality: '+(q*100).toFixed(1)+'%';
+        const curObjName=tObjNames[objIdx]||'quality';
+        html+='<br>'+curObjName+': '+(useRaw?q.toFixed(3):(q*100).toFixed(1)+'%');
         if(wmType==='on_off'){
           if(!isOff) html+='<br><span style="color:#3fb950">probing</span>';
           else html+='<br><span style="color:#58a6ff">reconnaissance</span>';
