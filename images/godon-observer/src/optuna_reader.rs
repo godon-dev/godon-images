@@ -314,10 +314,11 @@ impl OptunaReader {
             "sinusoidal" => {
                 let period = wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(20.0);
                 let amplitude = wm_meta.get("amplitude").and_then(|v| as_f64(v)).unwrap_or(0.1);
+                let phase_offset = wm_meta.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
                 wm_trials.iter().map(|t| {
                     let idx = t.user_attrs.get("watermark_trial_idx")
                         .and_then(|v| as_f64(v)).unwrap_or(0.0);
-                    amplitude * (2.0 * std::f64::consts::PI * idx / period).sin()
+                    amplitude * (2.0 * std::f64::consts::PI * idx / period + phase_offset).sin()
                 }).collect()
             },
             "step" => {
