@@ -814,14 +814,12 @@ fn transfer_entropy(source: &[f64], target: &[f64], lag: usize) -> f64 {
 
     if src_max - src_min < 1e-12 || tgt_max - tgt_min < 1e-12 { return 0.0; }
 
-    let bin_src = |v: f64| -> usize {
-        let b = ((v - src_min) / (src_max - src_min) * (n_bins as f64 - 1.0)).round() as usize;
-        b.min(n_bins - 1)
-    };
-    let bin_tgt = |v: f64| -> usize {
-        let b = ((v - tgt_min) / (tgt_max - tgt_min) * (n_bins as f64 - 1.0)).round() as usize;
-        b.min(n_bins - 1)
-    };
+    let src_bins: Vec<usize> = source.iter()
+        .map(|v| (((v - src_min) / (src_max - src_min) * (n_bins as f64 - 1.0)).round() as usize).min(n_bins - 1))
+        .collect();
+    let tgt_bins: Vec<usize> = target.iter()
+        .map(|v| (((v - tgt_min) / (tgt_max - tgt_min) * (n_bins as f64 - 1.0)).round() as usize).min(n_bins - 1))
+        .collect();
 
     let n_bins_cubed = n_bins * n_bins * n_bins;
     let mut count_joint = vec![0u32; n_bins_cubed];
@@ -832,9 +830,9 @@ fn transfer_entropy(source: &[f64], target: &[f64], lag: usize) -> f64 {
     let mut total: u32 = 0;
 
     for i in lag..n - 1 {
-        let s = bin_src(source[i]);
-        let t_curr = bin_tgt(target[i]);
-        let t_next = bin_tgt(target[i + 1]);
+        let s = src_bins[i];
+        let t_curr = tgt_bins[i];
+        let t_next = tgt_bins[i + 1];
 
         count_joint[s * n_bins * n_bins + t_curr * n_bins + t_next] += 1;
         count_tgt_next_given_tgt[t_curr * n_bins + t_next] += 1;
@@ -848,9 +846,9 @@ fn transfer_entropy(source: &[f64], target: &[f64], lag: usize) -> f64 {
 
     let mut te = 0.0_f64;
     for i in lag..n - 1 {
-        let s = bin_src(source[i]);
-        let t_curr = bin_tgt(target[i]);
-        let t_next = bin_tgt(target[i + 1]);
+        let s = src_bins[i];
+        let t_curr = tgt_bins[i];
+        let t_next = tgt_bins[i + 1];
 
         let c_joint = count_joint[s * n_bins * n_bins + t_curr * n_bins + t_next] as f64;
         let c_tgt_next_tgt = count_tgt_next_given_tgt[t_curr * n_bins + t_next] as f64;
