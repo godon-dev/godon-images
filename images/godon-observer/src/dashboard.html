@@ -148,15 +148,14 @@ const DEMO_TRIALS=(function(){
   const params=['co2_injection','heating_setpoints','irrigation','light_intensity','shading','vent_openings'];
   const out=[];
   for(let i=0;i<100;i++){
-    const isWmOn=i%6<4;
     const p=(()=>{const o={};params.forEach(k=>{o[k]=+(Math.random()*10).toFixed(2)});return o})();
     const h=Math.floor(i/6),m=i%6;
     const max_temp=+(33+Math.random()*12).toFixed(1);
     const max_humidity=+(0.78+Math.random()*0.2).toFixed(3);
     const max_co2=+(1000+Math.random()*700).toFixed(0);
     const attrs={};
-    attrs.watermark=isWmOn?'on_off':'off';
-    attrs.watermark_trial_idx=isWmOn?Math.floor(i/2):null;
+    attrs.watermark='{"type":"sinusoidal","param_name":"light_intensity","amplitude":75,"period":20}';
+    attrs.watermark_trial_idx=i;
     attrs.guardrails=JSON.stringify({max_temp:{value:max_temp,hard_limit:40,violated:max_temp>40},max_humidity:{value:max_humidity,hard_limit:0.9,violated:max_humidity>0.9},max_co2:{value:+max_co2,hard_limit:1500,violated:+max_co2>1500}});
     out.push({
       number:i,state:'COMPLETE',
@@ -410,10 +409,20 @@ async function loadCrossData(ids){
         });
         return cnt?sum/cnt:0;
       }):[];
+      const perObjQualities=config.objectives?config.objectives.map((_,oi)=>{
+        return trialList?trialList.map(t=>{
+          const v=t.values?t.values[oi]:null;
+          if(v===null||v===undefined) return null;
+          const vals=trialList.map(tt=>tt.values?tt.values[oi]:null).filter(x=>x!==null);
+          const mn=d3.min(vals),mx=d3.max(vals),rng=mx-mn||1;
+          const norm=(v-mn)/rng;
+          return (config._directions&&config._directions[oi]==='MINIMIZE')?1-norm:norm;
+        }):[];
+      }):[];
       const times=trialList?trialList.map(t=>new Date(t.datetime_start).getTime()/1000):[];
       breeders.push({
         id,name:config.name||id,config,
-        trials:trialList||[],qualities,times,
+        trials:trialList||[],qualities,perObjQualities,times,
         trialCount:trialList?trialList.length:0
       });
     }
@@ -448,10 +457,13 @@ async function loadCrossData(ids){
         b.qualities=allQ[idx];
         b.times=allT[idx];
         b.trials=allQ[idx].map((q,i)=>{
-          const isWmOn=i%6<4;
-          return{number:i,state:'COMPLETE',datetime_start:new Date(allT[idx][i]*1000).toISOString(),params:{},values:[q],user_attrs:{watermark:isWmOn?'on_off':'off',watermark_trial_idx:isWmOn?Math.floor(i/2):null}};
+          const growth=q;
+          const energy=200+q*400+Math.random()*30;
+          const water=50+q*80+Math.random()*10;
+          return{number:i,state:'COMPLETE',datetime_start:new Date(allT[idx][i]*1000).toISOString(),params:{},values:[growth,energy,water],user_attrs:{watermark:'{"type":"sinusoidal","param_name":"light_intensity","amplitude":75,"period":20}',watermark_trial_idx:i}};
         });
         b.trialCount=b.trials.length;
+        b.perObjQualities=b.config.objectives.map((_,oi)=>b.trials.map(t=>t.values?t.values[oi]:null));
       });
     }
     crossData=breeders;
@@ -482,12 +494,12 @@ function crossQ(t){
 }
 
 const DEMO_WM_DETECTIONS={
-  'bench-s4-gh1::bench-s4-gh2':{detected:true,best_method:'matched_filter',best_correlation:0.427,best_lag:-1,p_value:0.003,watermark_trials:31,receiver_trials:28,pearson:{correlation:0.312,lag:-1},spearman:{correlation:0.348,lag:0},matched_filter:0.427},
-  'bench-s4-gh2::bench-s4-gh1':{detected:true,best_method:'spearman',best_correlation:0.312,best_lag:3,p_value:0.018,watermark_trials:28,receiver_trials:31,pearson:{correlation:0.198,lag:2},spearman:{correlation:0.312,lag:3},matched_filter:0.267},
-  'bench-s3-gh1::bench-s3-gh2':{detected:false,best_method:'pearson',best_correlation:0.031,best_lag:0,p_value:0.812,watermark_trials:44,receiver_trials:41,pearson:{correlation:0.031,lag:0},spearman:{correlation:0.018,lag:-1},matched_filter:0.024},
-  'bench-s3-gh2::bench-s3-gh1':{detected:false,best_method:'matched_filter',best_correlation:0.054,best_lag:1,p_value:0.694,watermark_trials:41,receiver_trials:44,pearson:{correlation:0.019,lag:1},spearman:{correlation:0.041,lag:0},matched_filter:0.054},
-  'bench-s4-gh1::greenhouse-beta':{detected:true,best_method:'pearson',best_correlation:0.389,best_lag:0,p_value:0.021,watermark_trials:31,receiver_trials:5,pearson:{correlation:0.389,lag:0},spearman:{correlation:0.341,lag:1},matched_filter:0.302},
-  'greenhouse-beta::bench-s4-gh1':{detected:false,best_method:'pearson',best_correlation:0.072,best_lag:0,p_value:0.611,watermark_trials:5,receiver_trials:31,pearson:{correlation:0.072,lag:0},spearman:{correlation:0.058,lag:-1},matched_filter:0.063},
+  'bench-s4-gh1::bench-s4-gh2':{detected:true,best_method:'matched_filter',best_correlation:0.427,best_lag:-1,p_value:0.003,watermark_trials:31,mann_whitney:{p_value:0.012,on_mean:0.034,off_mean:-0.021},per_objective:[{objective_index:0,detected:false,aligned_trials:28,receiver_trials:28,pearson:{correlation:0.112,lag:-1},spearman:{correlation:0.098,lag:0},matched_filter:0.087,best_method:'pearson',best_correlation:0.112,best_lag:-1,p_value:0.412,transfer_entropy:{value:0.012,p_value:0.534}},{objective_index:1,detected:true,aligned_trials:28,receiver_trials:28,pearson:{correlation:0.312,lag:-1},spearman:{correlation:0.348,lag:0},matched_filter:0.427,best_method:'matched_filter',best_correlation:0.427,best_lag:-1,p_value:0.003,transfer_entropy:{value:0.089,p_value:0.008}},{objective_index:2,detected:false,aligned_trials:28,receiver_trials:28,pearson:{correlation:0.187,lag:1},spearman:{correlation:0.203,lag:0},matched_filter:0.156,best_method:'spearman',best_correlation:0.203,best_lag:0,p_value:0.134,transfer_entropy:{value:0.031,p_value:0.287}}]},
+  'bench-s4-gh2::bench-s4-gh1':{detected:true,best_method:'spearman',best_correlation:0.312,best_lag:3,p_value:0.018,watermark_trials:28,mann_whitney:{p_value:0.034,on_mean:0.028,off_mean:-0.015},per_objective:[{objective_index:0,detected:false,aligned_trials:31,receiver_trials:31,pearson:{correlation:0.089,lag:2},spearman:{correlation:0.102,lag:1},matched_filter:0.078,best_method:'spearman',best_correlation:0.102,best_lag:1,p_value:0.387,transfer_entropy:{value:0.008,p_value:0.612}},{objective_index:1,detected:true,aligned_trials:31,receiver_trials:31,pearson:{correlation:0.198,lag:2},spearman:{correlation:0.312,lag:3},matched_filter:0.267,best_method:'spearman',best_correlation:0.312,best_lag:3,p_value:0.018,transfer_entropy:{value:0.067,p_value:0.021}},{objective_index:2,detected:false,aligned_trials:31,receiver_trials:31,pearson:{correlation:0.145,lag:-1},spearman:{correlation:0.167,lag:2},matched_filter:0.134,best_method:'spearman',best_correlation:0.167,best_lag:2,p_value:0.198,transfer_entropy:{value:0.023,p_value:0.345}}]},
+  'bench-s3-gh1::bench-s3-gh2':{detected:false,best_method:'pearson',best_correlation:0.031,best_lag:0,p_value:0.812,watermark_trials:44,per_objective:[{objective_index:0,detected:false,aligned_trials:41,receiver_trials:41,pearson:{correlation:0.031,lag:0},spearman:{correlation:0.018,lag:-1},matched_filter:0.024,best_method:'pearson',best_correlation:0.031,best_lag:0,p_value:0.812,transfer_entropy:{value:0.003,p_value:0.876}},{objective_index:1,detected:false,aligned_trials:41,receiver_trials:41,pearson:{correlation:0.024,lag:1},spearman:{correlation:0.015,lag:0},matched_filter:0.019,best_method:'pearson',best_correlation:0.024,best_lag:1,p_value:0.845,transfer_entropy:{value:0.002,p_value:0.912}},{objective_index:2,detected:false,aligned_trials:41,receiver_trials:41,pearson:{correlation:0.018,lag:-1},spearman:{correlation:0.011,lag:1},matched_filter:0.015,best_method:'pearson',best_correlation:0.018,best_lag:-1,p_value:0.891,transfer_entropy:{value:0.001,p_value:0.934}}]},
+  'bench-s3-gh2::bench-s3-gh1':{detected:false,best_method:'matched_filter',best_correlation:0.054,best_lag:1,p_value:0.694,watermark_trials:41,per_objective:[{objective_index:0,detected:false,aligned_trials:44,receiver_trials:44,pearson:{correlation:0.019,lag:1},spearman:{correlation:0.041,lag:0},matched_filter:0.054,best_method:'matched_filter',best_correlation:0.054,best_lag:1,p_value:0.694,transfer_entropy:{value:0.004,p_value:0.798}},{objective_index:1,detected:false,aligned_trials:44,receiver_trials:44,pearson:{correlation:0.038,lag:0},spearman:{correlation:0.029,lag:-1},matched_filter:0.041,best_method:'pearson',best_correlation:0.038,best_lag:0,p_value:0.723,transfer_entropy:{value:0.005,p_value:0.756}},{objective_index:2,detected:false,aligned_trials:44,receiver_trials:44,pearson:{correlation:0.015,lag:-1},spearman:{correlation:0.023,lag:1},matched_filter:0.032,best_method:'matched_filter',best_correlation:0.032,best_lag:-1,p_value:0.812,transfer_entropy:{value:0.002,p_value:0.889}}]},
+  'bench-s4-gh1::greenhouse-beta':{detected:true,best_method:'pearson',best_correlation:0.389,best_lag:0,p_value:0.021,watermark_trials:31,per_objective:[{objective_index:0,detected:false,aligned_trials:5,receiver_trials:5,pearson:{correlation:0.087,lag:0},spearman:{correlation:0.091,lag:0},matched_filter:0.072,best_method:'spearman',best_correlation:0.091,best_lag:0,p_value:0.612,transfer_entropy:{value:0.015,p_value:0.534}},{objective_index:1,detected:true,aligned_trials:5,receiver_trials:5,pearson:{correlation:0.389,lag:0},spearman:{correlation:0.341,lag:1},matched_filter:0.302,best_method:'pearson',best_correlation:0.389,best_lag:0,p_value:0.021,transfer_entropy:{value:0.078,p_value:0.034}}]},
+  'greenhouse-beta::bench-s4-gh1':{detected:false,best_method:'pearson',best_correlation:0.072,best_lag:0,p_value:0.611,watermark_trials:5,per_objective:[{objective_index:0,detected:false,aligned_trials:31,receiver_trials:31,pearson:{correlation:0.072,lag:0},spearman:{correlation:0.058,lag:-1},matched_filter:0.063,best_method:'pearson',best_correlation:0.072,best_lag:0,p_value:0.611,transfer_entropy:{value:0.006,p_value:0.789}},{objective_index:1,detected:false,aligned_trials:31,receiver_trials:31,pearson:{correlation:0.051,lag:1},spearman:{correlation:0.043,lag:0},matched_filter:0.048,best_method:'pearson',best_correlation:0.051,best_lag:1,p_value:0.687,transfer_entropy:{value:0.004,p_value:0.834}}]},
   'bench-s4-gh2::greenhouse-beta':{detected:false,best_method:'matched_filter',best_correlation:0.091,best_lag:1,p_value:0.548,watermark_trials:28,receiver_trials:5,pearson:{correlation:0.064,lag:1},spearman:{correlation:0.043,lag:0},matched_filter:0.091},
   'greenhouse-beta::bench-s4-gh2':{detected:false,best_method:'spearman',best_correlation:0.028,best_lag:-1,p_value:0.891,watermark_trials:5,receiver_trials:28,pearson:{correlation:0.015,lag:0},spearman:{correlation:0.028,lag:-1},matched_filter:0.011},
   'network-tuner::bench-s3-gh1':{detected:false,best_method:'pearson',best_correlation:0.042,best_lag:0,p_value:0.723,watermark_trials:62,receiver_trials:47,pearson:{correlation:0.042,lag:0},spearman:{correlation:0.031,lag:1},matched_filter:0.037},
@@ -513,6 +525,9 @@ const DEMO_WM_DETECTIONS={
   'greenhouse-beta::bench-s3-gh2':{detected:false,best_method:'spearman',best_correlation:0.022,best_lag:0,p_value:0.874,watermark_trials:5,receiver_trials:43,pearson:{correlation:0.011,lag:0},spearman:{correlation:0.022,lag:0},matched_filter:0.015},
   'bench-s3-gh2::greenhouse-beta':{detected:false,best_method:'pearson',best_correlation:0.053,best_lag:-1,p_value:0.608,watermark_trials:43,receiver_trials:5,pearson:{correlation:0.053,lag:-1},spearman:{correlation:0.039,lag:0},matched_filter:0.041},
 };
+
+function addDemoPerObj(d){if(!d.per_objective)d.per_objective=[{objective_index:0,detected:d.detected,receiver_trials:d.receiver_trials||0,aligned_trials:d.receiver_trials||0,pearson:d.pearson||{correlation:0,lag:0},spearman:d.spearman||{correlation:0,lag:0},matched_filter:d.matched_filter||0,best_method:d.best_method,best_correlation:d.best_correlation,best_lag:d.best_lag,p_value:d.p_value,transfer_entropy:{value:0.001,p_value:0.9}}];return d}
+  Object.values(DEMO_WM_DETECTIONS).forEach(addDemoPerObj);
 
 async function fetchWmDetections(){
   const results={};
@@ -571,7 +586,13 @@ async function renderCross(){
     const detected=Object.values(wmDetections).filter(d=>d.detected).length;
     const total=Object.keys(wmDetections).length;
     const sum=el.append('div').style('margin-bottom','10px').style('font-size','10px').style('color','#6e7681');
-    sum.text(crossData.length+' breeders — '+wmOn+' probing, '+wmOff+' reconnaissance — '+detected+'/'+total+' directions detected');
+    const sampleWm=crossData.find(b=>b.trials.some(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{')));
+    const wmType=sampleWm?(() => { try { return JSON.parse(sampleWm.trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{')).user_attrs.watermark).type } catch(e) { return 'on_off' } })() : 'on_off';
+    if(wmType==='sinusoidal'){
+      sum.text(crossData.length+' breeders — '+wmOn+' watermark trials — '+detected+'/'+total+' directions detected');
+    } else {
+      sum.text(crossData.length+' breeders — '+wmOn+' probing, '+wmOff+' reconnaissance — '+detected+'/'+total+' directions detected');
+    }
   } else {
     el.append('div').attr('class','info').style('margin-bottom','8px').text('no interference probing data — probing activates automatically when neighbors are detected');
   }
@@ -981,9 +1002,35 @@ function renderCrossInterference(el){
   }
 
   el.append('div').attr('class','info').style('margin-bottom','12px')
-    .text('interference probing overlay — quality traces with watermark on/off shading for each breeder');
+    .text('interference probing overlay — per-objective quality traces with watermark modulation shading');
 
-  crossData.forEach(b=>{
+  const sampleB=crossData.find(b=>b.trials.some(t=>t.user_attrs&&t.user_attrs.watermark));
+  const allObjNames=sampleB&&sampleB.config&&sampleB.config.objectives?sampleB.config.objectives.map(o=>o.name):[];
+  const objCount=allObjNames.length;
+
+  if(objCount>1){
+    const objBar=el.append('div').style('margin-bottom','10px').style('display','flex').style('gap','4px').style('align-items','center');
+    objBar.append('span').style('font','9px monospace').style('color','#8b949e').text('objective:');
+    allObjNames.forEach((oName,oi)=>{
+      objBar.append('button').attr('class','cross-interf-global-obj').attr('data-oi',oi)
+        .style('font','9px monospace').style('padding','2px 8px')
+        .style('border','1px solid #30363d').style('border-radius','3px')
+        .style('background',oi===0?'#21262d':'transparent')
+        .style('color',oi===0?'#c9d1d9':'#6e7681').style('cursor','pointer').text(oName)
+        .on('click',function(){
+          objBar.selectAll('.cross-interf-global-obj').style('background','transparent').style('color','#6e7681');
+          d3.select(this).style('background','#21262d').style('color','#c9d1d9');
+          const newOi=+d3.select(this).attr('data-oi');
+          el.selectAll('.interf-trace-container').each(function(){
+            d3.select(this).html('');
+            const bIdx=+d3.select(this).attr('data-bidx');
+            renderInterferenceTraceOverlay(d3.select(this),crossData[bIdx],newOi);
+          });
+        });
+    });
+  }
+
+  crossData.forEach((b,bIdx)=>{
     const wmTrials=b.trials.filter(t=>t.user_attrs&&t.user_attrs.watermark);
     if(!wmTrials.length) return;
 
@@ -993,18 +1040,16 @@ function renderCrossInterference(el){
 
     section.append('div').style('font','bold 11px monospace').style('color','#c9d1d9').style('margin-bottom','4px')
       .text(b.name);
-    const wmOn=b.trials.filter(t=>t.user_attrs&&t.user_attrs.watermark&&t.user_attrs.watermark!=='off');
-    section.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','8px')
-      .text(wmTrials.length+' probing trials ('+wmOn.length+' active, '+(wmTrials.length-wmOn.length)+' reconnaissance)');
-
-    renderInterferenceTraceOverlay(section,b);
+    const container=section.append('div').attr('class','interf-trace-container').attr('data-bidx',bIdx);
+    renderInterferenceTraceOverlay(container,b,0);
   });
 }
 
-function renderInterferenceTraceOverlay(parent,breeder){
-  const objs=breederConfig?breederConfig.objectives:[{name:'quality'}];
+function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
+  const objs=breeder.config?breeder.config.objectives:[{name:'quality'}];
   const trials=breeder.trials;
   if(!trials.length) return;
+  const objIdx=selObjIdx!=null?selObjIdx:0;
 
   const margin={top:28,right:20,bottom:30,left:50};
   const fullWidth=Math.min(900,window.innerWidth-60);
@@ -1022,62 +1067,98 @@ function renderInterferenceTraceOverlay(parent,breeder){
   const tMin=d3.min(allTimes),tMax=d3.max(allTimes);
   const x=d3.scaleLinear().domain([tMin,tMax]).range([0,width]);
 
-  const qVals=breeder.qualities.filter(q=>q!=null&&isFinite(q));
+  const perObjQ=breeder.perObjQualities&&breeder.perObjQualities[objIdx]?breeder.perObjQualities[objIdx]:breeder.qualities;
+  const objValues=trials.map(t=>t.values&&t.values[objIdx]!=null?t.values[objIdx]:null);
+  const useRaw=trials.some(t=>t.values&&t.values[objIdx]!=null);
+  const qVals=useRaw?objValues.filter(q=>q!=null&&isFinite(q)):perObjQ.filter(q=>q!=null&&isFinite(q));
   if(!qVals.length) return;
   const qMin=d3.min(qVals),qMax=d3.max(qVals);
   const qPad=(qMax-qMin)*0.1||0.05;
   const y=d3.scaleLinear().domain([qMin-qPad,qMax+qPad]).range([height,0]);
 
-  const wmRanges=[];
-  let curRange=null;
-  trials.forEach((t,i)=>{
-    const wm=t.user_attrs&&t.user_attrs.watermark;
-    const isOff=!wm||wm==='off';
-    if(curRange===null){
-      curRange={start:i,end:i,isOff:isOff};
-    } else if(isOff!==curRange.isOff){
-      wmRanges.push(curRange);
-      curRange={start:i,end:i,isOff:isOff};
-    } else {
-      curRange.end=i;
-    }
-  });
-  if(curRange!==null) wmRanges.push(curRange);
+  const wmMeta=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
+  const wmType=wmMeta?(() => { try { return JSON.parse(wmMeta.user_attrs.watermark).type } catch(e) { return 'unknown' } })() : 'unknown';
 
-  wmRanges.forEach(range=>{
-    const s=range.isOff?null:activeBorder;
-    const f=range.isOff?'rgba(88,166,255,0.03)':activeFill;
-    const sx=x(allTimes[range.start]),ex=x(allTimes[range.end])+1;
-    g.append('rect').attr('x',sx).attr('y',0).attr('width',Math.max(ex-sx,2)).attr('height',height)
-      .attr('fill',f).style('pointer-events','none');
-    if(s){
-      g.append('line').attr('x1',sx).attr('y1',0).attr('x2',sx).attr('y2',height)
-        .attr('stroke',s).attr('stroke-width',1).attr('stroke-dasharray','2,3').style('pointer-events','none');
-    }
-  });
+  if(wmType==='on_off'){
+    const wmRanges=[];
+    let curRange=null;
+    trials.forEach((t,i)=>{
+      const wm=t.user_attrs&&t.user_attrs.watermark;
+      const isOff=!wm||wm==='off';
+      if(curRange===null){
+        curRange={start:i,end:i,isOff:isOff};
+      } else if(isOff!==curRange.isOff){
+        wmRanges.push(curRange);
+        curRange={start:i,end:i,isOff:isOff};
+      } else {
+        curRange.end=i;
+      }
+    });
+    if(curRange!==null) wmRanges.push(curRange);
 
+    wmRanges.forEach(range=>{
+      const s=range.isOff?null:activeBorder;
+      const f=range.isOff?'rgba(88,166,255,0.03)':activeFill;
+      const sx=x(allTimes[range.start]),ex=x(allTimes[range.end])+1;
+      g.append('rect').attr('x',sx).attr('y',0).attr('width',Math.max(ex-sx,2)).attr('height',height)
+        .attr('fill',f).style('pointer-events','none');
+      if(s){
+        g.append('line').attr('x1',sx).attr('y1',0).attr('x2',sx).attr('y2',height)
+          .attr('stroke',s).attr('stroke-width',1).attr('stroke-dasharray','2,3').style('pointer-events','none');
+      }
+    });
+  } else if(wmType==='sinusoidal'){
+    const wmInfo=wmMeta?JSON.parse(wmMeta.user_attrs.watermark):{};
+    const period=wmInfo.period||20;
+    const amplitude=wmInfo.amplitude||75;
+    const paramName=wmInfo.param_name||'';
+    g.append('text').attr('x',0).attr('y',-8).style('font','9px monospace').style('fill','#6e7681')
+      .text('watermark: sinusoidal '+paramName+' (period='+period+', amplitude='+amplitude+')');
+  }
+
+  const lineQ=useRaw?objValues:perObjQ;
   const line=d3.line().x((d,i)=>x(d.time)).y(d=>y(d.q)).defined(d=>d.q!=null&&isFinite(d.q));
-  const pts=breeder.qualities.map((q,i)=>({q,time:allTimes[i]}));
+  const pts=lineQ.map((q,i)=>({q,time:allTimes[i]}));
   g.append('path').datum(pts).attr('d',line)
     .attr('fill','none').attr('stroke','#58a6ff').attr('stroke-width',1.5).attr('opacity',0.8);
 
+  const tObjNames=breeder.config?breeder.config.objectives.map(o=>o.name):[];
   trials.forEach((t,i)=>{
-    const q=breeder.qualities[i];
+    const q=lineQ[i];
     if(q==null||!isFinite(q)||allTimes[i]==null) return;
     const wm=t.user_attrs&&t.user_attrs.watermark;
+    const wmInfo=wmMeta?JSON.parse(wmMeta.user_attrs.watermark):{};
+    const wmPeriod=wmInfo.period||20;
     const isOff=!wm||wm==='off';
+    const wmIdx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
+    let dotColor;
+    if(wmType==='sinusoidal'&&wmIdx!=null){
+      const sinVal=Math.sin(2*Math.PI*wmIdx/(wmMeta?JSON.parse(wmMeta.user_attrs.watermark).period||20:20));
+      dotColor=sinVal>0.3?'#3fb950':sinVal<-0.3?'#58a6ff':'#8b949e';
+    } else {
+      dotColor=isOff?'#58a6ff':'#3fb950';
+    }
     g.append('circle').attr('cx',x(allTimes[i])).attr('cy',y(q))
-      .attr('r',2.5).attr('fill',isOff?'#58a6ff':'#3fb950').attr('opacity',0.6)
+      .attr('r',2.5).attr('fill',dotColor).attr('opacity',0.6)
       .style('cursor','pointer')
       .on('mouseenter',function(event){
         d3.select(this).attr('r',5).attr('opacity',1);
         let html='<b>'+breeder.name+'</b> #'+(i+1);
         if(t.datetime_start) html+=' ('+t.datetime_start.substring(11,19)+')';
-        html+='<br>quality: '+(q*100).toFixed(1)+'%';
-        if(!isOff) html+='<br><span style="color:#3fb950">probing ('+wm+')</span>';
-        else html+='<br><span style="color:#58a6ff">reconnaissance</span>';
+        const curObjName=tObjNames[objIdx]||'quality';
+        html+='<br>'+curObjName+': '+(useRaw?q.toFixed(3):(q*100).toFixed(1)+'%');
+        if(wmType==='on_off'){
+          if(!isOff) html+='<br><span style="color:#3fb950">probing</span>';
+          else html+='<br><span style="color:#58a6ff">reconnaissance</span>';
+        } else if(wmType==='sinusoidal'){
+          const idx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
+          const period=wmPeriod;
+          const sinVal=idx!=null?Math.sin(2*Math.PI*idx/period):0;
+          html+='<br><span style="color:#6e7681">modulation: '+(sinVal>=0?'+':'')+sinVal.toFixed(2)+'</span>';
+        }
+        const tObjNames=breederConfig?breederConfig.objectives.map(o=>o.name):[];
         if(t.values) t.values.forEach((v,vi)=>{
-          html+='<br>obj'+vi+': '+(v!=null?v.toFixed(3):'\u2014');
+          html+='<br>'+(tObjNames[vi]||('obj'+vi))+': '+(v!=null?v.toFixed(3):'\u2014');
         });
         showTip(html,event.clientX,event.clientY);
       })
@@ -1099,8 +1180,14 @@ function renderInterferenceTraceOverlay(parent,breeder){
     .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
 
   const legend=parent.append('div').attr('class','legend').style('margin-top','4px');
-  legend.append('span').html('<div class="dot" style="background:#3fb950"></div>probing');
-  legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>reconnaissance');
+  if(wmType==='sinusoidal'){
+    legend.append('span').html('<div class="dot" style="background:#3fb950"></div>positive modulation');
+    legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>negative modulation');
+    legend.append('span').html('<div class="dot" style="background:#8b949e"></div>baseline');
+  } else {
+    legend.append('span').html('<div class="dot" style="background:#3fb950"></div>probing');
+    legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>reconnaissance');
+  }
 }
 
 function showWmPairDetail(r){
@@ -1115,42 +1202,94 @@ function showWmPairDetail(r){
 
   const summary=el.append('div').style('display','grid').style('grid-template-columns','1fr 1fr 1fr'+(d.mann_whitney?' 1fr':'')).style('gap','8px').style('margin-bottom','12px');
   summary.append('div').attr('class','info')
-    .html('best method: <b style="color:#c9d1d9">'+(d.best_method||'\u2014')+'</b><br>correlation: <b style="color:'+crossTierColor(tier)+'">'+d.best_correlation.toFixed(3)+'</b><br>lag: '+d.best_lag);
+    .html('best method: <b style="color:#c9d1d9">'+(d.best_method||'\u2014')+'</b><br>correlation: <b style="color:'+crossTierColor(tier)+'">'+d.best_correlation.toFixed(3)+'</b><br>lag: '+(d.best_lag||'\u2014'));
   summary.append('div').attr('class','info')
-    .html('p-value: <b style="color:'+(d.p_value<0.05?'#f85149':'#8b949e')+'">'+(d.p_value!=null?(d.p_value<0.001?'<0.001':d.p_value.toFixed(3)):'\u2014')+'</b><br>watermark trials: '+d.watermark_trials+'<br>receiver trials: '+d.receiver_trials);
+    .html('p-value: <b style="color:'+(d.p_value<0.05?'#f85149':'#8b949e')+'">'+(d.p_value!=null?(d.p_value<0.001?'<0.001':d.p_value.toFixed(3)):'\u2014')+'</b><br>watermark trials: '+(d.watermark_trials||'\u2014')+'<br>objectives tested: '+(d.per_objective?d.per_objective.length:'\u2014'));
+  const receiverConfig=crossData[r.toIdx];
+  const objNames=receiverConfig&&receiverConfig.config&&receiverConfig.config.objectives?receiverConfig.config.objectives.map(o=>o.name):[];
+  const bestObj=d.per_objective?d.per_objective.reduce((a,b)=>(b.best_correlation||0)>(a.best_correlation||0)?b:a,{best_correlation:0}):null;
+  const bestObjName=bestObj&&objNames[bestObj.objective_index]?objNames[bestObj.objective_index]:'obj '+(bestObj?bestObj.objective_index:'?');
   summary.append('div').attr('class','info')
-    .html('pearson: <b>'+(d.pearson?d.pearson.correlation.toFixed(3):'\u2014')+'</b> (lag '+(d.pearson?d.pearson.lag:'\u2014')+')<br>spearman: <b>'+(d.spearman?d.spearman.correlation.toFixed(3):'\u2014')+'</b> (lag '+(d.spearman?d.spearman.lag:'\u2014')+')<br>matched filter: <b>'+(typeof d.matched_filter==='number'?d.matched_filter.toFixed(3):'\u2014')+'</b>');
+    .html('pearson: <b>'+(bestObj&&bestObj.pearson?bestObj.pearson.correlation.toFixed(3):'\u2014')+'</b> (lag '+(bestObj&&bestObj.pearson?bestObj.pearson.lag:'\u2014')+')<br>spearman: <b>'+(bestObj&&bestObj.spearman?bestObj.spearman.correlation.toFixed(3):'\u2014')+'</b> (lag '+(bestObj&&bestObj.spearman?bestObj.spearman.lag:'\u2014')+')<br>matched filter: <b>'+(bestObj&&typeof bestObj.matched_filter==='number'?bestObj.matched_filter.toFixed(3):'\u2014')+'</b>'+(bestObj?'<br><span style="color:#6e7681">'+bestObjName+'</span>':''));
   if(d.mann_whitney){
     const mwSig=d.mann_whitney.p_value<0.05;
     summary.append('div').attr('class','info')
       .html('on/off test: <b style="color:'+(mwSig?'#f85149':'#8b949e')+'">'+(mwSig?'different':'no difference')+'</b><br>p-value: <b>'+(d.mann_whitney.p_value<0.001?'<0.001':d.mann_whitney.p_value.toFixed(3))+'</b><br>on mean: '+d.mann_whitney.on_mean.toFixed(3)+' | off mean: '+d.mann_whitney.off_mean.toFixed(3));
   }
+  if(d.per_objective&&d.per_objective.length>1){
+    const objTable=el.append('div').style('margin-bottom','12px');
+    objTable.append('div').style('font','bold 10px monospace').style('color','#8b949e').style('margin-bottom','4px').text('per-objective results');
+    const objGrid=objTable.append('div').style('display','grid').style('grid-template-columns','repeat('+(d.per_objective.length)+',1fr)').style('gap','4px');
+    d.per_objective.forEach(o=>{
+      const oTier=o.detected?'detected':'not_detected';
+      const oName=objNames[o.objective_index]||('obj '+o.objective_index);
+      objGrid.append('div').attr('class','info').style('text-align','center')
+        .html('<span style="color:#6e7681">'+oName+'</span><br><b style="color:'+crossTierColor(oTier)+'">'+o.best_correlation.toFixed(3)+'</b><br><span style="font:8px monospace;color:#8b949e">'+o.best_method+'</span><br><span style="font:8px monospace;color:#6e7681">p='+(o.p_value<0.001?'<0.001':o.p_value.toFixed(2))+'</span>'+(o.transfer_entropy?'<br><span style="font:8px monospace;color:#6e7681">TE='+o.transfer_entropy.value.toFixed(3)+'</span>':''));
+    });
+  }
 
   const aBreeder=crossData[r.fromIdx];
   const bBreeder=crossData[r.toIdx];
   if(aBreeder&&bBreeder){
+    const aObjs=aBreeder.perObjQualities||[];
+    const bObjs=bBreeder.perObjQualities||[];
+    const objCount=aObjs.length||bObjs.length||1;
+    const aNames=aBreeder.config&&aBreeder.config.objectives?aBreeder.config.objectives.map(o=>o.name):[];
+    const bNames=bBreeder.config&&bBreeder.config.objectives?bBreeder.config.objectives.map(o=>o.name):[];
+
+    if(objCount>1){
+      const objSel=el.append('div').style('margin-bottom','6px').style('display','flex').style('gap','4px').style('align-items','center');
+      objSel.append('span').style('font','9px monospace').style('color','#8b949e').text('show:');
+      for(let oi=0;oi<objCount;oi++){
+        const oName=aNames[oi]||('obj '+oi);
+        const btn=objSel.append('button').style('font','9px monospace').style('padding','2px 6px')
+          .style('border','1px solid #30363d').style('border-radius','3px').style('background',oi===0?'#21262d':'transparent')
+          .style('color',oi===0?'#c9d1d9':'#6e7681').style('cursor','pointer').text(oName);
+        btn.on('click',function(){
+          objSel.selectAll('button').style('background','transparent').style('color','#6e7681');
+          d3.select(this).style('background','#21262d').style('color','#c9d1d9');
+          el.select('.pair-chart-obj').text(oi);
+          el.select('.pair-chart-svg').remove();
+          drawChart(oi);
+        });
+      }
+      el.append('span').attr('class','pair-chart-obj').style('display','none').text('0');
+    }
+
     const COLORS=['#58a6ff','#f0883e'];
     const margin={top:20,right:20,bottom:30,left:45};
     const width=Math.min(600,window.innerWidth-160)-margin.left-margin.right;
     const height=180-margin.top-margin.bottom;
-    const svg=el.append('svg').attr('width',width+margin.left+margin.right).attr('height',height+margin.top+margin.bottom);
-    const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
-    const n=Math.min(aBreeder.qualities.length,bBreeder.qualities.length);
-    if(n>1){
+
+    function drawChart(objIdx){
+      const svg=el.append('svg').attr('class','pair-chart-svg').attr('width',width+margin.left+margin.right).attr('height',height+margin.top+margin.bottom);
+      const g=svg.append('g').attr('transform','translate('+margin.left+','+margin.top+')');
+      const aQ=aObjs[objIdx]||aBreeder.qualities;
+      const bQ=bObjs[objIdx]||bBreeder.qualities;
+      const n=Math.min(aQ.length,bQ.length);
+      if(n<2) return;
       const allTimes=[...aBreeder.times.slice(0,n),...bBreeder.times.slice(0,n)];
       const x=d3.scaleLinear().domain(d3.extent(allTimes)).range([0,width]);
-      const y=d3.scaleLinear().domain([0,1]).range([height,0]);
+      const allVals=[...aQ.slice(0,n).filter(v=>v!=null),...bQ.slice(0,n).filter(v=>v!=null)];
+      const yMin=d3.min(allVals)||0,yMax=d3.max(allVals)||1;
+      const yPad=(yMax-yMin)*0.1||0.05;
+      const y=d3.scaleLinear().domain([yMin-yPad,yMax+yPad]).range([height,0]);
       g.append('g').attr('transform','translate(0,'+height+')').call(d3.axisBottom(x).ticks(5).tickFormat(d=>{const dt=new Date(d*1000);return dt.getHours().toString().padStart(2,'0')+':'+dt.getMinutes().toString().padStart(2,'0')}))
         .selectAll('text').attr('fill','#6e7681').style('font','9px monospace');
       g.selectAll('.domain').attr('stroke','#30363d');g.selectAll('.tick line').attr('stroke','#30363d');
-      g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.0%'))).selectAll('text').attr('fill','#6e7681').style('font','9px monospace');
+      g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.2f'))).selectAll('text').attr('fill','#6e7681').style('font','9px monospace');
+      const oName=aNames[objIdx]||'';
+      g.append('text').attr('x',0).attr('y',-6).style('font','9px monospace').style('fill','#6e7681').text(oName);
       [0,1].forEach(idx=>{
-        const q=idx===0?aBreeder.qualities:bBreeder.qualities;
+        const q=idx===0?aQ:bQ;
         const t=idx===0?aBreeder.times:bBreeder.times;
-        const line=d3.line().x((_,i)=>x(t[i])).y(d=>y(d)).curve(d3.curveMonotoneX);
-        g.append('path').datum(q.slice(0,n)).attr('d',line).attr('fill','none').attr('stroke',COLORS[idx]).attr('stroke-width',1.5).attr('opacity',0.8);
+        const pts=q.slice(0,n).map((v,i)=>({v,t:t[i]})).filter(p=>p.v!=null);
+        const line=d3.line().x(d=>x(d.t)).y(d=>y(d.v)).curve(d3.curveMonotoneX);
+        g.append('path').datum(pts).attr('d',line).attr('fill','none').attr('stroke',COLORS[idx]).attr('stroke-width',1.5).attr('opacity',0.8);
       });
     }
+    drawChart(0);
+
     const leg2=el.append('div').attr('class','legend').style('margin-top','6px');
     leg2.append('span').html('<div class="dot" style="background:'+COLORS[0]+'"></div>'+r.from);
     leg2.append('span').html('<div class="dot" style="background:'+COLORS[1]+'"></div>'+r.to);
@@ -1368,13 +1507,19 @@ function renderInterferenceView(){
   const wmOff=trials.filter(t=>t.user_attrs&&t.user_attrs.watermark==='off');
   const wmOn=trials.filter(t=>t.user_attrs&&t.user_attrs.watermark&&t.user_attrs.watermark!=='off');
   const pctOn=trials.length?Math.round(wmOn.length/trials.length*100):0;
-  const wmType=wmOn.length?wmOn[0].user_attrs.watermark:'on';
+  const firstWmTrial=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
+  const headerWmType=firstWmTrial?(() => { try { return JSON.parse(firstWmTrial.user_attrs.watermark) } catch(e) { return {type:'on_off'} } })() : {type:'on_off'};
 
   const wrap=el.append('div').style('padding','12px').style('background','#0d1117').style('border','1px solid #21262d').style('border-radius','6px');
   wrap.append('div').style('font','bold 12px monospace').style('color','#c9d1d9').style('margin-bottom','4px')
     .text('interference probing');
-  wrap.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','10px')
-    .text(wmType+' pattern — '+wmOn.length+' active / '+wmOff.length+' reconnaissance / '+trials.length+' total ('+pctOn+'% probing)');
+  if(headerWmType.type==='sinusoidal'){
+    wrap.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','10px')
+      .text('sinusoidal pattern — '+headerWmType.param_name+' (period='+headerWmType.period+', amplitude='+headerWmType.amplitude+') — '+wmOn.length+' watermark trials / '+trials.length+' total');
+  } else {
+    wrap.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','10px')
+      .text(headerWmType.type+' pattern — '+wmOn.length+' active / '+wmOff.length+' reconnaissance / '+trials.length+' total ('+pctOn+'% probing)');
+  }
 
   renderInterferenceChart(wrap);
 }
@@ -1409,37 +1554,49 @@ function renderInterferenceChart(parent){
     g.append('text').attr('x',0).attr('y',-6).attr('fill','#8b949e').style('font','9px monospace')
       .text(obj.name);
 
-    const wmRanges=[];
-    let curRange=null;
-    trials.forEach((t,i)=>{
-      const wm=t.user_attrs&&t.user_attrs.watermark;
-      const isOff=!wm||wm==='off';
-      if(curRange===null){
-        curRange={start:i,end:i,isOff:isOff};
-      } else if(isOff!==curRange.isOff){
-        wmRanges.push(curRange);
-        curRange={start:i,end:i,isOff:isOff};
-      } else {
-        curRange.end=i;
-      }
-    });
-    if(curRange!==null) wmRanges.push(curRange);
+    const firstWm=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
+    const chartWmType=firstWm?(() => { try { return JSON.parse(firstWm.user_attrs.watermark).type } catch(e) { return 'unknown' } })() : 'unknown';
+    const chartWmInfo=firstWm?(() => { try { return JSON.parse(firstWm.user_attrs.watermark) } catch(e) { return {} } })() : {};
+    const chartWmPeriod=chartWmInfo.period||20;
 
-    wmRanges.forEach(range=>{
-      const fill=range.isOff?reconFill:activeFill;
-      const stroke=range.isOff?null:activeBorder;
-      const rw=x(range.end)-x(range.start)+x(1)-x(0);
-      g.append('rect').attr('x',x(range.start)).attr('y',0).attr('width',rw).attr('height',height)
-        .attr('fill',fill).style('pointer-events','none');
-      if(stroke){
-        g.append('line').attr('x1',x(range.start)).attr('y1',0).attr('x2',x(range.start)).attr('y2',height)
-          .attr('stroke',stroke).attr('stroke-width',1).attr('stroke-dasharray','2,3').style('pointer-events','none');
-        if(range.end< trials.length-1){
-          g.append('line').attr('x1',x(range.end)+x(1)-x(0)).attr('y1',0).attr('x2',x(range.end)+x(1)-x(0)).attr('y2',height)
-            .attr('stroke',stroke).attr('stroke-width',1).attr('stroke-dasharray','2,3').style('pointer-events','none');
+    if(chartWmType==='on_off'){
+      const wmRanges=[];
+      let curRange=null;
+      trials.forEach((t,i)=>{
+        const wm=t.user_attrs&&t.user_attrs.watermark;
+        const isOff=!wm||wm==='off';
+        if(curRange===null){
+          curRange={start:i,end:i,isOff:isOff};
+        } else if(isOff!==curRange.isOff){
+          wmRanges.push(curRange);
+          curRange={start:i,end:i,isOff:isOff};
+        } else {
+          curRange.end=i;
         }
-      }
-    });
+      });
+      if(curRange!==null) wmRanges.push(curRange);
+
+      wmRanges.forEach(range=>{
+        const fill=range.isOff?reconFill:activeFill;
+        const stroke=range.isOff?null:activeBorder;
+        const rw=x(range.end)-x(range.start)+x(1)-x(0);
+        g.append('rect').attr('x',x(range.start)).attr('y',0).attr('width',rw).attr('height',height)
+          .attr('fill',fill).style('pointer-events','none');
+        if(stroke){
+          g.append('line').attr('x1',x(range.start)).attr('y1',0).attr('x2',x(range.start)).attr('y2',height)
+            .attr('stroke',stroke).attr('stroke-width',1).attr('stroke-dasharray','2,3').style('pointer-events','none');
+          if(range.end< trials.length-1){
+            g.append('line').attr('x1',x(range.end)+x(1)-x(0)).attr('y1',0).attr('x2',x(range.end)+x(1)-x(0)).attr('y2',height)
+              .attr('stroke',stroke).attr('stroke-width',1).attr('stroke-dasharray','2,3').style('pointer-events','none');
+          }
+        }
+      });
+    } else if(chartWmType==='sinusoidal'){
+      const sinPeriod=chartWmPeriod;
+      const sinParam=chartWmInfo.param_name||'';
+      g.append('text').attr('x',60).attr('y',-6).style('font','8px monospace').style('fill','#484f58')
+        .text('sinusoidal: '+sinParam+' (period='+sinPeriod+')');
+    }
 
     const lineData=allVals.map((v,i)=>({x:i,y:v}));
     const line=d3.line().x(d=>x(d.x)).y(d=>y(d.y)).defined(d=>d.y!==null&&d.y!==undefined&&isFinite(d.y));
@@ -1451,17 +1608,29 @@ function renderInterferenceChart(parent){
       if(v===null||v===undefined||!isFinite(v)) return;
       const wm=t.user_attrs&&t.user_attrs.watermark;
       const isOff=!wm||wm==='off';
+      let dotColor='#58a6ff';
+      let phaseLabel='watermark active';
+      if(chartWmType==='on_off'){
+        dotColor=isOff?'#58a6ff':'#3fb950';
+        phaseLabel=isOff?'reconnaissance':'probing';
+      } else if(chartWmType==='sinusoidal'){
+        const idx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
+        if(idx!=null){
+          const sinVal=Math.sin(2*Math.PI*idx/chartWmPeriod);
+          dotColor=sinVal>0.3?'#3fb950':sinVal<-0.3?'#58a6ff':'#8b949e';
+          phaseLabel='modulation: '+(sinVal>=0?'+':'')+sinVal.toFixed(2);
+        }
+      }
       g.append('circle').attr('cx',x(i)).attr('cy',y(v)).attr('r',2.5)
-        .attr('fill',isOff?'#58a6ff':'#3fb950').attr('opacity',0.6)
+        .attr('fill',dotColor).attr('opacity',0.6)
         .style('cursor','pointer')
         .on('mouseenter',function(event){
           d3.select(this).attr('r',5).attr('opacity',1);
           let html='<b>T'+t.number+'</b>';
           if(t.datetime_start) html+=' ('+t.datetime_start.substring(11,19)+')';
           html+='<br>'+obj.name+': '+v.toFixed(3);
-          if(!isOff) html+='<br><span style="color:#3fb950">probing ('+wm+')</span>';
-          else html+='<br><span style="color:#58a6ff">reconnaissance</span>';
-          if(t.user_attrs&&t.user_attrs.watermark_trial_idx!=null) html+='<br>probing trial #'+t.user_attrs.watermark_trial_idx;
+          html+='<br><span style="color:#8b949e">'+phaseLabel+'</span>';
+          if(t.user_attrs&&t.user_attrs.watermark_trial_idx!=null) html+='<br>watermark trial #'+t.user_attrs.watermark_trial_idx;
           objs.forEach((o,oi2)=>{
             if(oi2!==oi){const v2=t.values?t.values[oi2]:null;if(v2!=null) html+='<br>'+o.name+': '+v2.toFixed(3)}
           });
@@ -1478,11 +1647,21 @@ function renderInterferenceChart(parent){
       .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
   });
 
-  parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
-    '<span><div class="dot" style="background:#3fb950"></div>probing trial</span>'+
-    '<span><div class="dot" style="background:#58a6ff"></div>reconnaissance</span>'+
-    '<span><div class="dot" style="background:rgba(63,185,80,0.25)"></div>active probing window</span>'
-  );
+  const firstWm2=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
+  const legendWmType=firstWm2?(() => { try { return JSON.parse(firstWm2.user_attrs.watermark).type } catch(e) { return 'on_off' } })() : 'on_off';
+  if(legendWmType==='sinusoidal'){
+    parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
+      '<span><div class="dot" style="background:#3fb950"></div>positive modulation</span>'+
+      '<span><div class="dot" style="background:#58a6ff"></div>negative modulation</span>'+
+      '<span><div class="dot" style="background:#8b949e"></div>baseline</span>'
+    );
+  } else {
+    parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
+      '<span><div class="dot" style="background:#3fb950"></div>probing trial</span>'+
+      '<span><div class="dot" style="background:#58a6ff"></div>reconnaissance</span>'+
+      '<span><div class="dot" style="background:rgba(63,185,80,0.25)"></div>active probing window</span>'
+    );
+  }
 }
 
 function renderHeatmap(){
