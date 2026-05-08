@@ -354,159 +354,199 @@ impl OptunaReader {
             }));
         }
 
-        let receiver_quality: Vec<(String, f64)> = receiver_trials.iter()
+        let n_obj = receiver_trials.iter()
             .filter(|t| t.state == "COMPLETE")
-            .filter(|t| t.datetime_start.is_some())
-            .filter(|t| t.values.first().map_or(false, |v| v.is_some_and(|f| f.is_finite())))
-            .filter_map(|t| {
-                let ts = t.datetime_start.clone()?;
-                let val = t.values.first().and_then(|v| *v)?;
-                Some((ts, val))
-            })
-            .collect();
+            .map(|t| t.values.len())
+            .max()
+            .unwrap_or(0);
+        if n_obj == 0 {
+            return Ok(serde_json::json!({
+                "detected": false,
+                "reason": "no objective values in receiver trials",
+            }));
+        }
 
         let wm_timestamps: Vec<&str> = wm_trials.iter()
             .filter_map(|t| t.datetime_start.as_deref())
             .collect();
 
-        if receiver_quality.len() < 4 {
-            return Ok(serde_json::json!({
-                "detected": false,
-                "reason": "too few receiver quality values",
-                "receiver_trials": receiver_quality.len(),
-            }));
-        }
-
         let wm_start = wm_timestamps.first().copied().unwrap_or("");
         let wm_end = wm_timestamps.last().copied().unwrap_or("");
-        let rcv_start = receiver_quality.first().map(|(ts, _)| ts.as_str()).unwrap_or("");
-        let rcv_end = receiver_quality.last().map(|(ts, _)| ts.as_str()).unwrap_or("");
-        let overlap_start = if wm_start.cmp(rcv_start).is_gt() { wm_start } else { rcv_start };
-        let overlap_end = if wm_end.cmp(rcv_end).is_lt() { wm_end } else { rcv_end };
 
-        if overlap_start >= overlap_end {
-            return Ok(serde_json::json!({
-                "detected": false,
-                "reason": "no temporal overlap between watermark and receiver trials",
-                "watermark_range": [wm_start, wm_end],
-                "receiver_range": [rcv_start, rcv_end],
-            }));
-        }
+        let mut per_objective: Vec<serde_json::Value> = Vec::new();
+        let mut overall_detected = false;
+        let mut overall_best_method = "";
+        let mut overall_best_corr = 0.0_f64;
+        let mut overall_best_lag = 0_i32;
+        let mut overall_p_value = 1.0_f64;
+        let mut overall_mann_whitney: Option<serde_json::Value> = None;
 
-        let mut aligned_signal: Vec<f64> = Vec::new();
-        for (i, t) in wm_trials.iter().enumerate() {
-            let ts = t.datetime_start.as_deref().unwrap_or("");
-            if ts >= overlap_start && ts <= overlap_end {
-                if let Some(&v) = wm_signal.get(i) {
-                    aligned_signal.push(v);
+        for obj_idx in 0..n_obj {
+            let receiver_quality: Vec<(String, f64)> = receiver_trials.iter()
+                .filter(|t| t.state == "COMPLETE")
+                .filter(|t| t.datetime_start.is_some())
+                .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
+                .filter_map(|t| {
+                    let ts = t.datetime_start.clone()?;
+                    let val = t.values.get(obj_idx).and_then(|v| *v)?;
+                    Some((ts, val))
+                })
+                .collect();
+
+            if receiver_quality.len() < 4 { continue; }
+
+            let rcv_start = receiver_quality.first().map(|(ts, _)| ts.as_str()).unwrap_or("");
+            let rcv_end = receiver_quality.last().map(|(ts, _)| ts.as_str()).unwrap_or("");
+            let overlap_start = if wm_start.cmp(rcv_start).is_gt() { wm_start } else { rcv_start };
+            let overlap_end = if wm_end.cmp(rcv_end).is_lt() { wm_end } else { rcv_end };
+
+            if overlap_start >= overlap_end { continue; }
+
+            let mut aligned_signal: Vec<f64> = Vec::new();
+            for (i, t) in wm_trials.iter().enumerate() {
+                let ts = t.datetime_start.as_deref().unwrap_or("");
+                if ts >= overlap_start && ts <= overlap_end {
+                    if let Some(&v) = wm_signal.get(i) {
+                        aligned_signal.push(v);
+                    }
                 }
             }
+
+            let aligned_quality: Vec<f64> = receiver_quality.iter()
+                .filter(|(ts, _)| ts.as_str() >= overlap_start && ts.as_str() <= overlap_end)
+                .map(|(_, v)| *v)
+                .collect();
+
+            let n_align = aligned_signal.len().min(aligned_quality.len());
+            if n_align < 4 { continue; }
+
+            let sig = &aligned_signal[..n_align];
+            let qual = &aligned_quality[..n_align];
+
+            let detrend_window = (wm_period * 2).max(4).min(qual.len());
+            let detrended = moving_median_detrend(qual, detrend_window);
+            let residuals = &detrended[..n_align];
+
+            let max_lag = (n_align / 3).max(1).min(20);
+            let (pearson, pearson_lag) = best_cross_correlation(sig, residuals, max_lag);
+            let (spearman, spearman_lag) = best_spearman_lag(sig, residuals, max_lag);
+            let matched = matched_filter(sig, residuals);
+
+            let mut corr_results = vec![
+                ("pearson", pearson.abs(), pearson_lag),
+                ("spearman", spearman.abs(), spearman_lag),
+                ("matched_filter", matched.abs(), 0),
+            ];
+
+            let mut mann_whitney_result: Option<serde_json::Value> = None;
+            if wm_type == "on_off" {
+                let on_vals: Vec<f64> = aligned_signal.iter().zip(residuals.iter())
+                    .filter(|(s, _)| **s > 0.5)
+                    .map(|(_, r)| *r)
+                    .collect();
+                let off_vals: Vec<f64> = aligned_signal.iter().zip(residuals.iter())
+                    .filter(|(s, _)| **s < 0.5)
+                    .map(|(_, r)| *r)
+                    .collect();
+                if on_vals.len() >= 3 && off_vals.len() >= 3 {
+                    let (u_stat, mw_p) = mann_whitney_u_test(&on_vals, &off_vals);
+                    let mw_effect = if on_vals.len() + off_vals.len() > 0 {
+                        let on_mean: f64 = on_vals.iter().sum::<f64>() / on_vals.len() as f64;
+                        let off_mean: f64 = off_vals.iter().sum::<f64>() / off_vals.len() as f64;
+                        (on_mean - off_mean).abs()
+                    } else { 0.0 };
+                    corr_results.push(("mann_whitney", mw_effect, 0));
+                    mann_whitney_result = Some(serde_json::json!({
+                        "u_statistic": round4(u_stat),
+                        "p_value": round4(mw_p),
+                        "on_trials": on_vals.len(),
+                        "off_trials": off_vals.len(),
+                        "on_mean": round4(on_vals.iter().sum::<f64>() / on_vals.len() as f64),
+                        "off_mean": round4(off_vals.iter().sum::<f64>() / off_vals.len() as f64),
+                        "effect_size": round4(mw_effect),
+                    }));
+                }
+            }
+
+            let best = corr_results.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)).unwrap();
+            let best_method = best.0;
+            let best_corr = best.1;
+            let best_lag = best.2;
+
+            let n_perm = 5000usize;
+            let mut rng = fastrand::Rng::new();
+            let mut exceed_count = 0usize;
+            for _ in 0..n_perm {
+                let mut shuffled: Vec<f64> = residuals.to_vec();
+                shuffle_vec(&mut shuffled, &mut rng);
+                let perm_pearson = best_cross_correlation(sig, &shuffled, max_lag).0;
+                let perm_spearman = best_spearman_lag(sig, &shuffled, max_lag).0;
+                let perm_matched = matched_filter(sig, &shuffled);
+                let perm_best = perm_pearson.abs().max(perm_spearman.abs()).max(perm_matched.abs());
+                if perm_best >= best_corr {
+                    exceed_count += 1;
+                }
+            }
+            let p_value = (exceed_count + 1) as f64 / (n_perm + 1) as f64;
+
+            let detected = p_value < 0.05 && best_corr > 0.1;
+
+            let mut obj_result = serde_json::json!({
+                "objective_index": obj_idx,
+                "detected": detected,
+                "aligned_trials": n_align,
+                "receiver_trials": receiver_quality.len(),
+                "pearson": {"correlation": round4(pearson), "lag": pearson_lag},
+                "spearman": {"correlation": round4(spearman), "lag": spearman_lag},
+                "matched_filter": round4(matched),
+                "best_method": best_method,
+                "best_correlation": round4(best_corr),
+                "best_lag": best_lag,
+                "p_value": round4(p_value),
+                "permutations": n_perm,
+            });
+            if let Some(mw) = mann_whitney_result {
+                obj_result.as_object_mut().map(|m| m.insert("mann_whitney".into(), mw));
+            }
+
+            if detected && !overall_detected {
+                overall_detected = true;
+                overall_best_method = best_method;
+                overall_best_corr = best_corr;
+                overall_best_lag = best_lag;
+                overall_p_value = p_value;
+                overall_mann_whitney = mann_whitney_result.clone();
+            } else if !overall_detected && best_corr > overall_best_corr {
+                overall_best_method = best_method;
+                overall_best_corr = best_corr;
+                overall_best_lag = best_lag;
+                overall_p_value = p_value;
+                overall_mann_whitney = mann_whitney_result.clone();
+            }
+
+            per_objective.push(obj_result);
         }
 
-        let aligned_quality: Vec<f64> = receiver_quality.iter()
-            .filter(|(ts, _)| ts.as_str() >= overlap_start && ts.as_str() <= overlap_end)
-            .map(|(_, v)| *v)
-            .collect();
-
-        let n_align = aligned_signal.len().min(aligned_quality.len());
-        if n_align < 4 {
+        if per_objective.is_empty() {
             return Ok(serde_json::json!({
                 "detected": false,
-                "reason": "too few temporally aligned trials",
-                "aligned_trials": n_align,
+                "reason": "no objective had enough aligned trials",
             }));
         }
 
-        let sig = &aligned_signal[..n_align];
-        let qual = &aligned_quality[..n_align];
-
-        let detrend_window = (wm_period * 2).max(4).min(qual.len());
-        let detrended = moving_median_detrend(qual, detrend_window);
-        let residuals = &detrended[..n_align];
-
-        let max_lag = (n_align / 3).max(1).min(20);
-        let (pearson, pearson_lag) = best_cross_correlation(sig, residuals, max_lag);
-        let (spearman, spearman_lag) = best_spearman_lag(sig, residuals, max_lag);
-        let matched = matched_filter(sig, residuals);
-
-        let mut corr_results = vec![
-            ("pearson", pearson.abs(), pearson_lag),
-            ("spearman", spearman.abs(), spearman_lag),
-            ("matched_filter", matched.abs(), 0),
-        ];
-
-        let mut mann_whitney_result: Option<serde_json::Value> = None;
-        if wm_type == "on_off" {
-            let on_vals: Vec<f64> = aligned_signal.iter().zip(residuals.iter())
-                .filter(|(s, _)| **s > 0.5)
-                .map(|(_, r)| *r)
-                .collect();
-            let off_vals: Vec<f64> = aligned_signal.iter().zip(residuals.iter())
-                .filter(|(s, _)| **s < 0.5)
-                .map(|(_, r)| *r)
-                .collect();
-            if on_vals.len() >= 3 && off_vals.len() >= 3 {
-                let (u_stat, mw_p) = mann_whitney_u_test(&on_vals, &off_vals);
-                let mw_effect = if on_vals.len() + off_vals.len() > 0 {
-                    let on_mean: f64 = on_vals.iter().sum::<f64>() / on_vals.len() as f64;
-                    let off_mean: f64 = off_vals.iter().sum::<f64>() / off_vals.len() as f64;
-                    (on_mean - off_mean).abs()
-                } else { 0.0 };
-                corr_results.push(("mann_whitney", mw_effect, 0));
-                mann_whitney_result = Some(serde_json::json!({
-                    "u_statistic": round4(u_stat),
-                    "p_value": round4(mw_p),
-                    "on_trials": on_vals.len(),
-                    "off_trials": off_vals.len(),
-                    "on_mean": round4(on_vals.iter().sum::<f64>() / on_vals.len() as f64),
-                    "off_mean": round4(off_vals.iter().sum::<f64>() / off_vals.len() as f64),
-                    "effect_size": round4(mw_effect),
-                }));
-            }
-        }
-
-        let best = corr_results.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)).unwrap();
-        let best_method = best.0;
-        let best_corr = best.1;
-        let best_lag = best.2;
-
-        let n_perm = 5000usize;
-        let mut rng = fastrand::Rng::new();
-        let mut exceed_count = 0usize;
-        for _ in 0..n_perm {
-            let mut shuffled: Vec<f64> = residuals.to_vec();
-            shuffle_vec(&mut shuffled, &mut rng);
-            let perm_pearson = best_cross_correlation(sig, &shuffled, max_lag).0;
-            let perm_spearman = best_spearman_lag(sig, &shuffled, max_lag).0;
-            let perm_matched = matched_filter(sig, &shuffled);
-            let perm_best = perm_pearson.abs().max(perm_spearman.abs()).max(perm_matched.abs());
-            if perm_best >= best_corr {
-                exceed_count += 1;
-            }
-        }
-        let p_value = (exceed_count + 1) as f64 / (n_perm + 1) as f64;
-
-        let detected = p_value < 0.05 && best_corr > 0.1;
-
         let mut result = serde_json::json!({
-            "detected": detected,
+            "detected": overall_detected,
             "sender_id": sender_id,
             "receiver_id": receiver_id,
             "watermark_type": wm_type,
             "watermark_trials": wm_signal.len(),
-            "receiver_trials": receiver_quality.len(),
-            "aligned_trials": n_align,
-            "temporal_overlap": [overlap_start, overlap_end],
-            "pearson": {"correlation": round4(pearson), "lag": pearson_lag},
-            "spearman": {"correlation": round4(spearman), "lag": spearman_lag},
-            "matched_filter": round4(matched),
-            "best_method": best_method,
-            "best_correlation": round4(best_corr),
-            "best_lag": best_lag,
-            "p_value": round4(p_value),
-            "permutations": n_perm,
+            "best_method": overall_best_method,
+            "best_correlation": round4(overall_best_corr),
+            "best_lag": overall_best_lag,
+            "p_value": round4(overall_p_value),
+            "per_objective": per_objective,
         });
-        if let Some(mw) = mann_whitney_result {
+        if let Some(mw) = overall_mann_whitney {
             result.as_object_mut().map(|m| m.insert("mann_whitney".into(), mw));
         }
 
