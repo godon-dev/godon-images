@@ -787,7 +787,7 @@ fn param_detrend(qualities: &[f64], params_list: &[HashMap<String, f64>]) -> Vec
         (lo, hi - lo)
     }).collect();
 
-    let k = ((n as f64).sqrt().ceil() as usize).min(n / 2).max(3);
+    let k = ((n as f64).sqrt().ceil() as usize).min(15).min(n / 2).max(3);
 
     let mut residuals = Vec::with_capacity(n);
     for i in 0..n {
