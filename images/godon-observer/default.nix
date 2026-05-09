@@ -10,7 +10,7 @@ let
 
     src = ./.;
 
-    cargoHash = "sha256-lOxpdq56Nf3gs9noD5rFrDoLqdkkNJgg9SDgtv2ntGw=";
+    cargoLock.lockFile = ./Cargo.lock;
 
     nativeBuildInputs = with pkgs; [ cacert pkg-config ];
 
@@ -19,7 +19,13 @@ let
     SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
     NIX_SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
 
-    doCheck = false;
+    doCheck = true;
+
+    checkPhase = ''
+      echo "Running unit tests..."
+      export HOME=$TMPDIR
+      cargo test 2>&1
+    '';
 
     buildPhase = ''
       echo "Building godon-observer..."

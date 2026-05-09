@@ -1176,7 +1176,7 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
     .selectAll('text').attr('fill','#484f58').style('font','8px monospace');
   g.selectAll('.domain').attr('stroke','#21262d');
   g.selectAll('.tick line').attr('stroke','#21262d');
-  g.append('g').call(d3.axisLeft(y).ticks(4).tickFormat(d3.format('.0%')))
+  g.append('g').call(d3.axisLeft(y).ticks(4).tickFormat(useRaw?d3.format('.1f'):d3.format('.0%')))
     .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
 
   const legend=parent.append('div').attr('class','legend').style('margin-top','4px');
