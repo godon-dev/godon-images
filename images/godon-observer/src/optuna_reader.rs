@@ -995,19 +995,23 @@ mod tests {
     #[test]
     fn test_param_detrend_preserves_small_signal() {
         let n = 80;
-        let signal: Vec<f64> = (0..n).map(|i| 5.0 * (2.0 * std::f64::consts::PI * i as f64 / 20.0 + 1.3).sin()).collect();
+        let param_vals: Vec<f64> = (0..n).map(|i| {
+            let scrambled = ((i * 37 + 13) % n) as f64;
+            100.0 + 900.0 * (scrambled / n as f64)
+        }).collect();
+        let signal: Vec<f64> = (0..n).map(|i| 3.0 * (2.0 * std::f64::consts::PI * i as f64 / 20.0 + 1.3).sin()).collect();
         let qualities: Vec<f64> = (0..n).map(|i| {
-            3.0 * (i as f64) + 10.0 + signal[i]
+            0.3 * param_vals[i] + 10.0 + signal[i]
         }).collect();
         let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
             let mut p = HashMap::new();
-            p.insert("x".to_string(), i as f64);
+            p.insert("light_intensity".to_string(), param_vals[i]);
             p
         }).collect();
 
         let residuals = param_detrend(&qualities, &params_list);
         let corr = super::pearson_correlation(&signal, &residuals);
-        assert!(corr > 0.5, "residuals should correlate with injected signal, got r={}", corr);
+        assert!(corr > 0.7, "residuals should correlate with independent coupling signal, got r={}", corr);
     }
 
     #[test]
