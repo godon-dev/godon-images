@@ -403,15 +403,19 @@ impl OptunaReader {
 
             if overlap_start >= overlap_end { continue; }
 
-            let mut aligned_signal: Vec<f64> = Vec::new();
+            let mut aligned_idx_sig: Vec<(usize, f64)> = Vec::new();
             for (i, t) in wm_trials.iter().enumerate() {
                 let ts = t.datetime_start.as_deref().unwrap_or("");
                 if ts >= overlap_start && ts <= overlap_end {
                     if let Some(&v) = wm_signal.get(i) {
-                        aligned_signal.push(v);
+                        let idx = t.user_attrs.get("watermark_trial_idx")
+                            .and_then(|v| as_f64(v)).unwrap_or(i as f64) as usize;
+                        aligned_idx_sig.push((idx, v));
                     }
                 }
             }
+            aligned_idx_sig.sort_by_key(|(idx, _)| *idx);
+            let aligned_signal: Vec<f64> = aligned_idx_sig.iter().map(|(_, v)| *v).collect();
 
             let aligned_quality: Vec<f64> = receiver_quality.iter()
                 .filter(|(ts, _)| ts.as_str() >= overlap_start && ts.as_str() <= overlap_end)
