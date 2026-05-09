@@ -814,8 +814,8 @@ fn param_detrend(qualities: &[f64], params_list: &[HashMap<String, f64>]) -> Vec
         let predicted: f64 = if total_weight > 0.0 {
             neighbors.iter()
                 .map(|(d, j)| {
-                    let w = if *d > 0.0 { 1.0 / d } else { 1e6 };
-                    w * qualities[j]
+                    let w = if *d > 0.0 { 1.0 / *d } else { 1e6 };
+                    w * qualities[*j]
                 })
                 .sum::<f64>() / total_weight
         } else {
