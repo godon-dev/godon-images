@@ -302,49 +302,15 @@ impl OptunaReader {
         let wm_type = wm_meta.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
         let wm_period = wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(10.0) as usize;
 
-        let wm_signal: Vec<f64> = match wm_type {
-            "on_off" => {
-                let period = wm_period;
-                wm_trials.iter().map(|t| {
-                    let idx = t.user_attrs.get("watermark_trial_idx")
-                        .and_then(|v| as_f64(v)).unwrap_or(0.0) as usize;
-                    if (idx / period) % 2 == 0 { 1.0 } else { 0.0 }
-                }).collect()
-            },
-            "sinusoidal" => {
-                let period = wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(20.0);
-                let amplitude = wm_meta.get("amplitude").and_then(|v| as_f64(v)).unwrap_or(0.1);
-                let phase_offset = wm_meta.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
-                wm_trials.iter().map(|t| {
-                    let idx = t.user_attrs.get("watermark_trial_idx")
-                        .and_then(|v| as_f64(v)).unwrap_or(0.0);
-                    amplitude * (2.0 * std::f64::consts::PI * idx / period + phase_offset).sin()
-                }).collect()
-            },
-            "step" => {
-                let period = wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(10.0) as usize;
-                let step_fraction = wm_meta.get("step_fraction").and_then(|v| as_f64(v)).unwrap_or(0.2);
-                wm_trials.iter().map(|t| {
-                    let idx = t.user_attrs.get("watermark_trial_idx")
-                        .and_then(|v| as_f64(v)).unwrap_or(0.0) as usize;
-                    if (idx / period) % 2 == 0 { step_fraction } else { 0.0 }
-                }).collect()
-            },
-            "multi_frequency" => {
-                let base_period = wm_meta.get("base_period").and_then(|v| as_f64(v)).unwrap_or(20.0);
-                let amplitude = wm_meta.get("amplitude").and_then(|v| as_f64(v)).unwrap_or(0.1);
-                wm_trials.iter().map(|t| {
-                    let idx = t.user_attrs.get("watermark_trial_idx")
-                        .and_then(|v| as_f64(v)).unwrap_or(0.0);
-                    amplitude * (2.0 * std::f64::consts::PI * idx / base_period).sin()
-                }).collect()
-            },
-            _ => {
-                return Ok(serde_json::json!({
-                    "detected": false,
-                    "reason": format!("unsupported watermark type: {}", wm_type),
-                }));
-            }
+        let wm_signal: Vec<f64> = {
+            let period = wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(20.0);
+            let amplitude = wm_meta.get("amplitude").and_then(|v| as_f64(v)).unwrap_or(0.1);
+            let phase_offset = wm_meta.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
+            wm_trials.iter().map(|t| {
+                let idx = t.user_attrs.get("watermark_trial_idx")
+                    .and_then(|v| as_f64(v)).unwrap_or(0.0);
+                amplitude * (2.0 * std::f64::consts::PI * idx / period + phase_offset).sin()
+            }).collect()
         };
 
         if wm_signal.len() < 4 {
@@ -380,7 +346,6 @@ impl OptunaReader {
         let mut overall_best_corr = 0.0_f64;
         let mut overall_best_lag = 0_i32;
         let mut overall_p_value = 1.0_f64;
-        let mut overall_mann_whitney: Option<serde_json::Value> = None;
 
         for obj_idx in 0..n_obj {
             let receiver_quality: Vec<(String, f64)> = receiver_trials.iter()
@@ -449,44 +414,12 @@ impl OptunaReader {
 
             let max_lag = (n_align / 3).max(1).min(20);
             let (pearson, pearson_lag) = best_cross_correlation(sig, residuals, max_lag);
-            let (spearman, spearman_lag) = best_spearman_lag(sig, residuals, max_lag);
             let matched = matched_filter(sig, residuals);
 
             let mut corr_results = vec![
                 ("pearson", pearson.abs(), pearson_lag),
-                ("spearman", spearman.abs(), spearman_lag),
                 ("matched_filter", matched.abs(), 0),
             ];
-
-            let mut mann_whitney_result: Option<serde_json::Value> = None;
-            if wm_type == "on_off" {
-                let on_vals: Vec<f64> = aligned_signal.iter().zip(residuals.iter())
-                    .filter(|(s, _)| **s > 0.5)
-                    .map(|(_, r)| *r)
-                    .collect();
-                let off_vals: Vec<f64> = aligned_signal.iter().zip(residuals.iter())
-                    .filter(|(s, _)| **s < 0.5)
-                    .map(|(_, r)| *r)
-                    .collect();
-                if on_vals.len() >= 3 && off_vals.len() >= 3 {
-                    let (u_stat, mw_p) = mann_whitney_u_test(&on_vals, &off_vals);
-                    let mw_effect = if on_vals.len() + off_vals.len() > 0 {
-                        let on_mean: f64 = on_vals.iter().sum::<f64>() / on_vals.len() as f64;
-                        let off_mean: f64 = off_vals.iter().sum::<f64>() / off_vals.len() as f64;
-                        (on_mean - off_mean).abs()
-                    } else { 0.0 };
-                    corr_results.push(("mann_whitney", mw_effect, 0));
-                    mann_whitney_result = Some(serde_json::json!({
-                        "u_statistic": round4(u_stat),
-                        "p_value": round4(mw_p),
-                        "on_trials": on_vals.len(),
-                        "off_trials": off_vals.len(),
-                        "on_mean": round4(on_vals.iter().sum::<f64>() / on_vals.len() as f64),
-                        "off_mean": round4(off_vals.iter().sum::<f64>() / off_vals.len() as f64),
-                        "effect_size": round4(mw_effect),
-                    }));
-                }
-            }
 
             let (te_value, te_p) = if n_align >= 20 {
                 let te_observed = transfer_entropy(sig, residuals, 1);
@@ -524,26 +457,29 @@ impl OptunaReader {
                 let mut shuffled: Vec<f64> = residuals.to_vec();
                 shuffle_vec(&mut shuffled, &mut rng);
                 let perm_pearson = best_cross_correlation(sig, &shuffled, max_lag).0;
-                let perm_spearman = best_spearman_lag(sig, &shuffled, max_lag).0;
                 let perm_matched = matched_filter(sig, &shuffled);
-                let perm_best = perm_pearson.abs().max(perm_spearman.abs()).max(perm_matched.abs());
+                let perm_best = perm_pearson.abs().max(perm_matched.abs());
                 if perm_best >= best_corr {
                     exceed_count += 1;
                 }
             }
             let p_value = (exceed_count + 1) as f64 / (n_perm + 1) as f64;
 
-            let detected = p_value < 0.05 && best_corr > 0.1;
+            let pearson_detected = p_value < 0.05 && pearson.abs() > 0.3;
+            let mf_detected = matched.abs() > 0.3;
+            let te_detected = te_p < 0.05 && te_value > 0.001;
+            let n_agree = pearson_detected as usize + mf_detected as usize + te_detected as usize;
+            let detected = n_agree >= 2;
 
             let mut obj_result = serde_json::json!({
                 "objective_index": obj_idx,
                 "detected": detected,
                 "aligned_trials": n_align,
                 "receiver_trials": receiver_quality.len(),
-                "pearson": {"correlation": round4(pearson), "lag": pearson_lag},
-                "spearman": {"correlation": round4(spearman), "lag": spearman_lag},
+                "pearson": {"correlation": round4(pearson), "lag": pearson_lag, "detected": pearson_detected},
                 "matched_filter": round4(matched),
-                "transfer_entropy": {"value": te_value, "p_value": te_p},
+                "matched_filter_detected": mf_detected,
+                "transfer_entropy": {"value": te_value, "p_value": te_p, "detected": te_detected},
                 "best_method": best_method,
                 "best_correlation": round4(best_corr),
                 "best_lag": best_lag,
@@ -553,9 +489,6 @@ impl OptunaReader {
                 "sender_signal": sig.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
                 "raw_quality": qual.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
             });
-            if let Some(ref mw) = mann_whitney_result {
-                obj_result.as_object_mut().map(|m| m.insert("mann_whitney".into(), mw.clone()));
-            }
 
             if detected && !overall_detected {
                 overall_detected = true;
@@ -563,13 +496,11 @@ impl OptunaReader {
                 overall_best_corr = best_corr;
                 overall_best_lag = best_lag;
                 overall_p_value = p_value;
-                overall_mann_whitney = mann_whitney_result.clone();
             } else if !overall_detected && best_corr > overall_best_corr {
                 overall_best_method = best_method;
                 overall_best_corr = best_corr;
                 overall_best_lag = best_lag;
                 overall_p_value = p_value;
-                overall_mann_whitney = mann_whitney_result.clone();
             }
 
             per_objective.push(obj_result);
@@ -594,9 +525,6 @@ impl OptunaReader {
             "p_value": round4(overall_p_value),
             "per_objective": per_objective,
         });
-        if let Some(mw) = overall_mann_whitney {
-            result.as_object_mut().map(|m| m.insert("mann_whitney".into(), mw));
-        }
 
         Ok(result)
     }
@@ -670,57 +598,6 @@ fn best_cross_correlation(signal: &[f64], quality: &[f64], max_lag: usize) -> (f
         }
         if lag > 0 && n - lag >= 2 {
             let corr_rev = pearson_correlation(&signal[lag..n], &quality[..n - lag]);
-            if corr_rev.abs() > best_corr.abs() {
-                best_corr = corr_rev;
-                best_lag = -(lag as i32);
-            }
-        }
-    }
-    (best_corr, best_lag)
-}
-
-fn rank_data(data: &[f64]) -> Vec<f64> {
-    let mut indexed: Vec<(usize, f64)> = data.iter().enumerate().map(|(i, &v)| (i, v)).collect();
-    indexed.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    let mut ranks = vec![0.0_f64; data.len()];
-    let mut i = 0;
-    while i < indexed.len() {
-        let mut j = i + 1;
-        while j < indexed.len() && indexed[j].1 == indexed[i].1 {
-            j += 1;
-        }
-        let avg_rank = (i + j - 1) as f64 / 2.0 + 1.0;
-        for k in i..j {
-            ranks[indexed[k].0] = avg_rank;
-        }
-        i = j;
-    }
-    ranks
-}
-
-fn spearman_correlation(x: &[f64], y: &[f64]) -> f64 {
-    let n = x.len().min(y.len());
-    if n < 2 { return 0.0; }
-    let rx = rank_data(&x[..n]);
-    let ry = rank_data(&y[..n]);
-    pearson_correlation(&rx, &ry)
-}
-
-fn best_spearman_lag(signal: &[f64], quality: &[f64], max_lag: usize) -> (f64, i32) {
-    let n = signal.len().min(quality.len());
-    if n < 2 { return (0.0, 0); }
-    let mut best_corr = 0.0_f64;
-    let mut best_lag = 0_i32;
-    for lag in 0..=max_lag {
-        if lag >= n { break; }
-        let s_end = n - lag;
-        let corr = spearman_correlation(&signal[..s_end], &quality[lag..lag + s_end]);
-        if corr.abs() > best_corr.abs() {
-            best_corr = corr;
-            best_lag = lag as i32;
-        }
-        if lag > 0 && n - lag >= 2 {
-            let corr_rev = spearman_correlation(&signal[lag..n], &quality[..n - lag]);
             if corr_rev.abs() > best_corr.abs() {
                 best_corr = corr_rev;
                 best_lag = -(lag as i32);
@@ -829,64 +706,6 @@ fn param_detrend(qualities: &[f64], params_list: &[HashMap<String, f64>]) -> Vec
     }
 
     residuals
-}
-
-fn mann_whitney_u_test(x: &[f64], y: &[f64]) -> (f64, f64) {
-    let nx = x.len();
-    let ny = y.len();
-    let n = nx + ny;
-    if nx == 0 || ny == 0 { return (0.0, 1.0); }
-
-    let mut combined: Vec<(usize, f64)> = x.iter().enumerate()
-        .map(|(_, &v)| (0, v))
-        .chain(y.iter().enumerate().map(|(_, &v)| (1, v)))
-        .collect();
-
-    combined.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    let mut ranks = vec![0.0_f64; n];
-    let mut i = 0;
-    while i < n {
-        let mut j = i + 1;
-        while j < n && combined[j].1 == combined[i].1 { j += 1; }
-        let avg_rank = (i + j - 1) as f64 / 2.0 + 1.0;
-        for k in i..j { ranks[k] = avg_rank; }
-        i = j;
-    }
-
-    let r1: f64 = combined.iter().zip(ranks.iter())
-        .filter(|(c, _)| c.0 == 0)
-        .map(|(_, r)| *r)
-        .sum();
-
-    let u1 = r1 - (nx as f64 * (nx as f64 + 1.0)) / 2.0;
-    let u2 = (nx as f64 * ny as f64) - u1;
-    let u_stat = u1.min(u2);
-
-    let mu_u = (nx as f64 * ny as f64) / 2.0;
-    let sigma_u = ((nx as f64 * ny as f64 * (n as f64 + 1.0)) / 12.0).sqrt();
-
-    if sigma_u == 0.0 { return (u_stat, 1.0); }
-
-    let z = (u_stat - mu_u).abs() / sigma_u;
-    let p_value = 2.0 * (1.0 - normal_cdf(z));
-
-    (u_stat, p_value)
-}
-
-fn normal_cdf(x: f64) -> f64 {
-    let a1 = 0.254829592;
-    let a2 = -0.284496736;
-    let a3 = 1.421413741;
-    let a4 = -1.453152027;
-    let a5 = 1.061405429;
-    let p = 0.3275911;
-
-    let sign = if x < 0.0 { -1.0 } else { 1.0 };
-    let x = x.abs() / std::f64::consts::SQRT_2;
-    let t = 1.0 / (1.0 + p * x);
-    let y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * (-x * x).exp();
-    0.5 * (1.0 + sign * y)
 }
 
 fn transfer_entropy(source: &[f64], target: &[f64], lag: usize) -> f64 {
