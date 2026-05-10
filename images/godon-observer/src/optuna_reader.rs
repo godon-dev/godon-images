@@ -469,7 +469,7 @@ impl OptunaReader {
             let mf_detected = matched.abs() > 0.3;
             let te_detected = te_p < 0.05 && te_value > 0.001;
             let n_agree = pearson_detected as usize + mf_detected as usize + te_detected as usize;
-            let detected = n_agree >= 2;
+            let detected = mf_detected && n_agree >= 2;
 
             let mut obj_result = serde_json::json!({
                 "objective_index": obj_idx,
