@@ -414,11 +414,11 @@ impl OptunaReader {
 
             let max_lag = (n_align / 3).max(1).min(20);
             let (pearson, pearson_lag) = best_cross_correlation(sig, residuals, max_lag);
-            let matched = matched_filter(sig, residuals);
+            let (matched, matched_lag) = lagged_matched_filter(sig, residuals, max_lag);
 
             let mut corr_results = vec![
                 ("pearson", pearson.abs(), pearson_lag),
-                ("matched_filter", matched.abs(), 0),
+                ("matched_filter", matched.abs(), matched_lag),
             ];
 
             let (te_value, te_p) = if n_align >= 20 {
@@ -457,7 +457,7 @@ impl OptunaReader {
                 let mut shuffled: Vec<f64> = residuals.to_vec();
                 shuffle_vec(&mut shuffled, &mut rng);
                 let perm_pearson = best_cross_correlation(sig, &shuffled, max_lag).0;
-                let perm_matched = matched_filter(sig, &shuffled);
+                let perm_matched = lagged_matched_filter(sig, &shuffled, max_lag).0;
                 let perm_best = perm_pearson.abs().max(perm_matched.abs());
                 if perm_best >= best_corr {
                     exceed_count += 1;
@@ -478,6 +478,7 @@ impl OptunaReader {
                 "receiver_trials": receiver_quality.len(),
                 "pearson": {"correlation": round4(pearson), "lag": pearson_lag, "detected": pearson_detected},
                 "matched_filter": round4(matched),
+                "matched_filter_lag": matched_lag,
                 "matched_filter_detected": mf_detected,
                 "transfer_entropy": {"value": te_value, "p_value": te_p, "detected": te_detected},
                 "best_method": best_method,
@@ -607,19 +608,49 @@ fn best_cross_correlation(signal: &[f64], quality: &[f64], max_lag: usize) -> (f
     (best_corr, best_lag)
 }
 
-fn matched_filter(template: &[f64], signal: &[f64]) -> f64 {
+fn lagged_matched_filter(template: &[f64], signal: &[f64], max_lag: usize) -> (f64, i32) {
     let n = template.len().min(signal.len());
-    if n < 2 { return 0.0; }
+    if n < 2 { return (0.0, 0); }
     let t_mean = template[..n].iter().sum::<f64>() / n as f64;
-    let s_mean = signal[..n].iter().sum::<f64>() / n as f64;
-    let t_norm: f64 = template[..n].iter().map(|v| (v - t_mean).powi(2)).sum::<f64>().sqrt();
-    let s_norm: f64 = signal[..n].iter().map(|v| (v - s_mean).powi(2)).sum::<f64>().sqrt();
-    if t_norm == 0.0 || s_norm == 0.0 { return 0.0; }
-    let mut sum = 0.0_f64;
-    for i in 0..n {
-        sum += (template[i] - t_mean) * (signal[i] - s_mean);
+    let t_demean: Vec<f64> = template[..n].iter().map(|v| v - t_mean).collect();
+    let t_norm: f64 = t_demean.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if t_norm == 0.0 { return (0.0, 0); }
+    let mut best_corr = 0.0_f64;
+    let mut best_lag = 0_i32;
+    for lag in 0..=max_lag {
+        if lag >= n { break; }
+        let s_end = n - lag;
+        let s_slice = &signal[lag..lag + s_end];
+        let s_mean = s_slice.iter().sum::<f64>() / s_end as f64;
+        let s_norm: f64 = s_slice.iter().map(|v| (v - s_mean).powi(2)).sum::<f64>().sqrt();
+        if s_norm == 0.0 { continue; }
+        let mut sum = 0.0_f64;
+        for i in 0..s_end {
+            sum += t_demean[i] * (s_slice[i] - s_mean);
+        }
+        let corr = sum / (t_norm * s_norm);
+        if corr.abs() > best_corr.abs() {
+            best_corr = corr;
+            best_lag = lag as i32;
+        }
+        if lag > 0 && n - lag >= 2 {
+            let s_slice_rev = &signal[..n - lag];
+            let s_mean_rev = s_slice_rev.iter().sum::<f64>() / (n - lag) as f64;
+            let s_norm_rev: f64 = s_slice_rev.iter().map(|v| (v - s_mean_rev).powi(2)).sum::<f64>().sqrt();
+            if s_norm_rev > 0.0 {
+                let mut sum_rev = 0.0_f64;
+                for i in 0..n - lag {
+                    sum_rev += t_demean[i] * (s_slice_rev[i] - s_mean_rev);
+                }
+                let corr_rev = sum_rev / (t_norm * s_norm_rev);
+                if corr_rev.abs() > best_corr.abs() {
+                    best_corr = corr_rev;
+                    best_lag = -(lag as i32);
+                }
+            }
+        }
     }
-    sum / (t_norm * s_norm)
+    (best_corr, best_lag)
 }
 
 fn shuffle_vec(v: &mut [f64], rng: &mut fastrand::Rng) {
