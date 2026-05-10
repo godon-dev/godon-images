@@ -527,9 +527,12 @@ const DEMO_WM_DETECTIONS={
 };
 
 function addDemoPerObj(d){
-  if(!d.per_objective)d.per_objective=[{objective_index:0,detected:d.detected,receiver_trials:d.receiver_trials||0,aligned_trials:d.receiver_trials||0,pearson:d.pearson||{correlation:0,lag:0},spearman:d.spearman||{correlation:0,lag:0},matched_filter:d.matched_filter||0,best_method:d.best_method,best_correlation:d.best_correlation,best_lag:d.best_lag,p_value:d.p_value,transfer_entropy:{value:0.001,p_value:0.9}}];
+  if(!d.per_objective)d.per_objective=[{objective_index:0,detected:d.detected,receiver_trials:d.receiver_trials||0,aligned_trials:d.receiver_trials||0,pearson:{correlation:0,detected:false},matched_filter:0,matched_filter_detected:false,transfer_entropy:{value:0.001,p_value:0.9,detected:false},best_method:d.best_method,best_correlation:d.best_correlation,best_lag:d.best_lag,p_value:d.p_value}];
   d.per_objective.forEach(po=>{
     if(po.residuals)return;
+    if(po.pearson&&!po.pearson.detected&&po.pearson.detected!==false)po.pearson.detected=false;
+    if(po.matched_filter_detected===undefined)po.matched_filter_detected=po.matched_filter&&Math.abs(po.matched_filter)>0.3;
+    if(po.transfer_entropy&&!po.transfer_entropy.detected&&po.transfer_entropy.detected!==false)po.transfer_entropy.detected=false;
     var n=po.aligned_trials||20;
     var det=po.detected;
     var phase=det?(po.objective_index*1.2):(po.objective_index*2.7+0.8);
@@ -557,7 +560,7 @@ async function fetchWmDetections(){
       if(DEMO){
         const dk=Object.keys(DEMO_WM_DETECTIONS).find(k=>(a.name+'::'+b.name)===k);
         if(dk) results[key]=DEMO_WM_DETECTIONS[dk];
-        else results[key]={detected:false,best_method:'\u2014',best_correlation:0,best_lag:0,p_value:1,watermark_trials:0,receiver_trials:0,pearson:{correlation:0,lag:0},spearman:{correlation:0,lag:0},matched_filter:0};
+        else results[key]={detected:false,best_method:'\u2014',best_correlation:0,best_lag:0,p_value:1,watermark_trials:0,receiver_trials:0,pearson:{correlation:0,lag:0,detected:false},matched_filter:0,matched_filter_detected:false};
       } else {
         try{
           const r=await fetch(baseUrl+'/api/watermark-detection/'+a.id+'/'+b.id);
@@ -1218,7 +1221,7 @@ function showWmPairDetail(r){
     .text(r.from+' \u2192 '+r.to+' \u2014 '+(d.detected?'detected':'not detected'));
   hdr.append('button').attr('class','cross-close-btn').text('close').on('click',()=>{el.classed('show',false);el.html('')});
 
-  const summary=el.append('div').style('display','grid').style('grid-template-columns','1fr 1fr 1fr'+(d.mann_whitney?' 1fr':'')).style('gap','8px').style('margin-bottom','12px');
+  const summary=el.append('div').style('display','grid').style('grid-template-columns','1fr 1fr 1fr').style('gap','8px').style('margin-bottom','12px');
   summary.append('div').attr('class','info')
     .html('best method: <b style="color:#c9d1d9">'+(d.best_method||'\u2014')+'</b><br>correlation: <b style="color:'+crossTierColor(tier)+'">'+d.best_correlation.toFixed(3)+'</b><br>lag: '+(d.best_lag||'\u2014'));
   summary.append('div').attr('class','info')
@@ -1228,12 +1231,7 @@ function showWmPairDetail(r){
   const bestObj=d.per_objective?d.per_objective.reduce((a,b)=>(b.best_correlation||0)>(a.best_correlation||0)?b:a,{best_correlation:0}):null;
   const bestObjName=bestObj&&objNames[bestObj.objective_index]?objNames[bestObj.objective_index]:'obj '+(bestObj?bestObj.objective_index:'?');
   summary.append('div').attr('class','info')
-    .html('pearson: <b>'+(bestObj&&bestObj.pearson?bestObj.pearson.correlation.toFixed(3):'\u2014')+'</b> (lag '+(bestObj&&bestObj.pearson?bestObj.pearson.lag:'\u2014')+')<br>spearman: <b>'+(bestObj&&bestObj.spearman?bestObj.spearman.correlation.toFixed(3):'\u2014')+'</b> (lag '+(bestObj&&bestObj.spearman?bestObj.spearman.lag:'\u2014')+')<br>matched filter: <b>'+(bestObj&&typeof bestObj.matched_filter==='number'?bestObj.matched_filter.toFixed(3):'\u2014')+'</b>'+(bestObj?'<br><span style="color:#6e7681">'+bestObjName+'</span>':''));
-  if(d.mann_whitney){
-    const mwSig=d.mann_whitney.p_value<0.05;
-    summary.append('div').attr('class','info')
-      .html('on/off test: <b style="color:'+(mwSig?'#f85149':'#8b949e')+'">'+(mwSig?'different':'no difference')+'</b><br>p-value: <b>'+(d.mann_whitney.p_value<0.001?'<0.001':d.mann_whitney.p_value.toFixed(3))+'</b><br>on mean: '+d.mann_whitney.on_mean.toFixed(3)+' | off mean: '+d.mann_whitney.off_mean.toFixed(3));
-  }
+    .html('pearson: <b style="color:'+(bestObj&&bestObj.pearson&&bestObj.pearson.detected?'#3fb950':'#8b949e')+'">'+(bestObj&&bestObj.pearson?(bestObj.pearson.detected?'yes':'no'):'\u2014')+'</b><br>matched filter: <b style="color:'+(bestObj&&bestObj.matched_filter_detected?'#3fb950':'#8b949e')+'">'+(bestObj&&bestObj.matched_filter_detected?'yes':'no')+'</b><br>transfer entropy: <b style="color:'+(bestObj&&bestObj.transfer_entropy&&bestObj.transfer_entropy.detected?'#3fb950':'#8b949e')+'">'+(bestObj&&bestObj.transfer_entropy?(bestObj.transfer_entropy.detected?'yes':'no'):'\u2014')+'</b>'+(bestObj?'<br><span style="color:#6e7681">2-of-3 consensus</span>':''));
   if(d.per_objective&&d.per_objective.length>1){
     const objTable=el.append('div').style('margin-bottom','12px');
     objTable.append('div').style('font','bold 10px monospace').style('color','#8b949e').style('margin-bottom','4px').text('per-objective results');
@@ -1241,8 +1239,11 @@ function showWmPairDetail(r){
     d.per_objective.forEach(o=>{
       const oTier=o.detected?'detected':'not_detected';
       const oName=objNames[o.objective_index]||('obj '+o.objective_index);
+      const pn=o.pearson&&o.pearson.detected;
+      const mf=o.matched_filter_detected;
+      const te=o.transfer_entropy&&o.transfer_entropy.detected;
       objGrid.append('div').attr('class','info').style('text-align','center')
-        .html('<span style="color:#6e7681">'+oName+'</span><br><b style="color:'+crossTierColor(oTier)+'">'+o.best_correlation.toFixed(3)+'</b><br><span style="font:8px monospace;color:#8b949e">'+o.best_method+'</span><br><span style="font:8px monospace;color:#6e7681">p='+(o.p_value<0.001?'<0.001':o.p_value.toFixed(2))+'</span>'+(o.transfer_entropy?'<br><span style="font:8px monospace;color:#6e7681">TE='+o.transfer_entropy.value.toFixed(3)+'</span>':''));
+        .html('<span style="color:#6e7681">'+oName+'</span><br><b style="color:'+crossTierColor(oTier)+'">'+(o.detected?'detected':'not detected')+'</b><br><span style="font:8px monospace;color:'+(pn?'#3fb950':'#8b949e')+'">P:'+(pn?'yes':'no')+'</span> <span style="font:8px monospace;color:'+(mf?'#3fb950':'#8b949e')+'">MF:'+(mf?'yes':'no')+'</span> <span style="font:8px monospace;color:'+(te?'#3fb950':'#8b949e')+'">TE:'+(te?'yes':'no')+'</span>');
     });
   }
 
