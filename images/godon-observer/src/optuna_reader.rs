@@ -978,4 +978,71 @@ mod tests {
             assert!(corr.abs() < 0.4, "{} should not correlate with sender when no coupling, got r={}", obj_name, corr);
         }
     }
+
+    #[test]
+    fn test_diagnostic_no_coupling_realistic() {
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let sender_phase = 1.3418_f64;
+        let receiver_phase = 2.4546_f64;
+        let n = 120;
+
+        let wm_signal: Vec<f64> = (0..n).map(|i| {
+            amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin()
+        }).collect();
+
+        let receiver_trials: Vec<TrialRecord> = (0..n).map(|i| {
+            let base_light = 500.0 + 400.0 * (i as f64 / n as f64 - 0.5);
+            let wm_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let own_light = base_light + wm_offset;
+            let co2 = 5.0 + 3.0 * (i as f64 * 0.05).sin();
+            let energy = own_light * 0.3 + co2 * 2.0 + (i as f64 * 0.3) + 5.0 * (i as f64 * 0.08).sin();
+            let growth = 0.5 + 0.003 * i as f64 + 0.03 * (i as f64 * 0.12).sin() + 0.001 * own_light;
+            let water = own_light * 0.06 + co2 * 0.5 + (i as f64 * 0.1) + 2.0 * (i as f64 * 0.09).sin();
+            let ts = format!("2026-05-08 22:{:02}:{:02}", i / 60, i % 60);
+            make_trial(i as i32, &ts,
+                vec![("light_intensity", own_light), ("co2_injection", co2), ("irrigation", 1.5)],
+                vec![growth, energy, water],
+                Some((serde_json::json!({"type":"sinusoidal","param_name":"light_intensity","amplitude":amplitude,"period":period as i32,"phase_offset":receiver_phase}).to_string().as_str(), i as i32))
+            )
+        }).collect();
+
+        let obj_names = ["growth_rate", "energy_kwh", "water_liters"];
+        for obj_idx in 0..3 {
+            let receiver_quality: Vec<f64> = receiver_trials.iter()
+                .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
+                .map(|t| t.values[obj_idx].unwrap())
+                .collect();
+            let receiver_params: Vec<HashMap<String, f64>> = receiver_trials.iter()
+                .map(|t| t.params.clone())
+                .collect();
+
+            let residuals = param_detrend(&receiver_quality, &receiver_params);
+
+            let raw_mean = receiver_quality.iter().sum::<f64>() / n as f64;
+            let raw_std = (receiver_quality.iter().map(|v| (v - raw_mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+            let res_mean = residuals.iter().sum::<f64>() / n as f64;
+            let res_std = (residuals.iter().map(|v| (v - res_mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+
+            let lag0 = super::pearson_correlation(&wm_signal, &residuals);
+            let max_lag = (n / 3).max(1).min(20);
+            let (best_pearson, pearson_lag) = super::best_cross_correlation(&wm_signal, &residuals, max_lag);
+            let (best_mf, mf_lag) = super::lagged_matched_filter(&wm_signal, &residuals, max_lag);
+
+            eprintln!("\n=== obj{} ({}) ===", obj_idx, obj_names[obj_idx]);
+            eprintln!("raw quality: mean={:.2} std={:.2}", raw_mean, raw_std);
+            eprintln!("residuals:   mean={:.4f} std={:.4f} (reduction: {:.1}%)", res_mean, res_std, (1.0 - res_std / raw_std) * 100.0);
+            eprintln!("lag-0 corr:  {:.4f}", lag0);
+            eprintln!("best pearson: {:.4f} at lag={}", best_pearson, pearson_lag);
+            eprintln!("best MF:      {:.4f} at lag={}", best_mf, mf_lag);
+            eprintln!("residuals[:20]: {:?}", &residuals[..20.min(residuals.len())]);
+
+            let lag0_abs = lag0.abs();
+            let pearson_abs = best_pearson.abs();
+            let mf_abs = best_mf.abs();
+            assert!(lag0_abs < 0.3, "obj{} lag-0 corr too high: {}", obj_idx, lag0_abs);
+            assert!(pearson_abs < 0.4, "obj{} pearson too high: {} at lag {}", obj_idx, pearson_abs, pearson_lag);
+            assert!(mf_abs < 0.4, "obj{} MF too high: {} at lag {}", obj_idx, mf_abs, mf_lag);
+        }
+    }
 }
