@@ -479,7 +479,7 @@ async function loadCrossData(ids){
 let crossView='ranked';
 
 let wmDetections=null;
-let wmSort='correlation';
+let wmSort='magnitude';
 let wmSortDir=-1;
 
 function crossTierColor(t){return t==='detected'?'#f85149':t==='not_detected'?'#3fb950':'#8b949e'}
@@ -494,43 +494,43 @@ function crossQ(t){
 }
 
 const DEMO_WM_DETECTIONS={
-  'bench-s4-gh1::bench-s4-gh2':{detected:true,best_method:'lock_in',best_correlation:0.42,best_lag:-1,p_value:0.003,watermark_trials:31,per_objective:[{objective_index:0,detected:false,aligned_trials:28,receiver_trials:28,lock_in:{magnitude:0.09,phase:1.2,snr:1.3,i_component:0.08,q_component:0.04,detected:false},best_method:'lock_in',best_correlation:0.09,best_lag:1,p_value:0.412},{objective_index:1,detected:true,aligned_trials:28,receiver_trials:28,lock_in:{magnitude:0.42,phase:-0.8,snr:4.1,i_component:0.35,q_component:-0.23,detected:true},best_method:'lock_in',best_correlation:0.42,best_lag:-1,p_value:0.003},{objective_index:2,detected:false,aligned_trials:28,receiver_trials:28,lock_in:{magnitude:0.12,phase:0.5,snr:1.1,i_component:0.10,q_component:0.06,detected:false},best_method:'lock_in',best_correlation:0.12,best_lag:2,p_value:0.134}]},
-  'bench-s4-gh2::bench-s4-gh1':{detected:true,best_method:'lock_in',best_correlation:0.31,best_lag:3,p_value:0.018,watermark_trials:28,per_objective:[{objective_index:0,detected:false,aligned_trials:31,receiver_trials:31,lock_in:{magnitude:0.07,phase:2.1,snr:0.9,i_component:0.05,q_component:0.04,detected:false},best_method:'lock_in',best_correlation:0.07,best_lag:1,p_value:0.387},{objective_index:1,detected:true,aligned_trials:31,receiver_trials:31,lock_in:{magnitude:0.31,phase:1.9,snr:3.2,i_component:0.22,q_component:0.21,detected:true},best_method:'lock_in',best_correlation:0.31,best_lag:3,p_value:0.018},{objective_index:2,detected:false,aligned_trials:31,receiver_trials:31,lock_in:{magnitude:0.11,phase:-1.3,snr:1.0,i_component:0.08,q_component:-0.07,detected:false},best_method:'lock_in',best_correlation:0.11,best_lag:2,p_value:0.198}]},
-  'bench-s3-gh1::bench-s3-gh2':{detected:false,best_method:'lock_in',best_correlation:0.03,best_lag:0,p_value:0.812,watermark_trials:44,per_objective:[{objective_index:0,detected:false,aligned_trials:41,receiver_trials:41,lock_in:{magnitude:0.03,phase:0.1,snr:0.4,i_component:0.02,q_component:0.02,detected:false},best_method:'lock_in',best_correlation:0.03,best_lag:0,p_value:0.812},{objective_index:1,detected:false,aligned_trials:41,receiver_trials:41,lock_in:{magnitude:0.02,phase:-0.3,snr:0.3,i_component:0.02,q_component:-0.01,detected:false},best_method:'lock_in',best_correlation:0.02,best_lag:1,p_value:0.845},{objective_index:2,detected:false,aligned_trials:41,receiver_trials:41,lock_in:{magnitude:0.02,phase:0.8,snr:0.3,i_component:0.01,q_component:0.01,detected:false},best_method:'lock_in',best_correlation:0.02,best_lag:-1,p_value:0.891}]},
-  'bench-s3-gh2::bench-s3-gh1':{detected:false,best_method:'lock_in',best_correlation:0.05,best_lag:1,p_value:0.694,watermark_trials:41,per_objective:[{objective_index:0,detected:false,aligned_trials:44,receiver_trials:44,lock_in:{magnitude:0.05,phase:0.4,snr:0.6,i_component:0.04,q_component:0.03,detected:false},best_method:'lock_in',best_correlation:0.05,best_lag:1,p_value:0.694},{objective_index:1,detected:false,aligned_trials:44,receiver_trials:44,lock_in:{magnitude:0.04,phase:-0.7,snr:0.5,i_component:0.03,q_component:-0.02,detected:false},best_method:'lock_in',best_correlation:0.04,best_lag:0,p_value:0.723},{objective_index:2,detected:false,aligned_trials:44,receiver_trials:44,lock_in:{magnitude:0.03,phase:1.1,snr:0.4,i_component:0.02,q_component:0.02,detected:false},best_method:'lock_in',best_correlation:0.03,best_lag:-1,p_value:0.812}]},
-  'bench-s4-gh1::greenhouse-beta':{detected:true,best_method:'lock_in',best_correlation:0.39,best_lag:0,p_value:0.021,watermark_trials:31,per_objective:[{objective_index:0,detected:false,aligned_trials:5,receiver_trials:5,lock_in:{magnitude:0.08,phase:0.5,snr:0.8,i_component:0.07,q_component:0.04,detected:false},best_method:'lock_in',best_correlation:0.08,best_lag:0,p_value:0.612},{objective_index:1,detected:true,aligned_trials:5,receiver_trials:5,lock_in:{magnitude:0.39,phase:-0.2,snr:3.8,i_component:0.34,q_component:-0.18,detected:true},best_method:'lock_in',best_correlation:0.39,best_lag:0,p_value:0.021}]},
-  'greenhouse-beta::bench-s4-gh1':{detected:false,best_method:'lock_in',best_correlation:0.07,best_lag:0,p_value:0.611,watermark_trials:5,per_objective:[{objective_index:0,detected:false,aligned_trials:31,receiver_trials:31,lock_in:{magnitude:0.07,phase:0.3,snr:0.7,i_component:0.06,q_component:0.03,detected:false},best_method:'lock_in',best_correlation:0.07,best_lag:0,p_value:0.611},{objective_index:1,detected:false,aligned_trials:31,receiver_trials:31,lock_in:{magnitude:0.05,phase:-1.1,snr:0.5,i_component:0.04,q_component:-0.03,detected:false},best_method:'lock_in',best_correlation:0.05,best_lag:1,p_value:0.687}]},
-  'bench-s4-gh2::greenhouse-beta':{detected:false,best_method:'lock_in',best_correlation:0.09,best_lag:1,p_value:0.548,watermark_trials:28,receiver_trials:5,lock_in:{magnitude:0.09,phase:0.6,snr:0.9,i_component:0.07,q_component:0.05}},
-  'greenhouse-beta::bench-s4-gh2':{detected:false,best_method:'lock_in',best_correlation:0.03,best_lag:-1,p_value:0.891,watermark_trials:5,receiver_trials:28,lock_in:{magnitude:0.03,phase:-0.4,snr:0.4,i_component:0.02,q_component:-0.02}},
-  'network-tuner::bench-s3-gh1':{detected:false,best_method:'lock_in',best_correlation:0.04,best_lag:0,p_value:0.723,watermark_trials:62,receiver_trials:47,lock_in:{magnitude:0.04,phase:0.2,snr:0.5,i_component:0.03,q_component:0.02}},
-  'network-tuner::bench-s3-gh2':{detected:false,best_method:'lock_in',best_correlation:0.07,best_lag:-2,p_value:0.441,watermark_trials:62,receiver_trials:43,lock_in:{magnitude:0.07,phase:-1.0,snr:0.7,i_component:0.05,q_component:-0.04}},
-  'bench-s3-gh1::network-tuner':{detected:false,best_method:'lock_in',best_correlation:0.04,best_lag:1,p_value:0.782,watermark_trials:47,receiver_trials:62,lock_in:{magnitude:0.04,phase:0.8,snr:0.5,i_component:0.03,q_component:0.02}},
-  'bench-s3-gh2::network-tuner':{detected:false,best_method:'lock_in',best_correlation:0.05,best_lag:2,p_value:0.594,watermark_trials:43,receiver_trials:62,lock_in:{magnitude:0.05,phase:1.5,snr:0.6,i_component:0.03,q_component:0.04}},
-  'network-tuner::bench-s4-gh1':{detected:false,best_method:'lock_in',best_correlation:0.06,best_lag:0,p_value:0.503,watermark_trials:62,receiver_trials:31,lock_in:{magnitude:0.06,phase:0.1,snr:0.6,i_component:0.05,q_component:0.03}},
-  'network-tuner::bench-s4-gh2':{detected:false,best_method:'lock_in',best_correlation:0.04,best_lag:-1,p_value:0.741,watermark_trials:62,receiver_trials:28,lock_in:{magnitude:0.04,phase:-0.5,snr:0.4,i_component:0.03,q_component:-0.02}},
-  'bench-s4-gh1::network-tuner':{detected:false,best_method:'lock_in',best_correlation:0.04,best_lag:1,p_value:0.684,watermark_trials:31,receiver_trials:62,lock_in:{magnitude:0.04,phase:0.9,snr:0.5,i_component:0.03,q_component:0.03}},
-  'bench-s4-gh2::network-tuner':{detected:false,best_method:'lock_in',best_correlation:0.06,best_lag:-1,p_value:0.478,watermark_trials:28,receiver_trials:62,lock_in:{magnitude:0.06,phase:-0.7,snr:0.6,i_component:0.04,q_component:-0.04}},
-  'network-tuner::greenhouse-beta':{detected:false,best_method:'lock_in',best_correlation:0.08,best_lag:0,p_value:0.398,watermark_trials:62,receiver_trials:5,lock_in:{magnitude:0.08,phase:0.3,snr:0.8,i_component:0.07,q_component:0.04}},
-  'greenhouse-beta::network-tuner':{detected:false,best_method:'lock_in',best_correlation:0.02,best_lag:0,p_value:0.932,watermark_trials:5,receiver_trials:62,lock_in:{magnitude:0.02,phase:0.1,snr:0.3,i_component:0.01,q_component:0.01}},
-  'bench-s3-gh1::bench-s4-gh1':{detected:false,best_method:'lock_in',best_correlation:0.02,best_lag:0,p_value:0.854,watermark_trials:47,receiver_trials:31,lock_in:{magnitude:0.02,phase:0.0,snr:0.3,i_component:0.02,q_component:0.01}},
-  'bench-s4-gh1::bench-s3-gh1':{detected:false,best_method:'lock_in',best_correlation:0.03,best_lag:1,p_value:0.801,watermark_trials:31,receiver_trials:47,lock_in:{magnitude:0.03,phase:0.7,snr:0.4,i_component:0.02,q_component:0.02}},
-  'bench-s3-gh1::bench-s4-gh2':{detected:false,best_method:'lock_in',best_correlation:0.02,best_lag:0,p_value:0.912,watermark_trials:47,receiver_trials:28,lock_in:{magnitude:0.02,phase:-0.2,snr:0.3,i_component:0.01,q_component:-0.01}},
-  'bench-s4-gh2::bench-s3-gh1':{detected:false,best_method:'lock_in',best_correlation:0.04,best_lag:1,p_value:0.738,watermark_trials:28,receiver_trials:47,lock_in:{magnitude:0.04,phase:0.5,snr:0.5,i_component:0.03,q_component:0.02}},
-  'bench-s3-gh2::bench-s4-gh1':{detected:false,best_method:'lock_in',best_correlation:0.04,best_lag:-1,p_value:0.702,watermark_trials:43,receiver_trials:31,lock_in:{magnitude:0.04,phase:-0.6,snr:0.5,i_component:0.03,q_component:-0.02}},
-  'bench-s4-gh1::bench-s3-gh2':{detected:false,best_method:'lock_in',best_correlation:0.03,best_lag:1,p_value:0.761,watermark_trials:31,receiver_trials:43,lock_in:{magnitude:0.03,phase:0.8,snr:0.4,i_component:0.03,q_component:0.02}},
-  'bench-s3-gh2::bench-s4-gh2':{detected:false,best_method:'lock_in',best_correlation:0.03,best_lag:2,p_value:0.827,watermark_trials:43,receiver_trials:28,lock_in:{magnitude:0.03,phase:1.2,snr:0.4,i_component:0.02,q_component:0.02}},
-  'bench-s4-gh2::bench-s3-gh2':{detected:false,best_method:'lock_in',best_correlation:0.03,best_lag:-1,p_value:0.779,watermark_trials:28,receiver_trials:43,lock_in:{magnitude:0.03,phase:-0.4,snr:0.4,i_component:0.02,q_component:-0.02}},
-  'greenhouse-beta::bench-s3-gh1':{detected:false,best_method:'lock_in',best_correlation:0.03,best_lag:0,p_value:0.795,watermark_trials:5,receiver_trials:47,lock_in:{magnitude:0.03,phase:0.2,snr:0.4,i_component:0.03,q_component:0.01}},
-  'bench-s3-gh1::greenhouse-beta':{detected:false,best_method:'lock_in',best_correlation:0.05,best_lag:1,p_value:0.642,watermark_trials:47,receiver_trials:5,lock_in:{magnitude:0.05,phase:0.6,snr:0.5,i_component:0.04,q_component:0.03}},
-  'greenhouse-beta::bench-s3-gh2':{detected:false,best_method:'lock_in',best_correlation:0.02,best_lag:0,p_value:0.874,watermark_trials:5,receiver_trials:43,lock_in:{magnitude:0.02,phase:0.0,snr:0.3,i_component:0.01,q_component:0.01}},
-  'bench-s3-gh2::greenhouse-beta':{detected:false,best_method:'lock_in',best_correlation:0.05,best_lag:-1,p_value:0.608,watermark_trials:43,receiver_trials:5,lock_in:{magnitude:0.05,phase:-0.5,snr:0.6,i_component:0.04,q_component:-0.03}},
+  'bench-s4-gh1::bench-s4-gh2':{detected:true,best_method:'lock_in',best_magnitude:0.42,best_lag:-1,p_value:0.003,watermark_trials:31,per_objective:[{objective_index:0,detected:false,aligned_trials:28,receiver_trials:28,lock_in:{magnitude:0.09,phase:1.2,snr:1.3,i_component:0.08,q_component:0.04,detected:false},best_method:'lock_in',best_magnitude:0.09,best_lag:1,p_value:0.412},{objective_index:1,detected:true,aligned_trials:28,receiver_trials:28,lock_in:{magnitude:0.42,phase:-0.8,snr:4.1,i_component:0.35,q_component:-0.23,detected:true},best_method:'lock_in',best_magnitude:0.42,best_lag:-1,p_value:0.003},{objective_index:2,detected:false,aligned_trials:28,receiver_trials:28,lock_in:{magnitude:0.12,phase:0.5,snr:1.1,i_component:0.10,q_component:0.06,detected:false},best_method:'lock_in',best_magnitude:0.12,best_lag:2,p_value:0.134}]},
+  'bench-s4-gh2::bench-s4-gh1':{detected:true,best_method:'lock_in',best_magnitude:0.31,best_lag:3,p_value:0.018,watermark_trials:28,per_objective:[{objective_index:0,detected:false,aligned_trials:31,receiver_trials:31,lock_in:{magnitude:0.07,phase:2.1,snr:0.9,i_component:0.05,q_component:0.04,detected:false},best_method:'lock_in',best_magnitude:0.07,best_lag:1,p_value:0.387},{objective_index:1,detected:true,aligned_trials:31,receiver_trials:31,lock_in:{magnitude:0.31,phase:1.9,snr:3.2,i_component:0.22,q_component:0.21,detected:true},best_method:'lock_in',best_magnitude:0.31,best_lag:3,p_value:0.018},{objective_index:2,detected:false,aligned_trials:31,receiver_trials:31,lock_in:{magnitude:0.11,phase:-1.3,snr:1.0,i_component:0.08,q_component:-0.07,detected:false},best_method:'lock_in',best_magnitude:0.11,best_lag:2,p_value:0.198}]},
+  'bench-s3-gh1::bench-s3-gh2':{detected:false,best_method:'lock_in',best_magnitude:0.03,best_lag:0,p_value:0.812,watermark_trials:44,per_objective:[{objective_index:0,detected:false,aligned_trials:41,receiver_trials:41,lock_in:{magnitude:0.03,phase:0.1,snr:0.4,i_component:0.02,q_component:0.02,detected:false},best_method:'lock_in',best_magnitude:0.03,best_lag:0,p_value:0.812},{objective_index:1,detected:false,aligned_trials:41,receiver_trials:41,lock_in:{magnitude:0.02,phase:-0.3,snr:0.3,i_component:0.02,q_component:-0.01,detected:false},best_method:'lock_in',best_magnitude:0.02,best_lag:1,p_value:0.845},{objective_index:2,detected:false,aligned_trials:41,receiver_trials:41,lock_in:{magnitude:0.02,phase:0.8,snr:0.3,i_component:0.01,q_component:0.01,detected:false},best_method:'lock_in',best_magnitude:0.02,best_lag:-1,p_value:0.891}]},
+  'bench-s3-gh2::bench-s3-gh1':{detected:false,best_method:'lock_in',best_magnitude:0.05,best_lag:1,p_value:0.694,watermark_trials:41,per_objective:[{objective_index:0,detected:false,aligned_trials:44,receiver_trials:44,lock_in:{magnitude:0.05,phase:0.4,snr:0.6,i_component:0.04,q_component:0.03,detected:false},best_method:'lock_in',best_magnitude:0.05,best_lag:1,p_value:0.694},{objective_index:1,detected:false,aligned_trials:44,receiver_trials:44,lock_in:{magnitude:0.04,phase:-0.7,snr:0.5,i_component:0.03,q_component:-0.02,detected:false},best_method:'lock_in',best_magnitude:0.04,best_lag:0,p_value:0.723},{objective_index:2,detected:false,aligned_trials:44,receiver_trials:44,lock_in:{magnitude:0.03,phase:1.1,snr:0.4,i_component:0.02,q_component:0.02,detected:false},best_method:'lock_in',best_magnitude:0.03,best_lag:-1,p_value:0.812}]},
+  'bench-s4-gh1::greenhouse-beta':{detected:true,best_method:'lock_in',best_magnitude:0.39,best_lag:0,p_value:0.021,watermark_trials:31,per_objective:[{objective_index:0,detected:false,aligned_trials:5,receiver_trials:5,lock_in:{magnitude:0.08,phase:0.5,snr:0.8,i_component:0.07,q_component:0.04,detected:false},best_method:'lock_in',best_magnitude:0.08,best_lag:0,p_value:0.612},{objective_index:1,detected:true,aligned_trials:5,receiver_trials:5,lock_in:{magnitude:0.39,phase:-0.2,snr:3.8,i_component:0.34,q_component:-0.18,detected:true},best_method:'lock_in',best_magnitude:0.39,best_lag:0,p_value:0.021}]},
+  'greenhouse-beta::bench-s4-gh1':{detected:false,best_method:'lock_in',best_magnitude:0.07,best_lag:0,p_value:0.611,watermark_trials:5,per_objective:[{objective_index:0,detected:false,aligned_trials:31,receiver_trials:31,lock_in:{magnitude:0.07,phase:0.3,snr:0.7,i_component:0.06,q_component:0.03,detected:false},best_method:'lock_in',best_magnitude:0.07,best_lag:0,p_value:0.611},{objective_index:1,detected:false,aligned_trials:31,receiver_trials:31,lock_in:{magnitude:0.05,phase:-1.1,snr:0.5,i_component:0.04,q_component:-0.03,detected:false},best_method:'lock_in',best_magnitude:0.05,best_lag:1,p_value:0.687}]},
+  'bench-s4-gh2::greenhouse-beta':{detected:false,best_method:'lock_in',best_magnitude:0.09,best_lag:1,p_value:0.548,watermark_trials:28,receiver_trials:5,lock_in:{magnitude:0.09,phase:0.6,snr:0.9,i_component:0.07,q_component:0.05}},
+  'greenhouse-beta::bench-s4-gh2':{detected:false,best_method:'lock_in',best_magnitude:0.03,best_lag:-1,p_value:0.891,watermark_trials:5,receiver_trials:28,lock_in:{magnitude:0.03,phase:-0.4,snr:0.4,i_component:0.02,q_component:-0.02}},
+  'network-tuner::bench-s3-gh1':{detected:false,best_method:'lock_in',best_magnitude:0.04,best_lag:0,p_value:0.723,watermark_trials:62,receiver_trials:47,lock_in:{magnitude:0.04,phase:0.2,snr:0.5,i_component:0.03,q_component:0.02}},
+  'network-tuner::bench-s3-gh2':{detected:false,best_method:'lock_in',best_magnitude:0.07,best_lag:-2,p_value:0.441,watermark_trials:62,receiver_trials:43,lock_in:{magnitude:0.07,phase:-1.0,snr:0.7,i_component:0.05,q_component:-0.04}},
+  'bench-s3-gh1::network-tuner':{detected:false,best_method:'lock_in',best_magnitude:0.04,best_lag:1,p_value:0.782,watermark_trials:47,receiver_trials:62,lock_in:{magnitude:0.04,phase:0.8,snr:0.5,i_component:0.03,q_component:0.02}},
+  'bench-s3-gh2::network-tuner':{detected:false,best_method:'lock_in',best_magnitude:0.05,best_lag:2,p_value:0.594,watermark_trials:43,receiver_trials:62,lock_in:{magnitude:0.05,phase:1.5,snr:0.6,i_component:0.03,q_component:0.04}},
+  'network-tuner::bench-s4-gh1':{detected:false,best_method:'lock_in',best_magnitude:0.06,best_lag:0,p_value:0.503,watermark_trials:62,receiver_trials:31,lock_in:{magnitude:0.06,phase:0.1,snr:0.6,i_component:0.05,q_component:0.03}},
+  'network-tuner::bench-s4-gh2':{detected:false,best_method:'lock_in',best_magnitude:0.04,best_lag:-1,p_value:0.741,watermark_trials:62,receiver_trials:28,lock_in:{magnitude:0.04,phase:-0.5,snr:0.4,i_component:0.03,q_component:-0.02}},
+  'bench-s4-gh1::network-tuner':{detected:false,best_method:'lock_in',best_magnitude:0.04,best_lag:1,p_value:0.684,watermark_trials:31,receiver_trials:62,lock_in:{magnitude:0.04,phase:0.9,snr:0.5,i_component:0.03,q_component:0.03}},
+  'bench-s4-gh2::network-tuner':{detected:false,best_method:'lock_in',best_magnitude:0.06,best_lag:-1,p_value:0.478,watermark_trials:28,receiver_trials:62,lock_in:{magnitude:0.06,phase:-0.7,snr:0.6,i_component:0.04,q_component:-0.04}},
+  'network-tuner::greenhouse-beta':{detected:false,best_method:'lock_in',best_magnitude:0.08,best_lag:0,p_value:0.398,watermark_trials:62,receiver_trials:5,lock_in:{magnitude:0.08,phase:0.3,snr:0.8,i_component:0.07,q_component:0.04}},
+  'greenhouse-beta::network-tuner':{detected:false,best_method:'lock_in',best_magnitude:0.02,best_lag:0,p_value:0.932,watermark_trials:5,receiver_trials:62,lock_in:{magnitude:0.02,phase:0.1,snr:0.3,i_component:0.01,q_component:0.01}},
+  'bench-s3-gh1::bench-s4-gh1':{detected:false,best_method:'lock_in',best_magnitude:0.02,best_lag:0,p_value:0.854,watermark_trials:47,receiver_trials:31,lock_in:{magnitude:0.02,phase:0.0,snr:0.3,i_component:0.02,q_component:0.01}},
+  'bench-s4-gh1::bench-s3-gh1':{detected:false,best_method:'lock_in',best_magnitude:0.03,best_lag:1,p_value:0.801,watermark_trials:31,receiver_trials:47,lock_in:{magnitude:0.03,phase:0.7,snr:0.4,i_component:0.02,q_component:0.02}},
+  'bench-s3-gh1::bench-s4-gh2':{detected:false,best_method:'lock_in',best_magnitude:0.02,best_lag:0,p_value:0.912,watermark_trials:47,receiver_trials:28,lock_in:{magnitude:0.02,phase:-0.2,snr:0.3,i_component:0.01,q_component:-0.01}},
+  'bench-s4-gh2::bench-s3-gh1':{detected:false,best_method:'lock_in',best_magnitude:0.04,best_lag:1,p_value:0.738,watermark_trials:28,receiver_trials:47,lock_in:{magnitude:0.04,phase:0.5,snr:0.5,i_component:0.03,q_component:0.02}},
+  'bench-s3-gh2::bench-s4-gh1':{detected:false,best_method:'lock_in',best_magnitude:0.04,best_lag:-1,p_value:0.702,watermark_trials:43,receiver_trials:31,lock_in:{magnitude:0.04,phase:-0.6,snr:0.5,i_component:0.03,q_component:-0.02}},
+  'bench-s4-gh1::bench-s3-gh2':{detected:false,best_method:'lock_in',best_magnitude:0.03,best_lag:1,p_value:0.761,watermark_trials:31,receiver_trials:43,lock_in:{magnitude:0.03,phase:0.8,snr:0.4,i_component:0.03,q_component:0.02}},
+  'bench-s3-gh2::bench-s4-gh2':{detected:false,best_method:'lock_in',best_magnitude:0.03,best_lag:2,p_value:0.827,watermark_trials:43,receiver_trials:28,lock_in:{magnitude:0.03,phase:1.2,snr:0.4,i_component:0.02,q_component:0.02}},
+  'bench-s4-gh2::bench-s3-gh2':{detected:false,best_method:'lock_in',best_magnitude:0.03,best_lag:-1,p_value:0.779,watermark_trials:28,receiver_trials:43,lock_in:{magnitude:0.03,phase:-0.4,snr:0.4,i_component:0.02,q_component:-0.02}},
+  'greenhouse-beta::bench-s3-gh1':{detected:false,best_method:'lock_in',best_magnitude:0.03,best_lag:0,p_value:0.795,watermark_trials:5,receiver_trials:47,lock_in:{magnitude:0.03,phase:0.2,snr:0.4,i_component:0.03,q_component:0.01}},
+  'bench-s3-gh1::greenhouse-beta':{detected:false,best_method:'lock_in',best_magnitude:0.05,best_lag:1,p_value:0.642,watermark_trials:47,receiver_trials:5,lock_in:{magnitude:0.05,phase:0.6,snr:0.5,i_component:0.04,q_component:0.03}},
+  'greenhouse-beta::bench-s3-gh2':{detected:false,best_method:'lock_in',best_magnitude:0.02,best_lag:0,p_value:0.874,watermark_trials:5,receiver_trials:43,lock_in:{magnitude:0.02,phase:0.0,snr:0.3,i_component:0.01,q_component:0.01}},
+  'bench-s3-gh2::greenhouse-beta':{detected:false,best_method:'lock_in',best_magnitude:0.05,best_lag:-1,p_value:0.608,watermark_trials:43,receiver_trials:5,lock_in:{magnitude:0.05,phase:-0.5,snr:0.6,i_component:0.04,q_component:-0.03}},
 };
 
 function addDemoPerObj(d){
-  if(!d.per_objective)d.per_objective=[{objective_index:0,detected:d.detected,receiver_trials:d.receiver_trials||0,aligned_trials:d.receiver_trials||0,lock_in:{magnitude:d.best_correlation||0,phase:0,snr:d.best_correlation>0.15?3:0.5,i_component:d.best_correlation||0,q_component:0,detected:d.detected},best_method:'lock_in',best_correlation:d.best_correlation,best_lag:d.best_lag,p_value:d.p_value}];
+  if(!d.per_objective)d.per_objective=[{objective_index:0,detected:d.detected,receiver_trials:d.receiver_trials||0,aligned_trials:d.receiver_trials||0,lock_in:{magnitude:d.best_magnitude||0,phase:0,snr:d.best_magnitude>0.15?3:0.5,i_component:d.best_magnitude||0,q_component:0,detected:d.detected},best_method:'lock_in',best_magnitude:d.best_magnitude,best_lag:d.best_lag,p_value:d.p_value}];
   d.per_objective.forEach(po=>{
     if(po.residuals)return;
-    if(!po.lock_in)po.lock_in={magnitude:po.best_correlation||0,phase:0,snr:0.5,detected:po.detected};
+    if(!po.lock_in)po.lock_in={magnitude:po.best_magnitude||0,phase:0,snr:0.5,detected:po.detected};
     var n=po.aligned_trials||20;
     var det=po.detected;
     var phase=det?(po.objective_index*1.2):(po.objective_index*2.7+0.8);
@@ -558,13 +558,13 @@ async function fetchWmDetections(){
       if(DEMO){
         const dk=Object.keys(DEMO_WM_DETECTIONS).find(k=>(a.name+'::'+b.name)===k);
         if(dk) results[key]=DEMO_WM_DETECTIONS[dk];
-        else results[key]={detected:false,best_method:'lock_in',best_correlation:0,best_lag:0,p_value:1,watermark_trials:0,receiver_trials:0,lock_in:{magnitude:0,phase:0,snr:0,detected:false}};
+        else results[key]={detected:false,best_method:'lock_in',best_magnitude:0,best_lag:0,p_value:1,watermark_trials:0,receiver_trials:0,lock_in:{magnitude:0,phase:0,snr:0,detected:false}};
       } else {
         try{
           const r=await fetch(baseUrl+'/api/watermark-detection/'+a.id+'/'+b.id);
           results[key]=await r.json();
         }catch(e){
-          results[key]={detected:false,best_method:'\u2014',best_correlation:0,best_lag:0,p_value:1,watermark_trials:0,receiver_trials:0,error:true};
+          results[key]={detected:false,best_method:'\u2014',best_magnitude:0,best_lag:0,p_value:1,watermark_trials:0,receiver_trials:0,error:true};
         }
       }
     }
@@ -637,12 +637,12 @@ function renderCrossRanked(el){
     }
   }
 
-  const maxCorr=d3.max(rows,r=>r.d.best_correlation)||0.5;
+  const maxCorr=d3.max(rows,r=>r.d.best_magnitude)||0.5;
 
   const cols=[
     {key:'direction',w:'200px',field:'name'},
     {key:'verdict',w:'80px',field:'verdict'},
-    {key:'magnitude',w:'100px',field:'correlation'},
+    {key:'magnitude',w:'100px',field:'magnitude'},
     {key:'method',w:'120px',field:'method'},
     {key:'lag',w:'50px',field:'lag'},
     {key:'p',w:'60px',field:'p'},
@@ -666,7 +666,7 @@ function renderCrossRanked(el){
     return items.slice().sort((a,b)=>{
       if(wmSort==='name') return wmSortDir*(a.from+a.to).localeCompare(b.from+b.to);
       if(wmSort==='verdict'){const tw=d=>d.d.detected?2:1;return wmSortDir*(tw(a)-tw(b))}
-      if(wmSort==='correlation') return wmSortDir*(a.d.best_correlation-b.d.best_correlation);
+      if(wmSort==='magnitude') return wmSortDir*(a.d.best_magnitude-b.d.best_magnitude);
       if(wmSort==='method') return wmSortDir*(a.d.best_method||'').localeCompare(b.d.best_method||'');
       if(wmSort==='lag') return wmSortDir*((a.d.best_lag||0)-(b.d.best_lag||0));
       if(wmSort==='p') return wmSortDir*((a.d.p_value||1)-(b.d.p_value||1));
@@ -685,7 +685,7 @@ function renderCrossRanked(el){
     const bar=row.append('span').style('width','100px').style('height','6px').style('background','#21262d')
       .style('border-radius','3px').style('overflow','hidden').style('flex-shrink','0');
     bar.append('span').style('display','block').style('height','100%')
-      .style('width',(d.best_correlation/maxCorr*100)+'%').style('background',crossTierColor(tier)).style('border-radius','3px');
+      .style('width',(d.best_magnitude/maxCorr*100)+'%').style('background',crossTierColor(tier)).style('border-radius','3px');
 
     row.append('span').style('width','80px').style('font','9px monospace').style('color',crossTierColor(tier)).style('flex-shrink','0')
       .text(d.detected?'detected':'not detected');
@@ -732,7 +732,7 @@ function renderCrossMatrix(el){
         g.append('rect').attr('x',cx+2).attr('y',cy+2).attr('width',cellSize-4).attr('height',cellSize-4)
           .attr('fill',crossTierBg(tier)).attr('rx',3).attr('stroke',crossTierColor(tier)).attr('stroke-width',1.5);
         g.append('text').attr('x',cx+cellSize/2).attr('y',cy+16).attr('text-anchor','middle')
-          .attr('fill',crossTierColor(tier)).style('font','bold 9px monospace').text(d.best_correlation.toFixed(2));
+          .attr('fill',crossTierColor(tier)).style('font','bold 9px monospace').text(d.best_magnitude.toFixed(2));
         g.append('text').attr('x',cx+cellSize/2).attr('y',cy+30).attr('text-anchor','middle')
           .attr('fill','#6e7681').style('font','7px monospace').text(d.best_method);
         g.append('text').attr('x',cx+cellSize/2).attr('y',cy+42).attr('text-anchor','middle')
@@ -743,7 +743,7 @@ function renderCrossMatrix(el){
         g.on('mouseenter',function(event){
           d3.select(this).select('rect').attr('stroke-width',2.5);
           let html='<div class="tt-title">'+from+' \u2192 '+to+'</div>';
-          html+='<div class="tt-line">correlation: <span>'+d.best_correlation.toFixed(3)+'</span></div>';
+          html+='<div class="tt-line">magnitude: <span>'+d.best_magnitude.toFixed(3)+'</span></div>';
           html+='<div class="tt-line">method: <span>'+d.best_method+'</span></div>';
           html+='<div class="tt-line">lag: <span>'+d.best_lag+'</span></div>';
           html+='<div class="tt-line">verdict: <span>'+(d.detected?'detected':'not detected')+'</span></div>';
@@ -765,7 +765,7 @@ function renderCrossCausality(el){
   Object.entries(wmDetections||{}).forEach(([key,d])=>{
     if(!d.detected) return;
     const [from,to]=key.split('::');
-    edges.push({from,to,strength:d.best_correlation,tier:'detected',method:d.best_method,lag:d.best_lag,d});
+    edges.push({from,to,strength:d.best_magnitude,tier:'detected',method:d.best_method,lag:d.best_lag,d});
   });
 
   const fromMap={};
@@ -1221,15 +1221,15 @@ function showWmPairDetail(r){
 
   const summary=el.append('div').style('display','grid').style('grid-template-columns','1fr 1fr 1fr').style('gap','8px').style('margin-bottom','12px');
   summary.append('div').attr('class','info')
-    .html('best method: <b style="color:#c9d1d9">'+(d.best_method||'\u2014')+'</b><br>magnitude: <b style="color:'+crossTierColor(tier)+'">'+d.best_correlation.toFixed(3)+'</b><br>lag: '+(d.best_lag||'\u2014'));
+    .html('best method: <b style="color:#c9d1d9">'+(d.best_method||'\u2014')+'</b><br>magnitude: <b style="color:'+crossTierColor(tier)+'">'+d.best_magnitude.toFixed(3)+'</b><br>lag: '+(d.best_lag||'\u2014'));
   summary.append('div').attr('class','info')
     .html('p-value: <b style="color:'+(d.p_value<0.05?'#f85149':'#8b949e')+'">'+(d.p_value!=null?(d.p_value<0.001?'<0.001':d.p_value.toFixed(3)):'\u2014')+'</b><br>watermark trials: '+(d.watermark_trials||'\u2014')+'<br>objectives tested: '+(d.per_objective?d.per_objective.length:'\u2014'));
   const receiverConfig=crossData[r.toIdx];
   const objNames=receiverConfig&&receiverConfig.config&&receiverConfig.config.objectives?receiverConfig.config.objectives.map(o=>o.name):[];
-  const bestObj=d.per_objective?d.per_objective.reduce((a,b)=>(b.best_correlation||0)>(a.best_correlation||0)?b:a,{best_correlation:0}):null;
+  const bestObj=d.per_objective?d.per_objective.reduce((a,b)=>(b.best_magnitude||0)>(a.best_magnitude||0)?b:a,{best_magnitude:0}):null;
   const bestObjName=bestObj&&objNames[bestObj.objective_index]?objNames[bestObj.objective_index]:'obj '+(bestObj?bestObj.objective_index:'?');
   summary.append('div').attr('class','info')
-    .html('lock-in magnitude: <b style="color:'+crossTierColor(tier)+'">'+(d.best_correlation!=null?d.best_correlation.toFixed(3):'\u2014')+'</b><br>SNR: <b style="color:'+(bestObj&&bestObj.lock_in&&bestObj.lock_in.snr>2?'#3fb950':'#8b949e')+'">'+(bestObj&&bestObj.lock_in?bestObj.lock_in.snr.toFixed(1):'\u2014')+'</b><br>phase: <b style="color:#8b949e">'+(bestObj&&bestObj.lock_in!=null?(bestObj.lock_in.phase||0).toFixed(2):'\u2014')+'</b>');
+    .html('lock-in magnitude: <b style="color:'+crossTierColor(tier)+'">'+(d.best_magnitude!=null?d.best_magnitude.toFixed(3):'\u2014')+'</b><br>SNR: <b style="color:'+(bestObj&&bestObj.lock_in&&bestObj.lock_in.snr>2?'#3fb950':'#8b949e')+'">'+(bestObj&&bestObj.lock_in?bestObj.lock_in.snr.toFixed(1):'\u2014')+'</b><br>phase: <b style="color:#8b949e">'+(bestObj&&bestObj.lock_in!=null?(bestObj.lock_in.phase||0).toFixed(2):'\u2014')+'</b>');
   if(d.per_objective&&d.per_objective.length>1){
     const objTable=el.append('div').style('margin-bottom','12px');
     objTable.append('div').style('font','bold 10px monospace').style('color','#8b949e').style('margin-bottom','4px').text('per-objective results');
