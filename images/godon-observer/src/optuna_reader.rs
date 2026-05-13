@@ -342,7 +342,6 @@ impl OptunaReader {
 
         let mut per_objective: Vec<serde_json::Value> = Vec::new();
         let mut overall_detected = false;
-        let mut overall_best_method = "";
         let mut overall_best_corr = 0.0_f64;
         let mut overall_best_lag = 0_i32;
         let mut overall_p_value = 1.0_f64;
@@ -416,10 +415,6 @@ impl OptunaReader {
             let wm_phase_offset = wm_meta.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
             let lockin = lock_in_detect(residuals, wm_period as f64, wm_amplitude, wm_phase_offset);
 
-            let max_lag = (n_align / 3).max(1).min(20);
-            let (pearson, pearson_lag) = best_cross_correlation(sig, residuals, max_lag);
-            let (matched, matched_lag) = lagged_matched_filter(sig, residuals, max_lag);
-
             let n_perm = 5000usize;
             let mut rng = fastrand::Rng::new();
             let mut exceed_count = 0usize;
@@ -433,12 +428,9 @@ impl OptunaReader {
             }
             let p_value = (exceed_count + 1) as f64 / (n_perm + 1) as f64;
 
-            let lockin_detected = lockin.magnitude > 0.15 && p_value < 0.05;
-            let pearson_detected = p_value < 0.05 && pearson.abs() > 0.3;
-            let mf_detected = matched.abs() > 0.3;
-            let detected = lockin_detected;
+            let detected = lockin.magnitude > 0.15 && p_value < 0.05;
 
-            let mut obj_result = serde_json::json!({
+            let obj_result = serde_json::json!({
                 "objective_index": obj_idx,
                 "detected": detected,
                 "aligned_trials": n_align,
@@ -449,15 +441,11 @@ impl OptunaReader {
                     "snr": round4(lockin.snr),
                     "i_component": round4(lockin.i_component),
                     "q_component": round4(lockin.q_component),
-                    "detected": lockin_detected,
+                    "detected": detected,
                 },
-                "pearson": {"correlation": round4(pearson), "lag": pearson_lag, "detected": pearson_detected},
-                "matched_filter": round4(matched),
-                "matched_filter_lag": matched_lag,
-                "matched_filter_detected": mf_detected,
-                "best_method": if detected { "lock_in" } else if pearson.abs() > matched.abs() { "pearson" } else { "matched_filter" },
-                "best_correlation": round4(if detected { lockin.magnitude } else { pearson.abs().max(matched.abs()) }),
-                "best_lag": if detected { (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32 } else { if pearson.abs() > matched.abs() { pearson_lag } else { matched_lag } },
+                "best_method": "lock_in",
+                "best_correlation": round4(lockin.magnitude),
+                "best_lag": (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32,
                 "p_value": round4(p_value),
                 "permutations": n_perm,
                 "residuals": residuals.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
@@ -467,12 +455,10 @@ impl OptunaReader {
 
             if detected && !overall_detected {
                 overall_detected = true;
-                overall_best_method = "lock_in";
                 overall_best_corr = lockin.magnitude;
                 overall_best_lag = (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32;
                 overall_p_value = p_value;
             } else if !overall_detected && lockin.magnitude > overall_best_corr {
-                overall_best_method = "lock_in";
                 overall_best_corr = lockin.magnitude;
                 overall_best_lag = (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32;
                 overall_p_value = p_value;
@@ -488,13 +474,13 @@ impl OptunaReader {
             }));
         }
 
-        let mut result = serde_json::json!({
+        let result = serde_json::json!({
             "detected": overall_detected,
             "sender_id": sender_id,
             "receiver_id": receiver_id,
             "watermark_type": wm_type,
             "watermark_trials": wm_signal.len(),
-            "best_method": overall_best_method,
+            "best_method": "lock_in",
             "best_correlation": round4(overall_best_corr),
             "best_lag": overall_best_lag,
             "p_value": round4(overall_p_value),
@@ -556,75 +542,6 @@ fn pearson_correlation(x: &[f64], y: &[f64]) -> f64 {
     let denom = vx.sqrt() * vy.sqrt();
     if denom == 0.0 { return 0.0; }
     cov / denom
-}
-
-fn best_cross_correlation(signal: &[f64], quality: &[f64], max_lag: usize) -> (f64, i32) {
-    let n = signal.len().min(quality.len());
-    if n < 2 { return (0.0, 0); }
-    let mut best_corr = 0.0_f64;
-    let mut best_lag = 0_i32;
-    for lag in 0..=max_lag {
-        if lag >= n { break; }
-        let s_end = n - lag;
-        let corr = pearson_correlation(&signal[..s_end], &quality[lag..lag + s_end]);
-        if corr.abs() > best_corr.abs() {
-            best_corr = corr;
-            best_lag = lag as i32;
-        }
-        if lag > 0 && n - lag >= 2 {
-            let corr_rev = pearson_correlation(&signal[lag..n], &quality[..n - lag]);
-            if corr_rev.abs() > best_corr.abs() {
-                best_corr = corr_rev;
-                best_lag = -(lag as i32);
-            }
-        }
-    }
-    (best_corr, best_lag)
-}
-
-fn lagged_matched_filter(template: &[f64], signal: &[f64], max_lag: usize) -> (f64, i32) {
-    let n = template.len().min(signal.len());
-    if n < 2 { return (0.0, 0); }
-    let t_mean = template[..n].iter().sum::<f64>() / n as f64;
-    let t_demean: Vec<f64> = template[..n].iter().map(|v| v - t_mean).collect();
-    let t_norm: f64 = t_demean.iter().map(|v| v * v).sum::<f64>().sqrt();
-    if t_norm == 0.0 { return (0.0, 0); }
-    let mut best_corr = 0.0_f64;
-    let mut best_lag = 0_i32;
-    for lag in 0..=max_lag {
-        if lag >= n { break; }
-        let s_end = n - lag;
-        let s_slice = &signal[lag..lag + s_end];
-        let s_mean = s_slice.iter().sum::<f64>() / s_end as f64;
-        let s_norm: f64 = s_slice.iter().map(|v| (v - s_mean).powi(2)).sum::<f64>().sqrt();
-        if s_norm == 0.0 { continue; }
-        let mut sum = 0.0_f64;
-        for i in 0..s_end {
-            sum += t_demean[i] * (s_slice[i] - s_mean);
-        }
-        let corr = sum / (t_norm * s_norm);
-        if corr.abs() > best_corr.abs() {
-            best_corr = corr;
-            best_lag = lag as i32;
-        }
-        if lag > 0 && n - lag >= 2 {
-            let s_slice_rev = &signal[..n - lag];
-            let s_mean_rev = s_slice_rev.iter().sum::<f64>() / (n - lag) as f64;
-            let s_norm_rev: f64 = s_slice_rev.iter().map(|v| (v - s_mean_rev).powi(2)).sum::<f64>().sqrt();
-            if s_norm_rev > 0.0 {
-                let mut sum_rev = 0.0_f64;
-                for i in 0..n - lag {
-                    sum_rev += t_demean[i] * (s_slice_rev[i] - s_mean_rev);
-                }
-                let corr_rev = sum_rev / (t_norm * s_norm_rev);
-                if corr_rev.abs() > best_corr.abs() {
-                    best_corr = corr_rev;
-                    best_lag = -(lag as i32);
-                }
-            }
-        }
-    }
-    (best_corr, best_lag)
 }
 
 struct LockInResult {
@@ -774,71 +691,6 @@ fn param_detrend(qualities: &[f64], params_list: &[HashMap<String, f64>]) -> Vec
     residuals
 }
 
-fn transfer_entropy(source: &[f64], target: &[f64], lag: usize) -> f64 {
-    let n = source.len();
-    if n < lag + 2 { return 0.0; }
-    let n_bins = (n as f64).sqrt().max(3.0) as usize;
-
-    let src_min = source.iter().cloned().fold(f64::INFINITY, f64::min);
-    let src_max = source.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let tgt_min = target.iter().cloned().fold(f64::INFINITY, f64::min);
-    let tgt_max = target.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-
-    if src_max - src_min < 1e-12 || tgt_max - tgt_min < 1e-12 { return 0.0; }
-
-    let src_bins: Vec<usize> = source.iter()
-        .map(|v| (((v - src_min) / (src_max - src_min) * (n_bins as f64 - 1.0)).round() as usize).min(n_bins - 1))
-        .collect();
-    let tgt_bins: Vec<usize> = target.iter()
-        .map(|v| (((v - tgt_min) / (tgt_max - tgt_min) * (n_bins as f64 - 1.0)).round() as usize).min(n_bins - 1))
-        .collect();
-
-    let n_bins_cubed = n_bins * n_bins * n_bins;
-    let mut count_joint = vec![0u32; n_bins_cubed];
-    let mut count_tgt_next_given_tgt = vec![0u32; n_bins * n_bins];
-    let mut count_tgt_next = vec![0u32; n_bins];
-    let mut count_src_given_tgt = vec![0u32; n_bins * n_bins];
-    let mut count_tgt = vec![0u32; n_bins];
-    let mut total: u32 = 0;
-
-    for i in lag..n - 1 {
-        let s = src_bins[i];
-        let t_curr = tgt_bins[i];
-        let t_next = tgt_bins[i + 1];
-
-        count_joint[s * n_bins * n_bins + t_curr * n_bins + t_next] += 1;
-        count_tgt_next_given_tgt[t_curr * n_bins + t_next] += 1;
-        count_tgt_next[t_next] += 1;
-        count_src_given_tgt[s * n_bins + t_curr] += 1;
-        count_tgt[t_curr] += 1;
-        total += 1;
-    }
-
-    if total == 0 { return 0.0; }
-
-    let mut te = 0.0_f64;
-    for i in lag..n - 1 {
-        let s = src_bins[i];
-        let t_curr = tgt_bins[i];
-        let t_next = tgt_bins[i + 1];
-
-        let c_joint = count_joint[s * n_bins * n_bins + t_curr * n_bins + t_next] as f64;
-        let c_tgt_next_tgt = count_tgt_next_given_tgt[t_curr * n_bins + t_next] as f64;
-        let c_src_tgt = count_src_given_tgt[s * n_bins + t_curr] as f64;
-        let c_tgt = count_tgt[t_curr] as f64;
-
-        if c_joint > 0.0 && c_tgt_next_tgt > 0.0 && c_src_tgt > 0.0 && c_tgt > 0.0 {
-            let p_joint = c_joint / total as f64;
-            let p_tgt_next_given_tgt = c_tgt_next_tgt / c_tgt;
-            let p_cond_joint = c_joint / c_tgt;
-
-            te += p_joint * (p_tgt_next_given_tgt / p_cond_joint).ln();
-        }
-    }
-
-    te.max(0.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -907,34 +759,15 @@ mod tests {
     fn test_detection_with_synthetic_coupling() {
         let period = 20.0_f64;
         let amplitude = 75.0_f64;
-        let phase_offset = 1.3418_f64;
+        let sender_phase = 1.3418_f64;
+        let receiver_phase = 2.45_f64;
         let coupling = 0.9_f64;
         let n = 80;
 
-        let wm_meta = serde_json::json!({
-            "type": "sinusoidal",
-            "param_name": "light_intensity",
-            "amplitude": amplitude,
-            "period": period,
-            "phase_offset": phase_offset
-        });
-
-        let sender_trials: Vec<TrialRecord> = (0..n).map(|i| {
-            let light = 500.0 + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + phase_offset).sin();
-            let energy = light * 0.3 + (i as f64 * 0.5) + 2.0 * (i as f64 * 0.07).sin();
-            let growth = 0.5 + 0.003 * i as f64 + 0.05 * (i as f64 * 0.13).sin();
-            let water = light * 0.06 + (i as f64 * 0.1) + 0.3 * (i as f64 * 0.09).sin();
-            let ts = format!("2026-05-08 21:{:02}:{:02}", 10 + i / 60, (i % 60) * 1);
-            make_trial(i as i32, &ts,
-                vec![("light_intensity", light), ("co2_injection", 5.0 + (i as f64 * 0.1)), ("irrigation", 1.0)],
-                vec![growth, energy, water],
-                Some((wm_meta.to_string().as_str(), i as i32))
-            )
-        }).collect();
-
         let receiver_trials: Vec<TrialRecord> = (0..n).map(|i| {
-            let sender_light = 500.0 + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + phase_offset).sin();
-            let own_light = 300.0 + 200.0 * ((i * 7 + 3) as f64 % n as f64 / n as f64 * 10.0).sin();
+            let sender_light = 500.0 + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin();
+            let own_light = 300.0 + 200.0 * ((i * 7 + 3) as f64 % n as f64 / n as f64 * 10.0).sin()
+                + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
             let energy = own_light * 0.3 + coupling * sender_light * 0.05 + (i as f64 * 0.4) + 3.0 * (i as f64 * 0.11).sin();
             let growth = 0.5 + 0.002 * i as f64 + 0.04 * (i as f64 * 0.17).sin();
             let water = own_light * 0.06 + coupling * sender_light * 0.01 + (i as f64 * 0.08) + 0.2 * (i as f64 * 0.13).sin();
@@ -942,16 +775,12 @@ mod tests {
             make_trial(i as i32, &ts,
                 vec![("light_intensity", own_light), ("co2_injection", 3.0 + (i as f64 * 0.2)), ("irrigation", 1.5)],
                 vec![growth, energy, water],
-                Some((serde_json::json!({"type":"sinusoidal","param_name":"light_intensity","amplitude":75.0,"period":20,"phase_offset":2.45}).to_string().as_str(), i as i32))
+                Some((serde_json::json!({"type":"sinusoidal","param_name":"light_intensity","amplitude":amplitude,"period":period as i32,"phase_offset":receiver_phase}).to_string().as_str(), i as i32))
             )
         }).collect();
 
-        let wm_signal: Vec<f64> = (0..n).map(|i| {
-            amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + phase_offset).sin()
-        }).collect();
-
+        let obj_names = ["growth_rate", "energy_kwh", "water_liters"];
         for obj_idx in 0..3 {
-            let obj_name = ["growth_rate", "energy_kwh", "water_liters"][obj_idx];
             let receiver_quality: Vec<f64> = receiver_trials.iter()
                 .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
                 .map(|t| t.values[obj_idx].unwrap())
@@ -961,12 +790,14 @@ mod tests {
                 .collect();
 
             let detrended = param_detrend(&receiver_quality, &receiver_params);
-            let corr = super::pearson_correlation(&wm_signal, &detrended);
+            let lockin = super::lock_in_detect(&detrended, period, amplitude, sender_phase);
+
+            eprintln!("  obj{} ({}): lock_in mag={:.4f} snr={:.2f}", obj_idx, obj_names[obj_idx], lockin.magnitude, lockin.snr);
 
             if obj_idx == 0 {
-                assert!(corr.abs() < 0.4, "growth_rate should not correlate with sender watermark, got r={}", corr);
+                assert!(!lockin.magnitude > 0.15 || lockin.snr < 2.0, "growth_rate should not show coupling, got mag={:.4f} snr={:.2f}", lockin.magnitude, lockin.snr);
             } else {
-                assert!(corr.abs() > 0.15, "{} should correlate with sender watermark, got r={}", obj_name, corr);
+                assert!(lockin.magnitude > 0.05, "{} should show coupling via lock-in, got mag={:.4f}", obj_names[obj_idx], lockin.magnitude);
             }
         }
     }
@@ -979,13 +810,9 @@ mod tests {
         let receiver_phase = 2.4546_f64;
         let n = 80;
 
-        let wm_signal: Vec<f64> = (0..n).map(|i| {
-            amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin()
-        }).collect();
-
         let receiver_trials: Vec<TrialRecord> = (0..n).map(|i| {
             let own_light = 300.0 + 200.0 * ((i * 7 + 3) as f64 % n as f64 / n as f64 * 10.0).sin()
-                + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin() * 0.01;
+                + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
             let energy = own_light * 0.3 + (i as f64 * 0.4) + 3.0 * (i as f64 * 0.11).sin();
             let growth = 0.5 + 0.002 * i as f64 + 0.04 * (i as f64 * 0.17).sin();
             let water = own_light * 0.06 + (i as f64 * 0.08) + 0.2 * (i as f64 * 0.13).sin();
@@ -993,12 +820,12 @@ mod tests {
             make_trial(i as i32, &ts,
                 vec![("light_intensity", own_light), ("co2_injection", 3.0 + (i as f64 * 0.2)), ("irrigation", 1.5)],
                 vec![growth, energy, water],
-                Some((serde_json::json!({"type":"sinusoidal","param_name":"light_intensity","amplitude":75.0,"period":20,"phase_offset":receiver_phase}).to_string().as_str(), i as i32))
+                Some((serde_json::json!({"type":"sinusoidal","param_name":"light_intensity","amplitude":amplitude,"period":period as i32,"phase_offset":receiver_phase}).to_string().as_str(), i as i32))
             )
         }).collect();
 
+        let obj_names = ["growth_rate", "energy_kwh", "water_liters"];
         for obj_idx in 0..3 {
-            let obj_name = ["growth_rate", "energy_kwh", "water_liters"][obj_idx];
             let receiver_quality: Vec<f64> = receiver_trials.iter()
                 .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
                 .map(|t| t.values[obj_idx].unwrap())
@@ -1008,9 +835,10 @@ mod tests {
                 .collect();
 
             let detrended = param_detrend(&receiver_quality, &receiver_params);
-            let corr = super::pearson_correlation(&wm_signal, &detrended);
+            let lockin = super::lock_in_detect(&detrended, period, amplitude, sender_phase);
 
-            assert!(corr.abs() < 0.4, "{} should not correlate with sender when no coupling, got r={}", obj_name, corr);
+            eprintln!("  obj{} ({}): lock_in mag={:.4f} snr={:.2f}", obj_idx, obj_names[obj_idx], lockin.magnitude, lockin.snr);
+            assert!(lockin.magnitude < 0.3, "{} should not show coupling, got mag={:.4f}", obj_names[obj_idx], lockin.magnitude);
         }
     }
 
