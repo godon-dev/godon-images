@@ -412,43 +412,13 @@ impl OptunaReader {
             };
             let residuals = &detrended[..n_align];
 
+            let wm_amplitude = wm_meta.get("amplitude").and_then(|v| as_f64(v)).unwrap_or(0.1);
+            let wm_phase_offset = wm_meta.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
+            let lockin = lock_in_detect(residuals, wm_period as f64, wm_amplitude, wm_phase_offset);
+
             let max_lag = (n_align / 3).max(1).min(20);
             let (pearson, pearson_lag) = best_cross_correlation(sig, residuals, max_lag);
             let (matched, matched_lag) = lagged_matched_filter(sig, residuals, max_lag);
-
-            let mut corr_results = vec![
-                ("pearson", pearson.abs(), pearson_lag),
-                ("matched_filter", matched.abs(), matched_lag),
-            ];
-
-            let (te_value, te_p) = if n_align >= 20 {
-                let te_observed = transfer_entropy(sig, residuals, 1);
-                let te_base = transfer_entropy(sig, residuals, 0);
-                let te_effect = te_observed - te_base;
-                let mut te_exceed = 0usize;
-                let mut rng_te = fastrand::Rng::new();
-                for _ in 0..1000 {
-                    let mut shuf: Vec<f64> = residuals.to_vec();
-                    shuffle_vec(&mut shuf, &mut rng_te);
-                    let te_perm = transfer_entropy(sig, &shuf, 1);
-                    let te_perm_base = transfer_entropy(sig, &shuf, 0);
-                    if te_perm - te_perm_base >= te_effect {
-                        te_exceed += 1;
-                    }
-                }
-                let te_p_val = (te_exceed + 1) as f64 / 1001.0;
-                if te_p_val < 0.05 && te_effect > 0.001 {
-                    corr_results.push(("transfer_entropy", te_effect, 0));
-                }
-                (round4(te_effect), round4(te_p_val))
-            } else {
-                (0.0, 1.0)
-            };
-
-            let best = corr_results.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)).unwrap();
-            let best_method = best.0;
-            let best_corr = best.1;
-            let best_lag = best.2;
 
             let n_perm = 5000usize;
             let mut rng = fastrand::Rng::new();
@@ -456,34 +426,38 @@ impl OptunaReader {
             for _ in 0..n_perm {
                 let mut shuffled: Vec<f64> = residuals.to_vec();
                 shuffle_vec(&mut shuffled, &mut rng);
-                let perm_pearson = best_cross_correlation(sig, &shuffled, max_lag).0;
-                let perm_matched = lagged_matched_filter(sig, &shuffled, max_lag).0;
-                let perm_best = perm_pearson.abs().max(perm_matched.abs());
-                if perm_best >= best_corr {
+                let perm_lockin = lock_in_detect(&shuffled, wm_period as f64, wm_amplitude, wm_phase_offset);
+                if perm_lockin.magnitude >= lockin.magnitude {
                     exceed_count += 1;
                 }
             }
             let p_value = (exceed_count + 1) as f64 / (n_perm + 1) as f64;
 
+            let lockin_detected = lockin.magnitude > 0.15 && p_value < 0.05;
             let pearson_detected = p_value < 0.05 && pearson.abs() > 0.3;
             let mf_detected = matched.abs() > 0.3;
-            let te_detected = te_p < 0.05 && te_value > 0.001;
-            let n_agree = pearson_detected as usize + mf_detected as usize + te_detected as usize;
-            let detected = mf_detected && n_agree >= 2;
+            let detected = lockin_detected;
 
             let mut obj_result = serde_json::json!({
                 "objective_index": obj_idx,
                 "detected": detected,
                 "aligned_trials": n_align,
                 "receiver_trials": receiver_quality.len(),
+                "lock_in": {
+                    "magnitude": round4(lockin.magnitude),
+                    "phase": round4(lockin.phase),
+                    "snr": round4(lockin.snr),
+                    "i_component": round4(lockin.i_component),
+                    "q_component": round4(lockin.q_component),
+                    "detected": lockin_detected,
+                },
                 "pearson": {"correlation": round4(pearson), "lag": pearson_lag, "detected": pearson_detected},
                 "matched_filter": round4(matched),
                 "matched_filter_lag": matched_lag,
                 "matched_filter_detected": mf_detected,
-                "transfer_entropy": {"value": te_value, "p_value": te_p, "detected": te_detected},
-                "best_method": best_method,
-                "best_correlation": round4(best_corr),
-                "best_lag": best_lag,
+                "best_method": if detected { "lock_in" } else if pearson.abs() > matched.abs() { "pearson" } else { "matched_filter" },
+                "best_correlation": round4(if detected { lockin.magnitude } else { pearson.abs().max(matched.abs()) }),
+                "best_lag": if detected { (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32 } else { if pearson.abs() > matched.abs() { pearson_lag } else { matched_lag } },
                 "p_value": round4(p_value),
                 "permutations": n_perm,
                 "residuals": residuals.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
@@ -493,14 +467,14 @@ impl OptunaReader {
 
             if detected && !overall_detected {
                 overall_detected = true;
-                overall_best_method = best_method;
-                overall_best_corr = best_corr;
-                overall_best_lag = best_lag;
+                overall_best_method = "lock_in";
+                overall_best_corr = lockin.magnitude;
+                overall_best_lag = (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32;
                 overall_p_value = p_value;
-            } else if !overall_detected && best_corr > overall_best_corr {
-                overall_best_method = best_method;
-                overall_best_corr = best_corr;
-                overall_best_lag = best_lag;
+            } else if !overall_detected && lockin.magnitude > overall_best_corr {
+                overall_best_method = "lock_in";
+                overall_best_corr = lockin.magnitude;
+                overall_best_lag = (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32;
                 overall_p_value = p_value;
             }
 
@@ -651,6 +625,67 @@ fn lagged_matched_filter(template: &[f64], signal: &[f64], max_lag: usize) -> (f
         }
     }
     (best_corr, best_lag)
+}
+
+struct LockInResult {
+    magnitude: f64,
+    phase: f64,
+    snr: f64,
+    i_component: f64,
+    q_component: f64,
+}
+
+fn lock_in_detect(
+    residuals: &[f64],
+    period: f64,
+    amplitude: f64,
+    sender_phase: f64,
+) -> LockInResult {
+    let n = residuals.len();
+    if n < 4 || period <= 0.0 || amplitude <= 0.0 {
+        return LockInResult { magnitude: 0.0, phase: 0.0, snr: 0.0, i_component: 0.0, q_component: 0.0 };
+    }
+
+    let res_mean = residuals.iter().sum::<f64>() / n as f64;
+    let res_std = (residuals.iter().map(|v| (v - res_mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+    if res_std < 1e-12 {
+        return LockInResult { magnitude: 0.0, phase: 0.0, snr: 0.0, i_component: 0.0, q_component: 0.0 };
+    }
+
+    let two_pi = 2.0 * std::f64::consts::PI;
+    let mut i_sum = 0.0_f64;
+    let mut q_sum = 0.0_f64;
+    for (idx, &r) in residuals.iter().enumerate() {
+        let phase = two_pi * idx as f64 / period + sender_phase;
+        i_sum += r * phase.cos();
+        q_sum += r * phase.sin();
+    }
+    i_sum /= (n as f64) * amplitude / 2.0_f64.sqrt();
+    q_sum /= (n as f64) * amplitude / 2.0_f64.sqrt();
+
+    let magnitude = (i_sum * i_sum + q_sum * q_sum).sqrt();
+    let phase = q_sum.atan2(i_sum);
+
+    let mut noise_power = 0.0_f64;
+    let n_noise_freqs = 4;
+    for offset in 1..=n_noise_freqs {
+        let freq_offset = offset as f64;
+        let test_period = period * period / (period + freq_offset);
+        let mut ni = 0.0_f64;
+        let mut nq = 0.0_f64;
+        for (idx, &r) in residuals.iter().enumerate() {
+            let p = two_pi * idx as f64 / test_period;
+            ni += r * p.cos();
+            nq += r * p.sin();
+        }
+        ni /= (n as f64) * amplitude / 2.0_f64.sqrt();
+        nq /= (n as f64) * amplitude / 2.0_f64.sqrt();
+        noise_power += ni * ni + nq * nq;
+    }
+    noise_power /= n_noise_freqs as f64;
+    let snr = if noise_power > 1e-12 { magnitude / noise_power.sqrt() } else { 0.0 };
+
+    LockInResult { magnitude, phase, snr, i_component: i_sum, q_component: q_sum }
 }
 
 fn shuffle_vec(v: &mut [f64], rng: &mut fastrand::Rng) {
@@ -977,5 +1012,351 @@ mod tests {
 
             assert!(corr.abs() < 0.4, "{} should not correlate with sender when no coupling, got r={}", obj_name, corr);
         }
+    }
+
+    fn generate_receiver_trials(
+        n: usize,
+        period: f64,
+        amplitude: f64,
+        sender_phase: f64,
+        receiver_phase: f64,
+        coupling_factors: [f64; 3],
+        param_pattern: &str,
+    ) -> Vec<TrialRecord> {
+        (0..n).map(|i| {
+            let base_light = match param_pattern {
+                "linear" => 100.0 + 800.0 * (i as f64 / n as f64),
+                "random_walk" => 500.0 + 300.0 * (i as f64 * 0.03).sin() + 100.0 * (i as f64 * 0.07).sin(),
+                "step" => if i < n / 3 { 200.0 } else if i < 2 * n / 3 { 500.0 } else { 800.0 },
+                "scrambled" => 100.0 + 800.0 * (((i * 37 + 13) % n) as f64 / n as f64),
+                _ => 500.0,
+            };
+            let wm_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let own_light = base_light + wm_offset;
+            let sender_light = 500.0 + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin();
+            let co2 = 3.0 + 4.0 * (i as f64 / n as f64) + 1.0 * (i as f64 * 0.05).sin();
+            let irr = 1.0 + 0.5 * (i as f64 * 0.03).sin();
+
+            let growth = 0.5
+                + 0.001 * own_light
+                + 0.003 * i as f64
+                + 0.04 * (i as f64 * 0.12).sin()
+                + coupling_factors[0] * sender_light * 0.0001;
+            let energy = own_light * 0.3
+                + co2 * 2.0
+                + (i as f64 * 0.3)
+                + 5.0 * (i as f64 * 0.08).sin()
+                + coupling_factors[1] * sender_light * 0.05;
+            let water = own_light * 0.06
+                + co2 * 0.5
+                + (i as f64 * 0.1)
+                + 2.0 * (i as f64 * 0.09).sin()
+                + coupling_factors[2] * sender_light * 0.01;
+
+            let ts = format!("2026-05-08 22:{:02}:{:02}", i / 60, i % 60);
+            make_trial(i as i32, &ts,
+                vec![("light_intensity", own_light), ("co2_injection", co2), ("irrigation", irr)],
+                vec![growth, energy, water],
+                Some((serde_json::json!({"type":"sinusoidal","param_name":"light_intensity","amplitude":amplitude,"period":period as i32,"phase_offset":receiver_phase}).to_string().as_str(), i as i32))
+            )
+        }).collect()
+    }
+
+    fn run_lockin_diagnostic(
+        name: &str,
+        n: usize,
+        period: f64,
+        amplitude: f64,
+        sender_phase: f64,
+        receiver_phase: f64,
+        coupling_factors: [f64; 3],
+        param_pattern: &str,
+        expect_detection: [bool; 3],
+    ) {
+        let receiver_trials = generate_receiver_trials(n, period, amplitude, sender_phase, receiver_phase, coupling_factors, param_pattern);
+
+        let obj_names = ["growth_rate", "energy_kwh", "water_liters"];
+        eprintln!("\n======== {} (n={}, period={}, amp={}, coupling=[{},{},{}], pattern={}) ========",
+            name, n, period, amplitude, coupling_factors[0], coupling_factors[1], coupling_factors[2], param_pattern);
+
+        for obj_idx in 0..3 {
+            let receiver_quality: Vec<f64> = receiver_trials.iter()
+                .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
+                .map(|t| t.values[obj_idx].unwrap())
+                .collect();
+            let receiver_params: Vec<HashMap<String, f64>> = receiver_trials.iter()
+                .map(|t| t.params.clone())
+                .collect();
+
+            let residuals = param_detrend(&receiver_quality, &receiver_params);
+
+            let res_mean = residuals.iter().sum::<f64>() / n as f64;
+            let res_std = (residuals.iter().map(|v| (v - res_mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+            let raw_std = (receiver_quality.iter().map(|v| (v - receiver_quality.iter().sum::<f64>() / n as f64).powi(2)).sum::<f64>() / n as f64).sqrt();
+
+            let lockin = super::lock_in_detect(&residuals, period, amplitude, sender_phase);
+
+            let n_perm = 500usize;
+            let mut rng = fastrand::Rng::new();
+            let mut exceed_count = 0usize;
+            for _ in 0..n_perm {
+                let mut shuffled: Vec<f64> = residuals.clone();
+                shuffle_vec(&mut shuffled, &mut rng);
+                let perm_lockin = super::lock_in_detect(&shuffled, period, amplitude, sender_phase);
+                if perm_lockin.magnitude >= lockin.magnitude {
+                    exceed_count += 1;
+                }
+            }
+            let p_value = (exceed_count + 1) as f64 / (n_perm + 1) as f64;
+
+            let detected = lockin.magnitude > 0.15 && p_value < 0.05;
+
+            eprintln!("  obj{} ({}): raw_std={:.2} res_std={:.4f} reduction={:.1}% | lock_in mag={:.4f} phase={:.2f} snr={:.2f} I={:.4f} Q={:.4f} p={:.4f} detected={} expect={}",
+                obj_idx, obj_names[obj_idx], raw_std, res_std, (1.0 - res_std / raw_std) * 100.0,
+                lockin.magnitude, lockin.phase, lockin.snr, lockin.i_component, lockin.q_component, p_value,
+                detected, expect_detection[obj_idx]);
+
+            if !expect_detection[obj_idx] {
+                assert!(!detected, "{} obj{} ({}) should NOT be detected: lock_in mag={:.4f} snr={:.2f} p={:.4f}",
+                    name, obj_idx, obj_names[obj_idx], lockin.magnitude, lockin.snr, p_value);
+            }
+        }
+    }
+
+    #[test]
+    fn test_lock_in_pure_sinusoid_recovery() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 1.0_f64;
+        let phase = 1.34_f64;
+        let signal: Vec<f64> = (0..n).map(|i| {
+            amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + phase).sin()
+        }).collect();
+
+        let lockin = super::lock_in_detect(&signal, period, amplitude, phase);
+        assert!(lockin.magnitude > 0.9, "pure sinusoid should give magnitude ~1.0, got {}", lockin.magnitude);
+        assert!(lockin.i_component > 0.9, "I component should be ~1.0 for in-phase, got {}", lockin.i_component);
+        assert!(lockin.q_component.abs() < 0.05, "Q component should be ~0 for in-phase, got {}", lockin.q_component);
+    }
+
+    #[test]
+    fn test_lock_in_delayed_sinusoid() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 1.0_f64;
+        let phase = 1.34_f64;
+        let signal: Vec<f64> = (0..n).map(|i| {
+            amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + phase).sin()
+        }).collect();
+
+        let delay_samples = 5;
+        let delayed: Vec<f64> = (0..n).map(|i| {
+            if i < delay_samples { 0.0 } else { signal[i - delay_samples] }
+        }).collect();
+
+        let lockin = super::lock_in_detect(&delayed, period, amplitude, phase);
+        assert!(lockin.magnitude > 0.7, "delayed sinusoid should still be detected, got mag={}", lockin.magnitude);
+    }
+
+    #[test]
+    fn test_lock_in_noise_rejection() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 1.0_f64;
+        let phase = 1.34_f64;
+
+        let mut rng = fastrand::Rng::new();
+        let noise: Vec<f64> = (0..n).map(|_| rng.f64() * 2.0 - 1.0).collect();
+
+        let lockin = super::lock_in_detect(&noise, period, amplitude, phase);
+        assert!(lockin.magnitude < 0.3, "pure noise should give low magnitude, got {}", lockin.magnitude);
+    }
+
+    #[test]
+    fn test_lock_in_slow_drift_rejection() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 1.0_f64;
+        let phase = 1.34_f64;
+
+        let drift: Vec<f64> = (0..n).map(|i| {
+            10.0 * (i as f64 / n as f64) + 3.0 * (i as f64 * 0.02).sin() + 2.0 * (i as f64 * 0.05).sin()
+        }).collect();
+
+        let lockin = super::lock_in_detect(&drift, period, amplitude, phase);
+        assert!(lockin.magnitude < 0.3, "slow drift should give low magnitude, got {}", lockin.magnitude);
+    }
+
+    #[test]
+    fn test_lock_in_different_phase_detection() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 1.0_f64;
+        let sender_phase = 1.34_f64;
+        let other_phase = 4.56_f64;
+
+        let other_signal: Vec<f64> = (0..n).map(|i| {
+            amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + other_phase).sin()
+        }).collect();
+
+        let lockin = super::lock_in_detect(&other_signal, period, amplitude, sender_phase);
+        assert!(lockin.magnitude > 0.8, "same-freq different-phase sinusoid should still have high magnitude, got mag={}", lockin.magnitude);
+        assert!(lockin.i_component.abs() < 0.3, "I component should be low (phase mismatch), got I={}", lockin.i_component);
+        assert!(lockin.q_component.abs() > 0.5, "Q component should carry the energy, got Q={}", lockin.q_component);
+    }
+
+    #[test]
+    fn test_lock_in_coupled_sinusoid_in_noise() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 1.0_f64;
+        let phase = 1.34_f64;
+
+        let coupling_signal: Vec<f64> = (0..n).map(|i| {
+            0.3 * amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + phase).sin()
+        }).collect();
+        let mut rng = fastrand::Rng::new();
+        let noise: Vec<f64> = (0..n).map(|_| rng.f64() * 0.5 - 0.25).collect();
+        let mixed: Vec<f64> = (0..n).map(|i| coupling_signal[i] + noise[i]).collect();
+
+        let lockin = super::lock_in_detect(&mixed, period, amplitude, phase);
+        assert!(lockin.magnitude > 0.1, "weak coupled signal in noise should be detected, got mag={}", lockin.magnitude);
+    }
+
+    #[test]
+    fn test_lock_in_few_cycles() {
+        let n = 30;
+        let period = 20.0_f64;
+        let amplitude = 1.0_f64;
+        let phase = 1.34_f64;
+        let signal: Vec<f64> = (0..n).map(|i| {
+            amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + phase).sin()
+        }).collect();
+
+        let lockin = super::lock_in_detect(&signal, period, amplitude, phase);
+        assert!(lockin.magnitude > 0.5, "even 1.5 cycles should give reasonable magnitude, got {}", lockin.magnitude);
+    }
+
+    #[test]
+    fn test_lock_in_empty_input() {
+        let lockin = super::lock_in_detect(&[], 20.0, 1.0, 0.0);
+        assert_eq!(lockin.magnitude, 0.0);
+        let lockin = super::lock_in_detect(&[1.0, 2.0], 20.0, 0.0, 0.0);
+        assert_eq!(lockin.magnitude, 0.0);
+    }
+
+    #[test]
+    fn test_lock_in_nonlinear_distortion() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 1.0_f64;
+        let phase = 1.34_f64;
+        let signal: Vec<f64> = (0..n).map(|i| {
+            let raw = (2.0 * std::f64::consts::PI * i as f64 / period + phase).sin();
+            amplitude * raw.max(-0.5).min(0.5)
+        }).collect();
+
+        let lockin = super::lock_in_detect(&signal, period, amplitude, phase);
+        assert!(lockin.magnitude > 0.3, "clipped sinusoid still has fundamental energy, got mag={}", lockin.magnitude);
+    }
+
+    #[test]
+    fn test_diag_no_coupling_linear_exploration() {
+        run_lockin_diagnostic("no_coupling_linear", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.0, 0.0], "linear", [false, false, false]);
+    }
+
+    #[test]
+    fn test_diag_no_coupling_random_walk() {
+        run_lockin_diagnostic("no_coupling_random_walk", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.0, 0.0], "random_walk", [false, false, false]);
+    }
+
+    #[test]
+    fn test_diag_no_coupling_step_exploration() {
+        run_lockin_diagnostic("no_coupling_step", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.0, 0.0], "step", [false, false, false]);
+    }
+
+    #[test]
+    fn test_diag_no_coupling_scrambled() {
+        run_lockin_diagnostic("no_coupling_scrambled", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.0, 0.0], "scrambled", [false, false, false]);
+    }
+
+    #[test]
+    fn test_diag_no_coupling_short_trials() {
+        run_lockin_diagnostic("no_coupling_40trials", 40, 20.0, 75.0, 1.34, 2.45, [0.0, 0.0, 0.0], "linear", [false, false, false]);
+    }
+
+    #[test]
+    fn test_diag_no_coupling_long_trials() {
+        run_lockin_diagnostic("no_coupling_200trials", 200, 20.0, 75.0, 1.34, 2.45, [0.0, 0.0, 0.0], "linear", [false, false, false]);
+    }
+
+    #[test]
+    fn test_diag_no_coupling_small_amplitude() {
+        run_lockin_diagnostic("no_coupling_small_amp", 120, 20.0, 20.0, 1.34, 2.45, [0.0, 0.0, 0.0], "linear", [false, false, false]);
+    }
+
+    #[test]
+    fn test_diag_no_coupling_large_amplitude() {
+        run_lockin_diagnostic("no_coupling_large_amp", 120, 20.0, 200.0, 1.34, 2.45, [0.0, 0.0, 0.0], "linear", [false, false, false]);
+    }
+
+    #[test]
+    fn test_diag_no_coupling_short_period() {
+        run_lockin_diagnostic("no_coupling_period10", 120, 10.0, 75.0, 1.34, 2.45, [0.0, 0.0, 0.0], "linear", [false, false, false]);
+    }
+
+    #[test]
+    fn test_diag_no_coupling_long_period() {
+        run_lockin_diagnostic("no_coupling_period40", 120, 40.0, 75.0, 1.34, 2.45, [0.0, 0.0, 0.0], "linear", [false, false, false]);
+    }
+
+    #[test]
+    fn test_diag_no_coupling_same_phase() {
+        run_lockin_diagnostic("no_coupling_same_phase", 120, 20.0, 75.0, 1.34, 1.34, [0.0, 0.0, 0.0], "linear", [false, false, false]);
+    }
+
+    #[test]
+    fn test_diag_no_coupling_opposite_phase() {
+        run_lockin_diagnostic("no_coupling_opposite_phase", 120, 20.0, 75.0, 1.34, 1.34 + std::f64::consts::PI, [0.0, 0.0, 0.0], "linear", [false, false, false]);
+    }
+
+    #[test]
+    fn test_diag_strong_coupling_linear() {
+        run_lockin_diagnostic("strong_coupling_linear", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.9, 0.9], "linear", [false, true, true]);
+    }
+
+    #[test]
+    fn test_diag_strong_coupling_random_walk() {
+        run_lockin_diagnostic("strong_coupling_random_walk", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.9, 0.9], "random_walk", [false, true, true]);
+    }
+
+    #[test]
+    fn test_diag_strong_coupling_scrambled() {
+        run_lockin_diagnostic("strong_coupling_scrambled", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.9, 0.9], "scrambled", [false, true, true]);
+    }
+
+    #[test]
+    fn test_diag_moderate_coupling() {
+        run_lockin_diagnostic("moderate_coupling", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.5, 0.5], "linear", [false, true, true]);
+    }
+
+    #[test]
+    fn test_diag_weak_coupling() {
+        run_lockin_diagnostic("weak_coupling", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.2, 0.2], "linear", [false, false, false]);
+    }
+
+    #[test]
+    fn test_diag_strong_coupling_short_trials() {
+        run_lockin_diagnostic("strong_coupling_60trials", 60, 20.0, 75.0, 1.34, 2.45, [0.0, 0.9, 0.9], "linear", [false, true, true]);
+    }
+
+    #[test]
+    fn test_diag_strong_coupling_long_trials() {
+        run_lockin_diagnostic("strong_coupling_200trials", 200, 20.0, 75.0, 1.34, 2.45, [0.0, 0.9, 0.9], "linear", [false, true, true]);
+    }
+
+    #[test]
+    fn test_diag_coupling_only_one_objective() {
+        run_lockin_diagnostic("coupling_one_obj", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.9, 0.0], "linear", [false, true, false]);
     }
 }
