@@ -792,12 +792,12 @@ mod tests {
             let detrended = param_detrend(&receiver_quality, &receiver_params);
             let lockin = super::lock_in_detect(&detrended, period, amplitude, sender_phase);
 
-            eprintln!("  obj{} ({}): lock_in mag={:.4f} snr={:.2f}", obj_idx, obj_names[obj_idx], lockin.magnitude, lockin.snr);
+            eprintln!("  obj{} ({}): lock_in mag={:.4} snr={:.2}", obj_idx, obj_names[obj_idx], lockin.magnitude, lockin.snr);
 
             if obj_idx == 0 {
-                assert!(!lockin.magnitude > 0.15 || lockin.snr < 2.0, "growth_rate should not show coupling, got mag={:.4f} snr={:.2f}", lockin.magnitude, lockin.snr);
+                assert!(lockin.magnitude <= 0.15 || lockin.snr < 2.0, "growth_rate should not show coupling, got mag={:.4} snr={:.2}", lockin.magnitude, lockin.snr);
             } else {
-                assert!(lockin.magnitude > 0.05, "{} should show coupling via lock-in, got mag={:.4f}", obj_names[obj_idx], lockin.magnitude);
+                assert!(lockin.magnitude > 0.05, "{} should show coupling via lock-in, got mag={:.4}", obj_names[obj_idx], lockin.magnitude);
             }
         }
     }
@@ -837,8 +837,8 @@ mod tests {
             let detrended = param_detrend(&receiver_quality, &receiver_params);
             let lockin = super::lock_in_detect(&detrended, period, amplitude, sender_phase);
 
-            eprintln!("  obj{} ({}): lock_in mag={:.4f} snr={:.2f}", obj_idx, obj_names[obj_idx], lockin.magnitude, lockin.snr);
-            assert!(lockin.magnitude < 0.3, "{} should not show coupling, got mag={:.4f}", obj_names[obj_idx], lockin.magnitude);
+            eprintln!("  obj{} ({}): lock_in mag={:.4} snr={:.2}", obj_idx, obj_names[obj_idx], lockin.magnitude, lockin.snr);
+            assert!(lockin.magnitude < 0.3, "{} should not show coupling, got mag={:.4}", obj_names[obj_idx], lockin.magnitude);
         }
     }
 
@@ -939,13 +939,13 @@ mod tests {
 
             let detected = lockin.magnitude > 0.15 && p_value < 0.05;
 
-            eprintln!("  obj{} ({}): raw_std={:.2} res_std={:.4f} reduction={:.1}% | lock_in mag={:.4f} phase={:.2f} snr={:.2f} I={:.4f} Q={:.4f} p={:.4f} detected={} expect={}",
+            eprintln!("  obj{} ({}): raw_std={:.2} res_std={:.4} reduction={:.1}% | lock_in mag={:.4} phase={:.2} snr={:.2} I={:.4} Q={:.4} p={:.4} detected={} expect={}",
                 obj_idx, obj_names[obj_idx], raw_std, res_std, (1.0 - res_std / raw_std) * 100.0,
                 lockin.magnitude, lockin.phase, lockin.snr, lockin.i_component, lockin.q_component, p_value,
                 detected, expect_detection[obj_idx]);
 
             if !expect_detection[obj_idx] {
-                assert!(!detected, "{} obj{} ({}) should NOT be detected: lock_in mag={:.4f} snr={:.2f} p={:.4f}",
+                assert!(!detected, "{} obj{} ({}) should NOT be detected: lock_in mag={:.4} snr={:.2} p={:.4}",
                     name, obj_idx, obj_names[obj_idx], lockin.magnitude, lockin.snr, p_value);
             }
         }
