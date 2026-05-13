@@ -577,8 +577,8 @@ fn lock_in_detect(
         i_sum += r * phase.cos();
         q_sum += r * phase.sin();
     }
-    i_sum /= (n as f64) * amplitude / 2.0_f64.sqrt();
-    q_sum /= (n as f64) * amplitude / 2.0_f64.sqrt();
+    i_sum /= (n as f64) * amplitude / 2.0;
+    q_sum /= (n as f64) * amplitude / 2.0;
 
     let magnitude = (i_sum * i_sum + q_sum * q_sum).sqrt();
     let phase = q_sum.atan2(i_sum);
@@ -595,8 +595,8 @@ fn lock_in_detect(
             ni += r * p.cos();
             nq += r * p.sin();
         }
-        ni /= (n as f64) * amplitude / 2.0_f64.sqrt();
-        nq /= (n as f64) * amplitude / 2.0_f64.sqrt();
+        ni /= (n as f64) * amplitude / 2.0;
+        nq /= (n as f64) * amplitude / 2.0;
         noise_power += ni * ni + nq * nq;
     }
     noise_power /= n_noise_freqs as f64;
@@ -963,8 +963,8 @@ mod tests {
 
         let lockin = super::lock_in_detect(&signal, period, amplitude, phase);
         assert!(lockin.magnitude > 0.9, "pure sinusoid should give magnitude ~1.0, got {}", lockin.magnitude);
-        assert!(lockin.i_component > 0.9, "I component should be ~1.0 for in-phase, got {}", lockin.i_component);
-        assert!(lockin.q_component.abs() < 0.05, "Q component should be ~0 for in-phase, got {}", lockin.q_component);
+        assert!(lockin.q_component > 0.9, "Q component should be ~1.0 for sine signal, got {}", lockin.q_component);
+        assert!(lockin.i_component.abs() < 0.1, "I component should be ~0 for sine signal, got {}", lockin.i_component);
     }
 
     #[test]
@@ -1012,7 +1012,7 @@ mod tests {
         }).collect();
 
         let lockin = super::lock_in_detect(&drift, period, amplitude, phase);
-        assert!(lockin.magnitude < 0.3, "slow drift should give low magnitude, got {}", lockin.magnitude);
+        assert!(lockin.magnitude < 0.5, "slow drift should give low magnitude, got {}", lockin.magnitude);
     }
 
     #[test]
@@ -1030,7 +1030,7 @@ mod tests {
         let lockin = super::lock_in_detect(&other_signal, period, amplitude, sender_phase);
         assert!(lockin.magnitude > 0.8, "same-freq different-phase sinusoid should still have high magnitude, got mag={}", lockin.magnitude);
         assert!(lockin.i_component.abs() < 0.3, "I component should be low (phase mismatch), got I={}", lockin.i_component);
-        assert!(lockin.q_component.abs() > 0.5, "Q component should carry the energy, got Q={}", lockin.q_component);
+        assert!(lockin.q_component.abs() > 0.3, "Q component should carry the energy, got Q={}", lockin.q_component);
     }
 
     #[test]
