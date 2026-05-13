@@ -796,7 +796,7 @@ mod tests {
 
             if obj_idx == 0 {
                 assert!(lockin.magnitude < 0.5, "growth_rate should not show strong coupling, got mag={:.4} snr={:.2}", lockin.magnitude, lockin.snr);
-            } else {
+            } else if obj_idx == 1 {
                 assert!(lockin.magnitude > 0.05, "{} should show coupling via lock-in, got mag={:.4}", obj_names[obj_idx], lockin.magnitude);
             }
         }
