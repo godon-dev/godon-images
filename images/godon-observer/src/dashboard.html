@@ -642,7 +642,7 @@ function renderCrossRanked(el){
   const cols=[
     {key:'direction',w:'200px',field:'name'},
     {key:'verdict',w:'80px',field:'verdict'},
-    {key:'correlation',w:'100px',field:'correlation'},
+    {key:'magnitude',w:'100px',field:'correlation'},
     {key:'method',w:'120px',field:'method'},
     {key:'lag',w:'50px',field:'lag'},
     {key:'p',w:'60px',field:'p'},
@@ -1221,7 +1221,7 @@ function showWmPairDetail(r){
 
   const summary=el.append('div').style('display','grid').style('grid-template-columns','1fr 1fr 1fr').style('gap','8px').style('margin-bottom','12px');
   summary.append('div').attr('class','info')
-    .html('best method: <b style="color:#c9d1d9">'+(d.best_method||'\u2014')+'</b><br>correlation: <b style="color:'+crossTierColor(tier)+'">'+d.best_correlation.toFixed(3)+'</b><br>lag: '+(d.best_lag||'\u2014'));
+    .html('best method: <b style="color:#c9d1d9">'+(d.best_method||'\u2014')+'</b><br>magnitude: <b style="color:'+crossTierColor(tier)+'">'+d.best_correlation.toFixed(3)+'</b><br>lag: '+(d.best_lag||'\u2014'));
   summary.append('div').attr('class','info')
     .html('p-value: <b style="color:'+(d.p_value<0.05?'#f85149':'#8b949e')+'">'+(d.p_value!=null?(d.p_value<0.001?'<0.001':d.p_value.toFixed(3)):'\u2014')+'</b><br>watermark trials: '+(d.watermark_trials||'\u2014')+'<br>objectives tested: '+(d.per_objective?d.per_objective.length:'\u2014'));
   const receiverConfig=crossData[r.toIdx];
