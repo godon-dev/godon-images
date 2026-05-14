@@ -828,7 +828,367 @@ mod tests {
     }
 
     #[test]
-    fn test_diag_no_coupling_linear_exploration() {
+    fn test_self_subtraction_removes_pure_self_modulation() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let receiver_phase = 2.45_f64;
+        let sensitivity = 0.3_f64;
+
+        let quality: Vec<f64> = (0..n).map(|i| {
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            sensitivity * self_offset
+        }).collect();
+        let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+
+        let residual_energy: f64 = cleaned.iter().map(|v| v * v).sum();
+        let orig_energy: f64 = quality.iter().map(|v| v * v).sum();
+        let reduction = 1.0 - residual_energy / orig_energy;
+        eprintln!("pure self-mod: orig_energy={:.2} residual_energy={:.4} reduction={:.1}%", orig_energy, residual_energy, reduction * 100.0);
+        assert!(reduction > 0.95, "should remove >95% of pure self-modulation energy, got reduction={:.1}%", reduction * 100.0);
+    }
+
+    #[test]
+    fn test_self_subtraction_preserves_independent_coupling() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let receiver_phase = 2.45_f64;
+        let sender_phase = 1.34_f64;
+        let sensitivity = 0.3_f64;
+        let coupling_strength = 0.9_f64;
+
+        let coupling_signal: Vec<f64> = (0..n).map(|i| {
+            coupling_strength * amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin() * 0.05
+        }).collect();
+
+        let quality: Vec<f64> = (0..n).map(|i| {
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            sensitivity * self_offset + coupling_signal[i]
+        }).collect();
+        let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+
+        let corr = pearson_correlation(&cleaned, &coupling_signal);
+        eprintln!("coupling preservation: corr={:.4}", corr);
+        assert!(corr > 0.8, "coupling signal should survive self-subtraction, got corr={}", corr);
+    }
+
+    #[test]
+    fn test_self_subtraction_with_trend_and_coupling() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let receiver_phase = 2.45_f64;
+        let sender_phase = 1.34_f64;
+        let sensitivity = 0.3_f64;
+        let coupling_strength = 0.9_f64;
+
+        let coupling_signal: Vec<f64> = (0..n).map(|i| {
+            coupling_strength * amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin() * 0.05
+        }).collect();
+
+        let quality: Vec<f64> = (0..n).map(|i| {
+            let trend = 5.0 * i as f64 + 100.0 + 10.0 * (i as f64 * 0.08).sin();
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            trend + sensitivity * self_offset + coupling_signal[i]
+        }).collect();
+        let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+
+        let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
+        eprintln!("trend+coupling after self-sub: lockin mag={:.4} snr={:.2}", lockin.magnitude, lockin.snr);
+        assert!(lockin.magnitude > 0.02, "coupling should be detectable after self-subtraction with trend, got mag={}", lockin.magnitude);
+    }
+
+    #[test]
+    fn test_self_subtraction_no_coupling_should_not_create_signal() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let receiver_phase = 2.45_f64;
+        let sender_phase = 1.34_f64;
+        let sensitivity = 0.3_f64;
+
+        let quality: Vec<f64> = (0..n).map(|i| {
+            let trend = 5.0 * i as f64 + 100.0 + 10.0 * (i as f64 * 0.08).sin();
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            trend + sensitivity * self_offset
+        }).collect();
+        let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+
+        let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
+        eprintln!("no-coupling after self-sub: lockin mag={:.4} snr={:.2}", lockin.magnitude, lockin.snr);
+        assert!(lockin.magnitude < 0.3, "no-coupling should stay low after self-subtraction, got mag={}", lockin.magnitude);
+    }
+
+    #[test]
+    fn test_self_subtraction_different_sensitivity_per_objective() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let receiver_phase = 2.45_f64;
+        let sender_phase = 1.34_f64;
+
+        let sensitivities = [0.001, 0.3, 0.06];
+        let coupling_strengths = [0.0, 0.9, 0.9];
+        let obj_names = ["growth", "energy", "water"];
+
+        for obj_idx in 0..3 {
+            let coupling_signal: Vec<f64> = (0..n).map(|i| {
+                coupling_strengths[obj_idx] * 500.0 * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin() * 0.05
+            }).collect();
+
+            let quality: Vec<f64> = (0..n).map(|i| {
+                let trend = 5.0 * i as f64 + 100.0;
+                let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+                trend + sensitivities[obj_idx] * self_offset + coupling_signal[i]
+            }).collect();
+            let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+
+            let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+            let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
+
+            eprintln!("  obj{} ({}): sens={} coupling={} | mag={:.4} snr={:.2}",
+                obj_idx, obj_names[obj_idx], sensitivities[obj_idx], coupling_strengths[obj_idx],
+                lockin.magnitude, lockin.snr);
+
+            if coupling_strengths[obj_idx] == 0.0 {
+                assert!(lockin.magnitude < 0.3,
+                    "obj{} no coupling should be clean, got mag={}", obj_idx, lockin.magnitude);
+            } else {
+                assert!(lockin.magnitude > 0.01,
+                    "obj{} with coupling should show signal, got mag={}", obj_idx, lockin.magnitude);
+            }
+        }
+    }
+
+    #[test]
+    fn test_self_subtraction_high_self_leak_removes_false_positive() {
+        let n = 80;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let sender_phase = 1.34_f64;
+        let receiver_phase = sender_phase + 0.1;
+        let sensitivity = 0.3_f64;
+
+        let quality: Vec<f64> = (0..n).map(|i| {
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            sensitivity * self_offset + 3.0 * i as f64
+        }).collect();
+        let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+
+        let lockin_raw = lock_in_detect(&quality, period, amplitude, sender_phase);
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let lockin_cleaned = lock_in_detect(&cleaned, period, amplitude, sender_phase);
+
+        eprintln!("high self-leak: raw mag={:.4} -> cleaned mag={:.4}", lockin_raw.magnitude, lockin_cleaned.magnitude);
+        assert!(lockin_cleaned.magnitude < lockin_raw.magnitude * 0.3,
+            "self-subtraction should drastically reduce magnitude when phases are similar, raw={:.4} cleaned={:.4}",
+            lockin_raw.magnitude, lockin_cleaned.magnitude);
+    }
+
+    #[test]
+    fn test_self_subtraction_same_phase_sender_receiver() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let phase = 1.34_f64;
+        let sensitivity = 0.3_f64;
+        let coupling_strength = 0.9_f64;
+
+        let coupling_signal: Vec<f64> = (0..n).map(|i| {
+            coupling_strength * 500.0 * (2.0 * std::f64::consts::PI * i as f64 / period + phase).sin() * 0.05
+        }).collect();
+
+        let quality: Vec<f64> = (0..n).map(|i| {
+            let trend = 5.0 * i as f64 + 100.0;
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + phase).sin();
+            trend + sensitivity * self_offset + coupling_signal[i]
+        }).collect();
+        let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, phase);
+
+        let lockin = lock_in_detect(&cleaned, period, amplitude, phase);
+        eprintln!("same-phase coupling after self-sub: mag={:.4}", lockin.magnitude);
+
+        let corr = pearson_correlation(&cleaned, &coupling_signal);
+        eprintln!("coupling correlation after same-phase self-sub: corr={:.4}", corr);
+        assert!(corr > 0.5, "coupling should survive even when sender and receiver share phase, got corr={}", corr);
+    }
+
+    #[test]
+    fn test_self_subtraction_opposite_phase() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let receiver_phase = 1.34_f64;
+        let sender_phase = receiver_phase + std::f64::consts::PI;
+        let sensitivity = 0.3_f64;
+
+        let quality: Vec<f64> = (0..n).map(|i| {
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            sensitivity * self_offset + 3.0 * i as f64
+        }).collect();
+        let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+
+        let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
+        eprintln!("opposite-phase no-coupling after self-sub: mag={:.4}", lockin.magnitude);
+        assert!(lockin.magnitude < 0.3, "opposite-phase should be clean after self-sub, got mag={}", lockin.magnitude);
+    }
+
+    #[test]
+    fn test_self_subtraction_edge_cases() {
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let phase = 1.0_f64;
+
+        let empty: Vec<f64> = vec![];
+        let empty_indexed: Vec<(f64, Option<usize>)> = vec![];
+        let result = subtract_self_modulation(&empty, &empty_indexed, period, amplitude, phase);
+        assert!(result.is_empty());
+
+        let short: Vec<f64> = vec![1.0, 2.0, 3.0];
+        let short_indexed: Vec<(f64, Option<usize>)> = vec![(1.0, Some(0)), (2.0, Some(1)), (3.0, Some(2))];
+        let result = subtract_self_modulation(&short, &short_indexed, period, amplitude, phase);
+        assert_eq!(result, short);
+
+        let data: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let indexed: Vec<(f64, Option<usize>)> = (0..10).map(|i| (i as f64, Some(i))).collect();
+        let result = subtract_self_modulation(&data, &indexed, 0.0, amplitude, phase);
+        assert_eq!(result, data);
+
+        let result = subtract_self_modulation(&data, &indexed, period, 0.0, phase);
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn test_self_subtraction_noise_robustness() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let receiver_phase = 2.45_f64;
+        let sender_phase = 1.34_f64;
+        let sensitivity = 0.3_f64;
+
+        let mut rng = fastrand::Rng::new();
+
+        let quality: Vec<f64> = (0..n).map(|i| {
+            let trend = 5.0 * i as f64 + 100.0;
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let noise = (rng.f64() - 0.5) * 20.0;
+            trend + sensitivity * self_offset + noise
+        }).collect();
+        let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
+
+        eprintln!("noisy no-coupling after self-sub: mag={:.4}", lockin.magnitude);
+        assert!(lockin.magnitude < 0.5, "noisy data without coupling should not false positive, got mag={}", lockin.magnitude);
+    }
+
+    #[test]
+    fn test_self_subtraction_realistic_no_coupling() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let sender_phase = 1.34_f64;
+        let receiver_phase = 2.45_f64;
+
+        let quality: Vec<f64> = (0..n).map(|i| {
+            let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
+            let wm_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let own_light = base_light + wm_offset;
+            let co2 = 3.0 + 4.0 * (i as f64 / n as f64);
+            own_light * 0.3 + co2 * 2.0 + (i as f64 * 0.3) + 5.0 * (i as f64 * 0.08).sin()
+        }).collect();
+        let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
+
+        eprintln!("realistic no-coupling: raw_std={:.2} clean_std={:.2} mag={:.4} snr={:.2}",
+            quality.iter().map(|v| (v - quality.iter().sum::<f64>() / n as f64).powi(2)).sum::<f64>() / n as f64,
+            cleaned.iter().map(|v| (v - cleaned.iter().sum::<f64>() / n as f64).powi(2)).sum::<f64>() / n as f64,
+            lockin.magnitude, lockin.snr);
+        assert!(lockin.magnitude < 0.3, "realistic no-coupling should not be detected, got mag={}", lockin.magnitude);
+    }
+
+    #[test]
+    fn test_self_subtraction_realistic_with_coupling() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let sender_phase = 1.34_f64;
+        let receiver_phase = 2.45_f64;
+        let coupling = 0.9_f64;
+
+        let sender_signal: Vec<f64> = (0..n).map(|i| {
+            amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin()
+        }).collect();
+
+        let quality: Vec<f64> = (0..n).map(|i| {
+            let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
+            let wm_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let own_light = base_light + wm_offset;
+            let sender_light = 500.0 + sender_signal[i];
+            let co2 = 3.0 + 4.0 * (i as f64 / n as f64);
+            own_light * 0.3 + co2 * 2.0 + (i as f64 * 0.3) + 5.0 * (i as f64 * 0.08).sin()
+                + coupling * sender_light * 0.05
+        }).collect();
+        let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
+
+        eprintln!("realistic coupling: mag={:.4} snr={:.2}", lockin.magnitude, lockin.snr);
+        assert!(lockin.magnitude > 0.02,
+            "realistic coupling should be detectable after self-subtraction, got mag={}", lockin.magnitude);
+    }
+
+    #[test]
+    fn test_self_subtraction_magnitude_comparison() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let sender_phase = 1.34_f64;
+        let receiver_phase = 2.45_f64;
+        let coupling = 0.9_f64;
+
+        let quality: Vec<f64> = (0..n).map(|i| {
+            let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
+            let wm_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let own_light = base_light + wm_offset;
+            let sender_light = 500.0 + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin();
+            let co2 = 3.0 + 4.0 * (i as f64 / n as f64);
+            own_light * 0.3 + co2 * 2.0 + (i as f64 * 0.3) + 5.0 * (i as f64 * 0.08).sin()
+                + coupling * sender_light * 0.05
+        }).collect();
+        let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+
+        let lockin_raw = lock_in_detect(&quality, period, amplitude, sender_phase);
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let lockin_cleaned = lock_in_detect(&cleaned, period, amplitude, sender_phase);
+
+        let self_sub_mag = lock_in_detect(&quality, period, amplitude, receiver_phase).magnitude;
+
+        eprintln!("mag comparison: raw={:.4} self_sub_at_rcv_phase={:.4} cleaned_at_snd_phase={:.4}",
+            lockin_raw.magnitude, self_sub_mag, lockin_cleaned.magnitude);
+        eprintln!("  self-modulation accounts for {:.1}% of raw lock-in magnitude",
+            (self_sub_mag / lockin_raw.magnitude.max(1e-12)) * 100.0);
+    }
+
+    #[test]
         run_lockin_diagnostic("no_coupling_linear", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.0, 0.0], "linear", [false, false, false]);
     }
 
