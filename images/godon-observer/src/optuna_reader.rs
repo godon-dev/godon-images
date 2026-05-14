@@ -1189,6 +1189,7 @@ mod tests {
     }
 
     #[test]
+    fn test_diag_no_coupling_linear_exploration() {
         run_lockin_diagnostic("no_coupling_linear", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.0, 0.0], "linear", [false, false, false]);
     }
 
