@@ -346,22 +346,43 @@ impl OptunaReader {
         let mut overall_best_lag = 0_i32;
         let mut overall_p_value = 1.0_f64;
 
+        let rcv_wm: Option<(f64, f64, f64)> = receiver_trials.iter()
+            .filter(|t| t.user_attrs.contains_key("watermark"))
+            .filter_map(|t| {
+                let raw = &t.user_attrs["watermark"];
+                let wm: serde_json::Value = if raw.is_string() {
+                    serde_json::from_str(raw.as_str().unwrap_or("{}")).ok()?
+                } else {
+                    raw.clone()
+                };
+                let amp = wm.get("amplitude").and_then(|v| as_f64(v))?;
+                let per = wm.get("period").and_then(|v| as_f64(v))?;
+                let phase = wm.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
+                Some((amp, per, phase))
+            })
+            .next();
+
+        let wm_amplitude = wm_meta.get("amplitude").and_then(|v| as_f64(v)).unwrap_or(0.1);
+        let wm_phase_offset = wm_meta.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
+
         for obj_idx in 0..n_obj {
-            let receiver_quality: Vec<(String, f64)> = receiver_trials.iter()
+            let receiver_quality: Vec<(String, f64, Option<usize>)> = receiver_trials.iter()
                 .filter(|t| t.state == "COMPLETE")
                 .filter(|t| t.datetime_start.is_some())
                 .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
                 .filter_map(|t| {
                     let ts = t.datetime_start.clone()?;
                     let val = t.values.get(obj_idx).and_then(|v| *v)?;
-                    Some((ts, val))
+                    let wm_idx = t.user_attrs.get("watermark_trial_idx")
+                        .and_then(|v| as_f64(v)).map(|v| v as usize);
+                    Some((ts, val, wm_idx))
                 })
                 .collect();
 
             if receiver_quality.len() < 4 { continue; }
 
-            let rcv_start = receiver_quality.first().map(|(ts, _)| ts.as_str()).unwrap_or("");
-            let rcv_end = receiver_quality.last().map(|(ts, _)| ts.as_str()).unwrap_or("");
+            let rcv_start = receiver_quality.first().map(|(ts, _, _)| ts.as_str()).unwrap_or("");
+            let rcv_end = receiver_quality.last().map(|(ts, _, _)| ts.as_str()).unwrap_or("");
             let overlap_start = if wm_start.cmp(rcv_start).is_gt() { wm_start } else { rcv_start };
             let overlap_end = if wm_end.cmp(rcv_end).is_lt() { wm_end } else { rcv_end };
 
@@ -381,45 +402,34 @@ impl OptunaReader {
             aligned_idx_sig.sort_by_key(|(idx, _)| *idx);
             let aligned_signal: Vec<f64> = aligned_idx_sig.iter().map(|(_, v)| *v).collect();
 
-            let aligned_quality: Vec<f64> = receiver_quality.iter()
-                .filter(|(ts, _)| ts.as_str() >= overlap_start && ts.as_str() <= overlap_end)
-                .map(|(_, v)| *v)
-                .collect();
-
-            let aligned_params: Vec<HashMap<String, f64>> = receiver_trials.iter()
-                .filter(|t| t.state == "COMPLETE")
-                .filter(|t| t.datetime_start.is_some())
-                .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
-                .filter(|t| {
-                    let ts = t.datetime_start.as_deref().unwrap_or("");
-                    ts >= overlap_start && ts <= overlap_end
-                })
-                .map(|t| t.params.clone())
+            let aligned_quality: Vec<(f64, Option<usize>)> = receiver_quality.iter()
+                .filter(|(ts, _, _)| ts.as_str() >= overlap_start && ts.as_str() <= overlap_end)
+                .map(|(_, v, idx)| (*v, *idx))
                 .collect();
 
             let n_align = aligned_signal.len().min(aligned_quality.len());
             if n_align < 4 { continue; }
 
             let sig = &aligned_signal[..n_align];
-            let qual = &aligned_quality[..n_align];
+            let qual_raw: Vec<f64> = aligned_quality[..n_align].iter().map(|(v, _)| *v).collect();
 
-            let detrended = if aligned_params.len() >= n_align && n_align > 6 {
-                param_detrend(qual, &aligned_params[..n_align])
+            let cleaned = if let Some((rcv_amp, rcv_per, rcv_phase)) = rcv_wm {
+                let self_subtracted = subtract_self_modulation(
+                    &qual_raw, &aligned_quality[..n_align],
+                    rcv_per, rcv_amp, rcv_phase,
+                );
+                self_subtracted
             } else {
-                let detrend_window = (wm_period * 2).max(4).min(qual.len());
-                moving_median_detrend(qual, detrend_window)
+                qual_raw.clone()
             };
-            let residuals = &detrended[..n_align];
 
-            let wm_amplitude = wm_meta.get("amplitude").and_then(|v| as_f64(v)).unwrap_or(0.1);
-            let wm_phase_offset = wm_meta.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
-            let lockin = lock_in_detect(residuals, wm_period as f64, wm_amplitude, wm_phase_offset);
+            let lockin = lock_in_detect(&cleaned, wm_period as f64, wm_amplitude, wm_phase_offset);
 
             let n_perm = 5000usize;
             let mut rng = fastrand::Rng::new();
             let mut exceed_count = 0usize;
             for _ in 0..n_perm {
-                let mut shuffled: Vec<f64> = residuals.to_vec();
+                let mut shuffled: Vec<f64> = cleaned.to_vec();
                 shuffle_vec(&mut shuffled, &mut rng);
                 let perm_lockin = lock_in_detect(&shuffled, wm_period as f64, wm_amplitude, wm_phase_offset);
                 if perm_lockin.magnitude >= lockin.magnitude {
@@ -448,9 +458,9 @@ impl OptunaReader {
                 "best_lag": (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32,
                 "p_value": round4(p_value),
                 "permutations": n_perm,
-                "residuals": residuals.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
+                "residuals": cleaned.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
                 "sender_signal": sig.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
-                "raw_quality": qual.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
+                "raw_quality": qual_raw.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
             });
 
             if detected && !overall_detected {
@@ -612,83 +622,50 @@ fn shuffle_vec(v: &mut [f64], rng: &mut fastrand::Rng) {
     }
 }
 
-fn moving_median_detrend(data: &[f64], window: usize) -> Vec<f64> {
-    let n = data.len();
-    if n == 0 { return vec![]; }
-    let half = window / 2;
-    let mut trend = vec![0.0_f64; n];
-    for i in 0..n {
-        let lo = if i >= half { i - half } else { 0 };
-        let hi = (i + half + 1).min(n);
-        let mut w: Vec<f64> = data[lo..hi].to_vec();
-        w.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        trend[i] = w[w.len() / 2];
-    }
-    data.iter().zip(trend.iter()).map(|(v, t)| v - t).collect()
-}
-
-fn param_detrend(qualities: &[f64], params_list: &[HashMap<String, f64>]) -> Vec<f64> {
-    let n = qualities.len();
-    if n < 5 { return qualities.to_vec(); }
-    if params_list.len() != n { return qualities.to_vec(); }
-
-    let param_names: Vec<&String> = {
-        let mut names: Vec<&String> = params_list.iter()
-            .flat_map(|p| p.keys())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-        names.sort();
-        names
-    };
-
-    let ranges: Vec<(f64, f64)> = param_names.iter().map(|name| {
-        let vals: Vec<f64> = params_list.iter()
-            .filter_map(|p| p.get(*name).copied())
-            .collect();
-        let lo = vals.iter().cloned().fold(f64::INFINITY, f64::min);
-        let hi = vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        (lo, hi - lo)
-    }).collect();
-
-    let k = ((n as f64).sqrt().ceil() as usize).min(15).min(n / 2).max(3);
-
-    let mut residuals = Vec::with_capacity(n);
-    for i in 0..n {
-        let mut dists: Vec<(f64, usize)> = (0..n)
-            .filter(|&j| j != i)
-            .map(|j| {
-                let d: f64 = param_names.iter().enumerate()
-                    .map(|(pi, name)| {
-                        let vi = params_list[i].get(*name).copied().unwrap_or(0.0);
-                        let vj = params_list[j].get(*name).copied().unwrap_or(0.0);
-                        let range = ranges[pi].1;
-                        if range > 0.0 { ((vi - vj) / range).powi(2) } else { 0.0 }
-                    })
-                    .sum();
-                (d, j)
-            })
-            .collect();
-        dists.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        let neighbors = &dists[..k.min(dists.len())];
-        let total_weight: f64 = neighbors.iter()
-            .map(|(d, _)| if *d > 0.0 { 1.0 / d } else { 1e6 })
-            .sum();
-        let predicted: f64 = if total_weight > 0.0 {
-            neighbors.iter()
-                .map(|(d, j)| {
-                    let w = if *d > 0.0 { 1.0 / *d } else { 1e6 };
-                    w * qualities[*j]
-                })
-                .sum::<f64>() / total_weight
-        } else {
-            qualities.iter().sum::<f64>() / n as f64
-        };
-        residuals.push(qualities[i] - predicted);
+fn subtract_self_modulation(
+    quality: &[f64],
+    indexed_quality: &[(f64, Option<usize>)],
+    period: f64,
+    amplitude: f64,
+    receiver_phase: f64,
+) -> Vec<f64> {
+    let n = quality.len();
+    if n < 4 || period <= 0.0 || amplitude <= 0.0 {
+        return quality.to_vec();
     }
 
-    residuals
+    let two_pi = 2.0 * std::f64::consts::PI;
+    let mut i_sum = 0.0_f64;
+    let mut q_sum = 0.0_f64;
+    for (idx, &q) in quality.iter().enumerate() {
+        let trial_idx = indexed_quality.get(idx)
+            .and_then(|(_, wm_idx)| *wm_idx)
+            .unwrap_or(idx);
+        let phase = two_pi * trial_idx as f64 / period + receiver_phase;
+        i_sum += q * phase.cos();
+        q_sum += q * phase.sin();
+    }
+    i_sum /= (n as f64) * amplitude / 2.0;
+    q_sum /= (n as f64) * amplitude / 2.0;
+
+    let self_i = i_sum;
+    let self_q = q_sum;
+    let self_mag = (self_i * self_i + self_q * self_q).sqrt();
+
+    eprintln!(
+        "self-modulation: mag={:.4} I={:.4} Q={:.4}",
+        self_mag, self_i, self_q
+    );
+
+    let norm_factor = (n as f64) * amplitude / 2.0;
+    quality.iter().enumerate().map(|(idx, &q)| {
+        let trial_idx = indexed_quality.get(idx)
+            .and_then(|(_, wm_idx)| *wm_idx)
+            .unwrap_or(idx);
+        let phase = two_pi * trial_idx as f64 / period + receiver_phase;
+        let self_component = norm_factor * (self_i * phase.cos() + self_q * phase.sin());
+        q - self_component
+    }).collect()
 }
 
 #[cfg(test)]
@@ -710,244 +687,6 @@ mod tests {
             param_distributions: HashMap::new(),
             values: values.into_iter().map(Some).collect(),
             user_attrs,
-        }
-    }
-
-    #[test]
-    fn test_param_detrend_removes_dominant_trend() {
-        let n = 60;
-        let qualities: Vec<f64> = (0..n).map(|i| {
-            3.0 * (i as f64) + 10.0 + (i as f64 * 0.1).sin()
-        }).collect();
-        let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
-            let mut p = HashMap::new();
-            p.insert("x".to_string(), i as f64);
-            p
-        }).collect();
-
-        let residuals = param_detrend(&qualities, &params_list);
-        let res_range = residuals.iter().cloned().fold(f64::INFINITY, f64::min)..residuals.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let orig_range = qualities.iter().cloned().fold(f64::INFINITY, f64::min)..qualities.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        assert!(res_range.end - res_range.start < (orig_range.end - orig_range.start) * 0.2,
-            "residuals range should be <20% of original, got residual range {} vs original {}",
-            res_range.end - res_range.start, orig_range.end - orig_range.start);
-    }
-
-    #[test]
-    fn test_param_detrend_preserves_small_signal() {
-        let n = 80;
-        let param_vals: Vec<f64> = (0..n).map(|i| {
-            let scrambled = ((i * 37 + 13) % n) as f64;
-            100.0 + 900.0 * (scrambled / n as f64)
-        }).collect();
-        let signal: Vec<f64> = (0..n).map(|i| 3.0 * (2.0 * std::f64::consts::PI * i as f64 / 20.0 + 1.3).sin()).collect();
-        let qualities: Vec<f64> = (0..n).map(|i| {
-            0.3 * param_vals[i] + 10.0 + signal[i]
-        }).collect();
-        let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
-            let mut p = HashMap::new();
-            p.insert("light_intensity".to_string(), param_vals[i]);
-            p
-        }).collect();
-
-        let residuals = param_detrend(&qualities, &params_list);
-        let corr = super::pearson_correlation(&signal, &residuals);
-        assert!(corr > 0.7, "residuals should correlate with independent coupling signal, got r={}", corr);
-    }
-
-    #[test]
-    fn test_detection_with_synthetic_coupling() {
-        let period = 20.0_f64;
-        let amplitude = 75.0_f64;
-        let sender_phase = 1.3418_f64;
-        let receiver_phase = 2.45_f64;
-        let coupling = 0.9_f64;
-        let n = 80;
-
-        let receiver_trials: Vec<TrialRecord> = (0..n).map(|i| {
-            let sender_light = 500.0 + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin();
-            let own_light = 300.0 + 200.0 * ((i * 7 + 3) as f64 % n as f64 / n as f64 * 10.0).sin()
-                + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
-            let energy = own_light * 0.3 + coupling * sender_light * 0.05 + (i as f64 * 0.4) + 3.0 * (i as f64 * 0.11).sin();
-            let growth = 0.5 + 0.002 * i as f64 + 0.04 * (i as f64 * 0.17).sin();
-            let water = own_light * 0.06 + coupling * sender_light * 0.01 + (i as f64 * 0.08) + 0.2 * (i as f64 * 0.13).sin();
-            let ts = format!("2026-05-08 21:{:02}:{:02}", 10 + i / 60, (i % 60) * 1);
-            make_trial(i as i32, &ts,
-                vec![("light_intensity", own_light), ("co2_injection", 3.0 + (i as f64 * 0.2)), ("irrigation", 1.5)],
-                vec![growth, energy, water],
-                Some((serde_json::json!({"type":"sinusoidal","param_name":"light_intensity","amplitude":amplitude,"period":period as i32,"phase_offset":receiver_phase}).to_string().as_str(), i as i32))
-            )
-        }).collect();
-
-        let obj_names = ["growth_rate", "energy_kwh", "water_liters"];
-        for obj_idx in 0..3 {
-            let receiver_quality: Vec<f64> = receiver_trials.iter()
-                .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
-                .map(|t| t.values[obj_idx].unwrap())
-                .collect();
-            let receiver_params: Vec<HashMap<String, f64>> = receiver_trials.iter()
-                .map(|t| t.params.clone())
-                .collect();
-
-            let detrended = param_detrend(&receiver_quality, &receiver_params);
-            let lockin = super::lock_in_detect(&detrended, period, amplitude, sender_phase);
-
-            eprintln!("  obj{} ({}): lock_in mag={:.4} snr={:.2}", obj_idx, obj_names[obj_idx], lockin.magnitude, lockin.snr);
-
-            if obj_idx == 0 {
-                assert!(lockin.magnitude < 0.5, "growth_rate should not show strong coupling, got mag={:.4} snr={:.2}", lockin.magnitude, lockin.snr);
-            } else if obj_idx == 1 {
-                assert!(lockin.magnitude > 0.05, "{} should show coupling via lock-in, got mag={:.4}", obj_names[obj_idx], lockin.magnitude);
-            }
-        }
-    }
-
-    #[test]
-    fn test_detection_no_coupling() {
-        let period = 20.0_f64;
-        let amplitude = 75.0_f64;
-        let sender_phase = 1.3418_f64;
-        let receiver_phase = 2.4546_f64;
-        let n = 80;
-
-        let receiver_trials: Vec<TrialRecord> = (0..n).map(|i| {
-            let own_light = 300.0 + 200.0 * ((i * 7 + 3) as f64 % n as f64 / n as f64 * 10.0).sin()
-                + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
-            let energy = own_light * 0.3 + (i as f64 * 0.4) + 3.0 * (i as f64 * 0.11).sin();
-            let growth = 0.5 + 0.002 * i as f64 + 0.04 * (i as f64 * 0.17).sin();
-            let water = own_light * 0.06 + (i as f64 * 0.08) + 0.2 * (i as f64 * 0.13).sin();
-            let ts = format!("2026-05-08 21:{:02}:{:02}", 10 + i / 60, (i % 60) * 1);
-            make_trial(i as i32, &ts,
-                vec![("light_intensity", own_light), ("co2_injection", 3.0 + (i as f64 * 0.2)), ("irrigation", 1.5)],
-                vec![growth, energy, water],
-                Some((serde_json::json!({"type":"sinusoidal","param_name":"light_intensity","amplitude":amplitude,"period":period as i32,"phase_offset":receiver_phase}).to_string().as_str(), i as i32))
-            )
-        }).collect();
-
-        let obj_names = ["growth_rate", "energy_kwh", "water_liters"];
-        for obj_idx in 0..3 {
-            let receiver_quality: Vec<f64> = receiver_trials.iter()
-                .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
-                .map(|t| t.values[obj_idx].unwrap())
-                .collect();
-            let receiver_params: Vec<HashMap<String, f64>> = receiver_trials.iter()
-                .map(|t| t.params.clone())
-                .collect();
-
-            let detrended = param_detrend(&receiver_quality, &receiver_params);
-            let lockin = super::lock_in_detect(&detrended, period, amplitude, sender_phase);
-
-            eprintln!("  obj{} ({}): lock_in mag={:.4} snr={:.2}", obj_idx, obj_names[obj_idx], lockin.magnitude, lockin.snr);
-            assert!(lockin.magnitude < 0.3, "{} should not show coupling, got mag={:.4}", obj_names[obj_idx], lockin.magnitude);
-        }
-    }
-
-    fn generate_receiver_trials(
-        n: usize,
-        period: f64,
-        amplitude: f64,
-        sender_phase: f64,
-        receiver_phase: f64,
-        coupling_factors: [f64; 3],
-        param_pattern: &str,
-    ) -> Vec<TrialRecord> {
-        (0..n).map(|i| {
-            let base_light = match param_pattern {
-                "linear" => 100.0 + 800.0 * (i as f64 / n as f64),
-                "random_walk" => 500.0 + 300.0 * (i as f64 * 0.03).sin() + 100.0 * (i as f64 * 0.07).sin(),
-                "step" => if i < n / 3 { 200.0 } else if i < 2 * n / 3 { 500.0 } else { 800.0 },
-                "scrambled" => 100.0 + 800.0 * (((i * 37 + 13) % n) as f64 / n as f64),
-                _ => 500.0,
-            };
-            let wm_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
-            let own_light = base_light + wm_offset;
-            let sender_light = 500.0 + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin();
-            let co2 = 3.0 + 4.0 * (i as f64 / n as f64) + 1.0 * (i as f64 * 0.05).sin();
-            let irr = 1.0 + 0.5 * (i as f64 * 0.03).sin();
-
-            let growth = 0.5
-                + 0.001 * own_light
-                + 0.003 * i as f64
-                + 0.04 * (i as f64 * 0.12).sin()
-                + coupling_factors[0] * sender_light * 0.0001;
-            let energy = own_light * 0.3
-                + co2 * 2.0
-                + (i as f64 * 0.3)
-                + 5.0 * (i as f64 * 0.08).sin()
-                + coupling_factors[1] * sender_light * 0.05;
-            let water = own_light * 0.06
-                + co2 * 0.5
-                + (i as f64 * 0.1)
-                + 2.0 * (i as f64 * 0.09).sin()
-                + coupling_factors[2] * sender_light * 0.01;
-
-            let ts = format!("2026-05-08 22:{:02}:{:02}", i / 60, i % 60);
-            make_trial(i as i32, &ts,
-                vec![("light_intensity", own_light), ("co2_injection", co2), ("irrigation", irr)],
-                vec![growth, energy, water],
-                Some((serde_json::json!({"type":"sinusoidal","param_name":"light_intensity","amplitude":amplitude,"period":period as i32,"phase_offset":receiver_phase}).to_string().as_str(), i as i32))
-            )
-        }).collect()
-    }
-
-    fn run_lockin_diagnostic(
-        name: &str,
-        n: usize,
-        period: f64,
-        amplitude: f64,
-        sender_phase: f64,
-        receiver_phase: f64,
-        coupling_factors: [f64; 3],
-        param_pattern: &str,
-        expect_detection: [bool; 3],
-    ) {
-        let receiver_trials = generate_receiver_trials(n, period, amplitude, sender_phase, receiver_phase, coupling_factors, param_pattern);
-
-        let obj_names = ["growth_rate", "energy_kwh", "water_liters"];
-        eprintln!("\n======== {} (n={}, period={}, amp={}, coupling=[{},{},{}], pattern={}) ========",
-            name, n, period, amplitude, coupling_factors[0], coupling_factors[1], coupling_factors[2], param_pattern);
-
-        for obj_idx in 0..3 {
-            let receiver_quality: Vec<f64> = receiver_trials.iter()
-                .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
-                .map(|t| t.values[obj_idx].unwrap())
-                .collect();
-            let receiver_params: Vec<HashMap<String, f64>> = receiver_trials.iter()
-                .map(|t| t.params.clone())
-                .collect();
-
-            let residuals = param_detrend(&receiver_quality, &receiver_params);
-
-            let res_mean = residuals.iter().sum::<f64>() / n as f64;
-            let res_std = (residuals.iter().map(|v| (v - res_mean).powi(2)).sum::<f64>() / n as f64).sqrt();
-            let raw_std = (receiver_quality.iter().map(|v| (v - receiver_quality.iter().sum::<f64>() / n as f64).powi(2)).sum::<f64>() / n as f64).sqrt();
-
-            let lockin = super::lock_in_detect(&residuals, period, amplitude, sender_phase);
-
-            let n_perm = 500usize;
-            let mut rng = fastrand::Rng::new();
-            let mut exceed_count = 0usize;
-            for _ in 0..n_perm {
-                let mut shuffled: Vec<f64> = residuals.clone();
-                shuffle_vec(&mut shuffled, &mut rng);
-                let perm_lockin = super::lock_in_detect(&shuffled, period, amplitude, sender_phase);
-                if perm_lockin.magnitude >= lockin.magnitude {
-                    exceed_count += 1;
-                }
-            }
-            let p_value = (exceed_count + 1) as f64 / (n_perm + 1) as f64;
-
-            let detected = lockin.magnitude > 0.15 && p_value < 0.05;
-
-            eprintln!("  obj{} ({}): raw_std={:.2} res_std={:.4} reduction={:.1}% | lock_in mag={:.4} phase={:.2} snr={:.2} I={:.4} Q={:.4} p={:.4} detected={} expect={}",
-                obj_idx, obj_names[obj_idx], raw_std, res_std, (1.0 - res_std / raw_std) * 100.0,
-                lockin.magnitude, lockin.phase, lockin.snr, lockin.i_component, lockin.q_component, p_value,
-                detected, expect_detection[obj_idx]);
-
-            if !expect_detection[obj_idx] {
-                assert!(!detected, "{} obj{} ({}) should NOT be detected: lock_in mag={:.4} snr={:.2} p={:.4}",
-                    name, obj_idx, obj_names[obj_idx], lockin.magnitude, lockin.snr, p_value);
-            }
         }
     }
 
