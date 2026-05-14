@@ -657,13 +657,12 @@ fn subtract_self_modulation(
         self_mag, self_i, self_q
     );
 
-    let norm_factor = (n as f64) * amplitude / 2.0;
     quality.iter().enumerate().map(|(idx, &q)| {
         let trial_idx = indexed_quality.get(idx)
             .and_then(|(_, wm_idx)| *wm_idx)
             .unwrap_or(idx);
         let phase = two_pi * trial_idx as f64 / period + receiver_phase;
-        let self_component = norm_factor * (self_i * phase.cos() + self_q * phase.sin());
+        let self_component = amplitude * (self_i * phase.cos() + self_q * phase.sin());
         q - self_component
     }).collect()
 }
