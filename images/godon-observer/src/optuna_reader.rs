@@ -1188,6 +1188,116 @@ mod tests {
             (self_sub_mag / lockin_raw.magnitude.max(1e-12)) * 100.0);
     }
 
+    fn generate_receiver_trials(
+        n: usize,
+        period: f64,
+        amplitude: f64,
+        sender_phase: f64,
+        receiver_phase: f64,
+        coupling_factors: [f64; 3],
+        param_pattern: &str,
+    ) -> Vec<TrialRecord> {
+        (0..n).map(|i| {
+            let base_light = match param_pattern {
+                "linear" => 100.0 + 800.0 * (i as f64 / n as f64),
+                "random_walk" => 500.0 + 300.0 * (i as f64 * 0.03).sin() + 100.0 * (i as f64 * 0.07).sin(),
+                "step" => if i < n / 3 { 200.0 } else if i < 2 * n / 3 { 500.0 } else { 800.0 },
+                "scrambled" => 100.0 + 800.0 * (((i * 37 + 13) % n) as f64 / n as f64),
+                _ => 500.0,
+            };
+            let wm_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let own_light = base_light + wm_offset;
+            let sender_light = 500.0 + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin();
+            let co2 = 3.0 + 4.0 * (i as f64 / n as f64) + 1.0 * (i as f64 * 0.05).sin();
+            let irr = 1.0 + 0.5 * (i as f64 * 0.03).sin();
+
+            let growth = 0.5
+                + 0.001 * own_light
+                + 0.003 * i as f64
+                + 0.04 * (i as f64 * 0.12).sin()
+                + coupling_factors[0] * sender_light * 0.0001;
+            let energy = own_light * 0.3
+                + co2 * 2.0
+                + (i as f64 * 0.3)
+                + 5.0 * (i as f64 * 0.08).sin()
+                + coupling_factors[1] * sender_light * 0.05;
+            let water = own_light * 0.06
+                + co2 * 0.5
+                + (i as f64 * 0.1)
+                + 2.0 * (i as f64 * 0.09).sin()
+                + coupling_factors[2] * sender_light * 0.01;
+
+            let ts = format!("2026-05-08 22:{:02}:{:02}", i / 60, i % 60);
+            make_trial(i as i32, &ts,
+                vec![("light_intensity", own_light), ("co2_injection", co2), ("irrigation", irr)],
+                vec![growth, energy, water],
+                Some((serde_json::json!({"type":"sinusoidal","param_name":"light_intensity","amplitude":amplitude,"period":period as i32,"phase_offset":receiver_phase}).to_string().as_str(), i as i32))
+            )
+        }).collect()
+    }
+
+    fn run_lockin_diagnostic(
+        name: &str,
+        n: usize,
+        period: f64,
+        amplitude: f64,
+        sender_phase: f64,
+        receiver_phase: f64,
+        coupling_factors: [f64; 3],
+        param_pattern: &str,
+        expect_detection: [bool; 3],
+    ) {
+        let receiver_trials = generate_receiver_trials(n, period, amplitude, sender_phase, receiver_phase, coupling_factors, param_pattern);
+
+        let obj_names = ["growth_rate", "energy_kwh", "water_liters"];
+        eprintln!("\n======== {} (n={}, period={}, amp={}, coupling=[{},{},{}], pattern={}) ========",
+            name, n, period, amplitude, coupling_factors[0], coupling_factors[1], coupling_factors[2], param_pattern);
+
+        for obj_idx in 0..3 {
+            let quality: Vec<f64> = receiver_trials.iter()
+                .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
+                .map(|t| t.values[obj_idx].unwrap())
+                .collect();
+            let indexed: Vec<(f64, Option<usize>)> = receiver_trials.iter()
+                .enumerate()
+                .filter(|(_, t)| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
+                .map(|(i, t)| (t.values[obj_idx].unwrap(), Some(i)))
+                .collect();
+
+            let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+
+            let raw_std = (quality.iter().map(|v| (v - quality.iter().sum::<f64>() / n as f64).powi(2)).sum::<f64>() / n as f64).sqrt();
+            let clean_std = (cleaned.iter().map(|v| (v - cleaned.iter().sum::<f64>() / n as f64).powi(2)).sum::<f64>() / n as f64).sqrt();
+
+            let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
+
+            let n_perm = 500usize;
+            let mut rng = fastrand::Rng::new();
+            let mut exceed_count = 0usize;
+            for _ in 0..n_perm {
+                let mut shuffled: Vec<f64> = cleaned.clone();
+                shuffle_vec(&mut shuffled, &mut rng);
+                let perm_lockin = lock_in_detect(&shuffled, period, amplitude, sender_phase);
+                if perm_lockin.magnitude >= lockin.magnitude {
+                    exceed_count += 1;
+                }
+            }
+            let p_value = (exceed_count + 1) as f64 / (n_perm + 1) as f64;
+
+            let detected = lockin.magnitude > 0.15 && p_value < 0.05;
+
+            eprintln!("  obj{} ({}): raw_std={:.2} clean_std={:.2} reduction={:.1}% | lock_in mag={:.4} phase={:.2} snr={:.2} I={:.4} Q={:.4} p={:.4} detected={} expect={}",
+                obj_idx, obj_names[obj_idx], raw_std, clean_std, (1.0 - clean_std / raw_std) * 100.0,
+                lockin.magnitude, lockin.phase, lockin.snr, lockin.i_component, lockin.q_component, p_value,
+                detected, expect_detection[obj_idx]);
+
+            if !expect_detection[obj_idx] {
+                assert!(!detected, "{} obj{} ({}) should NOT be detected: lock_in mag={:.4} snr={:.2} p={:.4}",
+                    name, obj_idx, obj_names[obj_idx], lockin.magnitude, lockin.snr, p_value);
+            }
+        }
+    }
+
     #[test]
     fn test_diag_no_coupling_linear_exploration() {
         run_lockin_diagnostic("no_coupling_linear", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.0, 0.0], "linear", [false, false, false]);
