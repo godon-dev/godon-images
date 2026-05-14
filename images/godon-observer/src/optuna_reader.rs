@@ -1187,4 +1187,176 @@ mod tests {
     fn test_diag_coupling_only_one_objective() {
         run_lockin_diagnostic("coupling_one_obj", 120, 20.0, 75.0, 1.34, 2.45, [0.0, 0.9, 0.0], "linear", [false, true, false]);
     }
+
+    #[test]
+    fn test_moving_median_preserves_sinusoid() {
+        let n = 120;
+        let period = 20.0_f64;
+        let signal: Vec<f64> = (0..n).map(|i| {
+            2.0 * (2.0 * std::f64::consts::PI * i as f64 / period).sin()
+        }).collect();
+
+        let window = (period as usize * 2).max(4).min(n);
+        let detrended = moving_median_detrend(&signal, window);
+
+        let survival = pearson_correlation(&signal, &detrended);
+        eprintln!("sinusoid survival after moving median (window={}): correlation={:.4}", window, survival);
+        assert!(survival > 0.8, "period-20 sinusoid should survive moving median with window 40, got corr={}", survival);
+    }
+
+    #[test]
+    fn test_moving_median_removes_linear_trend() {
+        let n = 120;
+        let trend: Vec<f64> = (0..n).map(|i| 5.0 * i as f64 + 100.0).collect();
+
+        let window = 40;
+        let detrended = moving_median_detrend(&trend, window);
+
+        let range = detrended.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - detrended.iter().cloned().fold(f64::INFINITY, f64::min);
+        eprintln!("linear trend residual range after moving median: {:.4}", range);
+        assert!(range < 50.0, "linear trend should be mostly removed, got range={}", range);
+    }
+
+    #[test]
+    fn test_moving_median_removes_slow_drift() {
+        let n = 120;
+        let drift: Vec<f64> = (0..n).map(|i| {
+            50.0 * (i as f64 / n as f64).sqrt() + 20.0 * (i as f64 * 0.015).sin()
+        }).collect();
+
+        let window = 40;
+        let detrended = moving_median_detrend(&drift, window);
+
+        let drift_range = drift.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - drift.iter().cloned().fold(f64::INFINITY, f64::min);
+        let res_range = detrended.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - detrended.iter().cloned().fold(f64::INFINITY, f64::min);
+        eprintln!("drift range: {:.1} -> residual range: {:.4}", drift_range, res_range);
+        assert!(res_range < drift_range * 0.1, "slow drift should be removed, residual range={} vs drift range={}", res_range, drift_range);
+    }
+
+    #[test]
+    fn test_double_detrend_trend_plus_sinusoid() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 2.0_f64;
+        let trend: Vec<f64> = (0..n).map(|i| 5.0 * i as f64 + 100.0).collect();
+        let sinusoid: Vec<f64> = (0..n).map(|i| {
+            amplitude * (2.0 * std::f64::consts::PI * i as f64 / period).sin()
+        }).collect();
+        let combined: Vec<f64> = (0..n).map(|i| trend[i] + sinusoid[i]).collect();
+
+        let window = 40;
+        let after_mm = moving_median_detrend(&combined, window);
+
+        let survival = pearson_correlation(&sinusoid, &after_mm);
+        eprintln!("sinusoid survival through moving median on (trend+sinusoid): {:.4}", survival);
+        assert!(survival > 0.8, "sinusoid should survive moving median detrending of trend+sinusoid, got corr={}", survival);
+    }
+
+    #[test]
+    fn test_double_detrend_realistic_no_coupling() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let sender_phase = 1.34_f64;
+        let receiver_phase = 2.45_f64;
+
+        let receiver_trials: Vec<TrialRecord> = (0..n).map(|i| {
+            let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
+            let wm_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let own_light = base_light + wm_offset;
+            let co2 = 3.0 + 4.0 * (i as f64 / n as f64);
+            let energy = own_light * 0.3 + co2 * 2.0 + (i as f64 * 0.3) + 5.0 * (i as f64 * 0.08).sin();
+            let growth = 0.5 + 0.001 * own_light + 0.003 * i as f64 + 0.04 * (i as f64 * 0.12).sin();
+            let water = own_light * 0.06 + co2 * 0.5 + (i as f64 * 0.1) + 2.0 * (i as f64 * 0.09).sin();
+            let ts = format!("2026-05-14 12:{:02}:{:02}", i / 60, i % 60);
+            make_trial(i as i32, &ts,
+                vec![("light_intensity", own_light), ("co2_injection", co2)],
+                vec![growth, energy, water],
+                Some((serde_json::json!({"type":"sinusoidal","param_name":"light_intensity","amplitude":amplitude,"period":period as i32,"phase_offset":receiver_phase}).to_string().as_str(), i as i32))
+            )
+        }).collect();
+
+        let sender_signal: Vec<f64> = (0..n).map(|i| {
+            amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin()
+        }).collect();
+
+        let obj_names = ["growth_rate", "energy_kwh", "water_liters"];
+        eprintln!("\n======== NO COUPLING (double detrend) ========");
+        for obj_idx in 0..3 {
+            let quality: Vec<f64> = receiver_trials.iter()
+                .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
+                .map(|t| t.values[obj_idx].unwrap())
+                .collect();
+            let params: Vec<HashMap<String, f64>> = receiver_trials.iter().map(|t| t.params.clone()).collect();
+
+            let after_knn = param_detrend(&quality, &params);
+            let knn_corr = pearson_correlation(&sender_signal, &after_knn);
+
+            let window = (period as usize * 2).max(4).min(after_knn.len());
+            let after_double = moving_median_detrend(&after_knn, window);
+            let double_corr = pearson_correlation(&sender_signal, &after_double);
+
+            let lockin_knn = lock_in_detect(&after_knn, period, amplitude, sender_phase);
+            let lockin_double = lock_in_detect(&after_double, period, amplitude, sender_phase);
+
+            eprintln!("  obj{} ({}): knn_corr={:.4} double_corr={:.4} | knn_mag={:.4} knn_snr={:.2} | double_mag={:.4} double_snr={:.2}",
+                obj_idx, obj_names[obj_idx], knn_corr, double_corr, lockin_knn.magnitude, lockin_knn.snr, lockin_double.magnitude, lockin_double.snr);
+        }
+    }
+
+    #[test]
+    fn test_double_detrend_realistic_with_coupling() {
+        let n = 120;
+        let period = 20.0_f64;
+        let amplitude = 75.0_f64;
+        let sender_phase = 1.34_f64;
+        let receiver_phase = 2.45_f64;
+        let coupling = 0.9_f64;
+
+        let receiver_trials: Vec<TrialRecord> = (0..n).map(|i| {
+            let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
+            let wm_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let own_light = base_light + wm_offset;
+            let sender_light = 500.0 + amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin();
+            let co2 = 3.0 + 4.0 * (i as f64 / n as f64);
+            let energy = own_light * 0.3 + co2 * 2.0 + (i as f64 * 0.3) + 5.0 * (i as f64 * 0.08).sin()
+                + coupling * sender_light * 0.05;
+            let growth = 0.5 + 0.001 * own_light + 0.003 * i as f64 + 0.04 * (i as f64 * 0.12).sin();
+            let water = own_light * 0.06 + co2 * 0.5 + (i as f64 * 0.1) + 2.0 * (i as f64 * 0.09).sin()
+                + coupling * sender_light * 0.01;
+            let ts = format!("2026-05-14 12:{:02}:{:02}", i / 60, i % 60);
+            make_trial(i as i32, &ts,
+                vec![("light_intensity", own_light), ("co2_injection", co2)],
+                vec![growth, energy, water],
+                Some((serde_json::json!({"type":"sinusoidal","param_name":"light_intensity","amplitude":amplitude,"period":period as i32,"phase_offset":receiver_phase}).to_string().as_str(), i as i32))
+            )
+        }).collect();
+
+        let sender_signal: Vec<f64> = (0..n).map(|i| {
+            amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin()
+        }).collect();
+
+        let obj_names = ["growth_rate", "energy_kwh", "water_liters"];
+        eprintln!("\n======== WITH COUPLING 0.9 (double detrend) ========");
+        for obj_idx in 0..3 {
+            let quality: Vec<f64> = receiver_trials.iter()
+                .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
+                .map(|t| t.values[obj_idx].unwrap())
+                .collect();
+            let params: Vec<HashMap<String, f64>> = receiver_trials.iter().map(|t| t.params.clone()).collect();
+
+            let after_knn = param_detrend(&quality, &params);
+            let knn_corr = pearson_correlation(&sender_signal, &after_knn);
+
+            let window = (period as usize * 2).max(4).min(after_knn.len());
+            let after_double = moving_median_detrend(&after_knn, window);
+            let double_corr = pearson_correlation(&sender_signal, &after_double);
+
+            let lockin_knn = lock_in_detect(&after_knn, period, amplitude, sender_phase);
+            let lockin_double = lock_in_detect(&after_double, period, amplitude, sender_phase);
+
+            eprintln!("  obj{} ({}): knn_corr={:.4} double_corr={:.4} | knn_mag={:.4} knn_snr={:.2} | double_mag={:.4} double_snr={:.2}",
+                obj_idx, obj_names[obj_idx], knn_corr, double_corr, lockin_knn.magnitude, lockin_knn.snr, lockin_double.magnitude, lockin_double.snr);
+        }
+    }
 }
