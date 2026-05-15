@@ -1,0 +1,19 @@
+[package]
+name = "godon-bench-microgrid"
+version = "0.0.0"
+authors = ["godon-dev Matthias Tafelmeier"]
+edition = "2021"
+description = "Godon Microgrid Bench - Two-consumer microgrid simulation for optimization engine verification"
+license = "AGPL-3.0"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.11"
+prometheus = "0.13"
+rand = "0.9"
+rand_chacha = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
