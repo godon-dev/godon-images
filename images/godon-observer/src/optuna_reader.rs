@@ -346,7 +346,7 @@ impl OptunaReader {
         let mut overall_best_lag = 0_i32;
         let mut overall_p_value = 1.0_f64;
 
-        let rcv_wm: Option<(f64, f64, f64)> = receiver_trials.iter()
+        let rcv_wm: Option<(f64, f64, f64, String)> = receiver_trials.iter()
             .filter(|t| t.user_attrs.contains_key("watermark"))
             .filter_map(|t| {
                 let raw = &t.user_attrs["watermark"];
@@ -358,7 +358,8 @@ impl OptunaReader {
                 let amp = wm.get("amplitude").and_then(|v| as_f64(v))?;
                 let per = wm.get("period").and_then(|v| as_f64(v))?;
                 let phase = wm.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
-                Some((amp, per, phase))
+                let param_name = wm.get("param_name").and_then(|v| v.as_str()).unwrap_or("light_intensity").to_string();
+                Some((amp, per, phase, param_name))
             })
             .next();
 
@@ -407,16 +408,28 @@ impl OptunaReader {
                 .map(|(_, v, idx)| (*v, *idx))
                 .collect();
 
+            let aligned_params: Vec<HashMap<String, f64>> = receiver_trials.iter()
+                .filter(|t| t.state == "COMPLETE")
+                .filter(|t| t.datetime_start.is_some())
+                .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
+                .filter(|t| {
+                    let ts = t.datetime_start.as_deref().unwrap_or("");
+                    ts >= overlap_start && ts <= overlap_end
+                })
+                .map(|t| t.params.clone())
+                .collect();
+
             let n_align = aligned_signal.len().min(aligned_quality.len());
             if n_align < 4 { continue; }
 
             let sig = &aligned_signal[..n_align];
             let qual_raw: Vec<f64> = aligned_quality[..n_align].iter().map(|(v, _)| *v).collect();
 
-            let cleaned = if let Some((rcv_amp, rcv_per, rcv_phase)) = rcv_wm {
+            let cleaned = if let Some((rcv_amp, rcv_per, rcv_phase, ref rcv_param)) = rcv_wm {
                 let self_subtracted = subtract_self_modulation(
                     &qual_raw, &aligned_quality[..n_align],
                     rcv_per, rcv_amp, rcv_phase,
+                    rcv_param, &aligned_params,
                 );
                 self_subtracted
             } else {
@@ -628,11 +641,50 @@ fn subtract_self_modulation(
     period: f64,
     amplitude: f64,
     receiver_phase: f64,
+    param_name: &str,
+    params_list: &[HashMap<String, f64>],
 ) -> Vec<f64> {
     let n = quality.len();
     if n < 4 || period <= 0.0 || amplitude <= 0.0 {
         return quality.to_vec();
     }
+
+    let sensitivity = if params_list.len() >= n {
+        let pairs: Vec<(f64, f64)> = (0..n)
+            .filter_map(|i| {
+                params_list.get(i).and_then(|p| p.get(param_name)).map(|&pv| (pv, quality[i]))
+            })
+            .collect();
+        if pairs.len() >= 5 {
+            let nn = pairs.len() as f64;
+            let sx: f64 = pairs.iter().map(|(x, _)| x).sum();
+            let sy: f64 = pairs.iter().map(|(_, y)| y).sum();
+            let sxy: f64 = pairs.iter().map(|(x, y)| x * y).sum();
+            let sxx: f64 = pairs.iter().map(|(x, _)| x * x).sum();
+            let denom = nn * sxx - sx * sx;
+            if denom.abs() > 1e-12 { (nn * sxy - sx * sy) / denom } else { 0.0 }
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    let two_pi = 2.0 * std::f64::consts::PI;
+    eprintln!(
+        "self-subtraction: estimated sensitivity({})={:.6} * amplitude={:.1} = self_amp={:.2}",
+        param_name, sensitivity, amplitude, sensitivity * amplitude
+    );
+
+    quality.iter().enumerate().map(|(idx, &q)| {
+        let trial_idx = indexed_quality.get(idx)
+            .and_then(|(_, wm_idx)| *wm_idx)
+            .unwrap_or(idx);
+        let self_offset = amplitude * (two_pi * trial_idx as f64 / period + receiver_phase).sin();
+        let self_effect = sensitivity * self_offset;
+        q - self_effect
+    }).collect()
+}
 
     let two_pi = 2.0 * std::f64::consts::PI;
     let mut i_sum = 0.0_f64;
@@ -833,14 +885,21 @@ mod tests {
         let amplitude = 75.0_f64;
         let receiver_phase = 2.45_f64;
         let sensitivity = 0.3_f64;
+        let base_light = 500.0_f64;
 
         let quality: Vec<f64> = (0..n).map(|i| {
             let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
             sensitivity * self_offset
         }).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+        let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let mut p = HashMap::new();
+            p.insert("light_intensity".to_string(), base_light + self_offset);
+            p
+        }).collect();
 
-        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase, "light_intensity", &params_list);
 
         let residual_energy: f64 = cleaned.iter().map(|v| v * v).sum();
         let orig_energy: f64 = quality.iter().map(|v| v * v).sum();
@@ -858,6 +917,7 @@ mod tests {
         let sender_phase = 1.34_f64;
         let sensitivity = 0.3_f64;
         let coupling_strength = 0.9_f64;
+        let base_light = 500.0_f64;
 
         let coupling_signal: Vec<f64> = (0..n).map(|i| {
             coupling_strength * amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin() * 0.05
@@ -868,8 +928,14 @@ mod tests {
             sensitivity * self_offset + coupling_signal[i]
         }).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+        let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let mut p = HashMap::new();
+            p.insert("light_intensity".to_string(), base_light + self_offset);
+            p
+        }).collect();
 
-        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase, "light_intensity", &params_list);
 
         let corr = pearson_correlation(&cleaned, &coupling_signal);
         eprintln!("coupling preservation: corr={:.4}", corr);
@@ -896,8 +962,15 @@ mod tests {
             trend + sensitivity * self_offset + coupling_signal[i]
         }).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+        let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
+            let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let mut p = HashMap::new();
+            p.insert("light_intensity".to_string(), base_light + self_offset);
+            p
+        }).collect();
 
-        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase, "light_intensity", &params_list);
 
         let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
         eprintln!("trend+coupling after self-sub: lockin mag={:.4} snr={:.2}", lockin.magnitude, lockin.snr);
@@ -919,8 +992,15 @@ mod tests {
             trend + sensitivity * self_offset
         }).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+        let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
+            let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let mut p = HashMap::new();
+            p.insert("light_intensity".to_string(), base_light + self_offset);
+            p
+        }).collect();
 
-        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase, "light_intensity", &params_list);
 
         let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
         eprintln!("no-coupling after self-sub: lockin mag={:.4} snr={:.2}", lockin.magnitude, lockin.snr);
@@ -950,8 +1030,15 @@ mod tests {
                 trend + sensitivities[obj_idx] * self_offset + coupling_signal[i]
             }).collect();
             let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+            let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
+                let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
+                let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+                let mut p = HashMap::new();
+                p.insert("light_intensity".to_string(), base_light + self_offset);
+                p
+            }).collect();
 
-            let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+            let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase, "light_intensity", &params_list);
             let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
 
             eprintln!("  obj{} ({}): sens={} coupling={} | mag={:.4} snr={:.2}",
@@ -982,9 +1069,15 @@ mod tests {
             sensitivity * self_offset + 3.0 * i as f64
         }).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+        let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let mut p = HashMap::new();
+            p.insert("light_intensity".to_string(), 500.0 + self_offset);
+            p
+        }).collect();
 
         let lockin_raw = lock_in_detect(&quality, period, amplitude, sender_phase);
-        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase, "light_intensity", &params_list);
         let lockin_cleaned = lock_in_detect(&cleaned, period, amplitude, sender_phase);
 
         eprintln!("high self-leak: raw mag={:.4} -> cleaned mag={:.4}", lockin_raw.magnitude, lockin_cleaned.magnitude);
@@ -1012,8 +1105,15 @@ mod tests {
             trend + sensitivity * self_offset + coupling_signal[i]
         }).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+        let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
+            let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + phase).sin();
+            let mut p = HashMap::new();
+            p.insert("light_intensity".to_string(), base_light + self_offset);
+            p
+        }).collect();
 
-        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, phase);
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, phase, "light_intensity", &params_list);
 
         let lockin = lock_in_detect(&cleaned, period, amplitude, phase);
         eprintln!("same-phase coupling after self-sub: mag={:.4}", lockin.magnitude);
@@ -1037,8 +1137,14 @@ mod tests {
             sensitivity * self_offset + 3.0 * i as f64
         }).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+        let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let mut p = HashMap::new();
+            p.insert("light_intensity".to_string(), 500.0 + self_offset);
+            p
+        }).collect();
 
-        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase, "light_intensity", &params_list);
 
         let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
         eprintln!("opposite-phase no-coupling after self-sub: mag={:.4}", lockin.magnitude);
@@ -1053,20 +1159,20 @@ mod tests {
 
         let empty: Vec<f64> = vec![];
         let empty_indexed: Vec<(f64, Option<usize>)> = vec![];
-        let result = subtract_self_modulation(&empty, &empty_indexed, period, amplitude, phase);
+        let result = subtract_self_modulation(&empty, &empty_indexed, period, amplitude, phase, "light_intensity", &[]);
         assert!(result.is_empty());
 
         let short: Vec<f64> = vec![1.0, 2.0, 3.0];
         let short_indexed: Vec<(f64, Option<usize>)> = vec![(1.0, Some(0)), (2.0, Some(1)), (3.0, Some(2))];
-        let result = subtract_self_modulation(&short, &short_indexed, period, amplitude, phase);
+        let result = subtract_self_modulation(&short, &short_indexed, period, amplitude, phase, "light_intensity", &[]);
         assert_eq!(result, short);
 
         let data: Vec<f64> = (0..10).map(|i| i as f64).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..10).map(|i| (i as f64, Some(i))).collect();
-        let result = subtract_self_modulation(&data, &indexed, 0.0, amplitude, phase);
+        let result = subtract_self_modulation(&data, &indexed, 0.0, amplitude, phase, "light_intensity", &[]);
         assert_eq!(result, data);
 
-        let result = subtract_self_modulation(&data, &indexed, period, 0.0, phase);
+        let result = subtract_self_modulation(&data, &indexed, period, 0.0, phase, "light_intensity", &[]);
         assert_eq!(result, data);
     }
 
@@ -1088,8 +1194,15 @@ mod tests {
             trend + sensitivity * self_offset + noise
         }).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+        let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
+            let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
+            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let mut p = HashMap::new();
+            p.insert("light_intensity".to_string(), base_light + self_offset);
+            p
+        }).collect();
 
-        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase, "light_intensity", &params_list);
         let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
 
         eprintln!("noisy no-coupling after self-sub: mag={:.4}", lockin.magnitude);
@@ -1112,8 +1225,16 @@ mod tests {
             own_light * 0.3 + co2 * 2.0 + (i as f64 * 0.3) + 5.0 * (i as f64 * 0.08).sin()
         }).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+        let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
+            let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
+            let wm_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let mut p = HashMap::new();
+            p.insert("light_intensity".to_string(), base_light + wm_offset);
+            p.insert("co2_injection".to_string(), 3.0 + 4.0 * (i as f64 / n as f64));
+            p
+        }).collect();
 
-        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase, "light_intensity", &params_list);
         let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
 
         eprintln!("realistic no-coupling: raw_std={:.2} clean_std={:.2} mag={:.4} snr={:.2}",
@@ -1146,8 +1267,16 @@ mod tests {
                 + coupling * sender_light * 0.05
         }).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+        let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
+            let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
+            let wm_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let mut p = HashMap::new();
+            p.insert("light_intensity".to_string(), base_light + wm_offset);
+            p.insert("co2_injection".to_string(), 3.0 + 4.0 * (i as f64 / n as f64));
+            p
+        }).collect();
 
-        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase, "light_intensity", &params_list);
         let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
 
         eprintln!("realistic coupling: mag={:.4} snr={:.2}", lockin.magnitude, lockin.snr);
@@ -1174,9 +1303,17 @@ mod tests {
                 + coupling * sender_light * 0.05
         }).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
+        let params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
+            let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
+            let wm_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
+            let mut p = HashMap::new();
+            p.insert("light_intensity".to_string(), base_light + wm_offset);
+            p.insert("co2_injection".to_string(), 3.0 + 4.0 * (i as f64 / n as f64));
+            p
+        }).collect();
 
         let lockin_raw = lock_in_detect(&quality, period, amplitude, sender_phase);
-        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase, "light_intensity", &params_list);
         let lockin_cleaned = lock_in_detect(&cleaned, period, amplitude, sender_phase);
 
         let self_sub_mag = lock_in_detect(&quality, period, amplitude, receiver_phase).magnitude;
@@ -1262,8 +1399,12 @@ mod tests {
                 .filter(|(_, t)| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
                 .map(|(i, t)| (t.values[obj_idx].unwrap(), Some(i)))
                 .collect();
+            let params_list: Vec<HashMap<String, f64>> = receiver_trials.iter()
+                .filter(|t| t.values.get(obj_idx).map_or(false, |v| v.is_some_and(|f| f.is_finite())))
+                .map(|t| t.params.clone())
+                .collect();
 
-            let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+            let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase, "light_intensity", &params_list);
 
             let raw_std = (quality.iter().map(|v| (v - quality.iter().sum::<f64>() / n as f64).powi(2)).sum::<f64>() / n as f64).sqrt();
             let clean_std = (cleaned.iter().map(|v| (v - cleaned.iter().sum::<f64>() / n as f64).powi(2)).sum::<f64>() / n as f64).sqrt();
