@@ -686,39 +686,6 @@ fn subtract_self_modulation(
     }).collect()
 }
 
-    let two_pi = 2.0 * std::f64::consts::PI;
-    let mut i_sum = 0.0_f64;
-    let mut q_sum = 0.0_f64;
-    for (idx, &q) in quality.iter().enumerate() {
-        let trial_idx = indexed_quality.get(idx)
-            .and_then(|(_, wm_idx)| *wm_idx)
-            .unwrap_or(idx);
-        let phase = two_pi * trial_idx as f64 / period + receiver_phase;
-        i_sum += q * phase.cos();
-        q_sum += q * phase.sin();
-    }
-    i_sum /= (n as f64) * amplitude / 2.0;
-    q_sum /= (n as f64) * amplitude / 2.0;
-
-    let self_i = i_sum;
-    let self_q = q_sum;
-    let self_mag = (self_i * self_i + self_q * self_q).sqrt();
-
-    eprintln!(
-        "self-modulation: mag={:.4} I={:.4} Q={:.4}",
-        self_mag, self_i, self_q
-    );
-
-    quality.iter().enumerate().map(|(idx, &q)| {
-        let trial_idx = indexed_quality.get(idx)
-            .and_then(|(_, wm_idx)| *wm_idx)
-            .unwrap_or(idx);
-        let phase = two_pi * trial_idx as f64 / period + receiver_phase;
-        let self_component = amplitude * (self_i * phase.cos() + self_q * phase.sin());
-        q - self_component
-    }).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
