@@ -1278,15 +1278,15 @@ function showWmPairDetail(r){
       var rawQ=po.raw_quality||[];
       var sig=po.sender_signal||[];
       var resid=po.residuals;
-      var predicted=rawQ.map(function(v,i){return v-(resid[i]||0)});
+      var cleaned=po.residuals;
       var svg=el.append('svg').attr('class','signal-chart-svg')
         .attr('width',sWidth+sMargin.left+sMargin.right).attr('height',sHeight+sMargin.top+sMargin.bottom);
       var g=svg.append('g').attr('transform','translate('+sMargin.left+','+sMargin.top+')');
       var x=d3.scaleLinear().domain([0,n-1]).range([0,sWidth]);
-      var rawExt=d3.extent(rawQ.length?rawQ:resid);
+      var rawExt=d3.extent(rawQ.length?rawQ:cleaned);
       var rawPad=(rawExt[1]-rawExt[0])*0.1||0.5;
       var yL=d3.scaleLinear().domain([rawExt[0]-rawPad,rawExt[1]+rawPad]).range([sHeight,0]);
-      var sigAll=[].concat(resid,sig).filter(function(v){return v!=null});
+      var sigAll=[].concat(cleaned,sig).filter(function(v){return v!=null});
       var sigExt=d3.extent(sigAll.length?sigAll:[-1,1]);
       var sigPad=(sigExt[1]-sigExt[0])*0.1||0.5;
       var yR=d3.scaleLinear().domain([sigExt[0]-sigPad,sigExt[1]+sigPad]).range([sHeight,0]);
@@ -1304,11 +1304,7 @@ function showWmPairDetail(r){
         g.append('path').datum(rawQ).attr('d',d3.line().x(function(_,i){return x(i)}).y(function(d){return yL(d)}).curve(d3.curveMonotoneX))
           .attr('fill','none').attr('stroke','#58a6ff').attr('stroke-width',1.5);
       }
-      if(predicted.length){
-        g.append('path').datum(predicted).attr('d',d3.line().x(function(_,i){return x(i)}).y(function(d){return yL(d)}).curve(d3.curveMonotoneX))
-          .attr('fill','none').attr('stroke','#484f58').attr('stroke-width',1).attr('stroke-dasharray','4,3');
-      }
-      g.append('path').datum(resid).attr('d',d3.line().x(function(_,i){return x(i)}).y(function(d){return yR(d)}).curve(d3.curveMonotoneX))
+      g.append('path').datum(cleaned).attr('d',d3.line().x(function(_,i){return x(i)}).y(function(d){return yR(d)}).curve(d3.curveMonotoneX))
         .attr('fill','none').attr('stroke','#f0883e').attr('stroke-width',1.5);
       if(sig.length){
         g.append('path').datum(sig).attr('d',d3.line().x(function(_,i){return x(i)}).y(function(d){return yR(d)}).curve(d3.curveMonotoneX))
@@ -1318,8 +1314,7 @@ function showWmPairDetail(r){
     drawSignalChart(0);
     var leg2=el.append('div').attr('class','legend').style('margin-top','6px');
     leg2.append('span').html('<div class="dot" style="background:#58a6ff"></div>raw quality');
-    leg2.append('span').html('<div class="dot" style="background:#484f58"></div>k-NN predicted');
-    leg2.append('span').html('<div class="dot" style="background:#f0883e"></div>residual');
+    leg2.append('span').html('<div class="dot" style="background:#f0883e"></div>self-subtracted');
     leg2.append('span').html('<div class="dot" style="background:#f85149"></div>sender signal');
   }
   document.getElementById('crossPairDetail').scrollIntoView({behavior:'smooth',block:'start'});
