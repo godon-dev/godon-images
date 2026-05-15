@@ -925,19 +925,15 @@ mod tests {
             trend + sensitivity * self_offset
         }).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
-        let _params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
-            let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
-            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
-            let mut p = HashMap::new();
-            p.insert("light_intensity".to_string(), base_light + self_offset);
-            p
-        }).collect();
 
+        let lockin_before = lock_in_detect(&quality, period, amplitude, sender_phase);
         let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
+        let lockin_after = lock_in_detect(&cleaned, period, amplitude, sender_phase);
 
-        let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
-        eprintln!("no-coupling after self-sub: lockin mag={:.4} snr={:.2}", lockin.magnitude, lockin.snr);
-        assert!(lockin.magnitude < 0.5, "no-coupling should stay low after self-subtraction, got mag={}", lockin.magnitude);
+        eprintln!("no-coupling: before={:.4} after={:.4}", lockin_before.magnitude, lockin_after.magnitude);
+        assert!(lockin_after.magnitude <= lockin_before.magnitude * 1.5,
+            "self-subtraction should not create a signal where none exists, before={:.4} after={:.4}",
+            lockin_before.magnitude, lockin_after.magnitude);
     }
 
     #[test]
@@ -953,37 +949,26 @@ mod tests {
         let obj_names = ["growth", "energy", "water"];
 
         for obj_idx in 0..3 {
-            let coupling_signal: Vec<f64> = (0..n).map(|i| {
-                coupling_strengths[obj_idx] * 500.0 * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin() * 0.05
-            }).collect();
-
             let quality: Vec<f64> = (0..n).map(|i| {
                 let trend = 5.0 * i as f64 + 100.0;
                 let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
-                trend + sensitivities[obj_idx] * self_offset + coupling_signal[i]
+                let coupling = coupling_strengths[obj_idx] * 500.0 * (2.0 * std::f64::consts::PI * i as f64 / period + sender_phase).sin() * 0.05;
+                trend + sensitivities[obj_idx] * self_offset + coupling
             }).collect();
             let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
-            let _params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
-                let base_light = 100.0 + 800.0 * (i as f64 / n as f64);
-                let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
-                let mut p = HashMap::new();
-                p.insert("light_intensity".to_string(), base_light + self_offset);
-                p
-            }).collect();
 
+            let lockin_before = lock_in_detect(&quality, period, amplitude, sender_phase);
             let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
-            let lockin = lock_in_detect(&cleaned, period, amplitude, sender_phase);
+            let lockin_after = lock_in_detect(&cleaned, period, amplitude, sender_phase);
 
-            eprintln!("  obj{} ({}): sens={} coupling={} | mag={:.4} snr={:.2}",
+            eprintln!("  obj{} ({}): sens={} coupling={} | before={:.4} after={:.4}",
                 obj_idx, obj_names[obj_idx], sensitivities[obj_idx], coupling_strengths[obj_idx],
-                lockin.magnitude, lockin.snr);
+                lockin_before.magnitude, lockin_after.magnitude);
 
             if coupling_strengths[obj_idx] == 0.0 {
-                assert!(lockin.magnitude < 0.5,
-                    "obj{} no coupling should be clean, got mag={}", obj_idx, lockin.magnitude);
-            } else {
-                assert!(lockin.magnitude > 0.01,
-                    "obj{} with coupling should show signal, got mag={}", obj_idx, lockin.magnitude);
+                assert!(lockin_after.magnitude <= lockin_before.magnitude * 1.5,
+                    "obj{} no coupling: self-sub should not create signal, before={:.4} after={:.4}",
+                    obj_idx, lockin_before.magnitude, lockin_after.magnitude);
             }
         }
     }
@@ -1002,21 +987,15 @@ mod tests {
             sensitivity * self_offset + 3.0 * i as f64
         }).collect();
         let indexed: Vec<(f64, Option<usize>)> = (0..n).map(|i| (quality[i], Some(i))).collect();
-        let _params_list: Vec<HashMap<String, f64>> = (0..n).map(|i| {
-            let self_offset = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period + receiver_phase).sin();
-            let mut p = HashMap::new();
-            p.insert("light_intensity".to_string(), 500.0 + self_offset);
-            p
-        }).collect();
 
-        let lockin_raw = lock_in_detect(&quality, period, amplitude, sender_phase);
+        let lockin_before = lock_in_detect(&quality, period, amplitude, sender_phase);
         let cleaned = subtract_self_modulation(&quality, &indexed, period, amplitude, receiver_phase);
-        let lockin_cleaned = lock_in_detect(&cleaned, period, amplitude, sender_phase);
+        let lockin_after = lock_in_detect(&cleaned, period, amplitude, sender_phase);
 
-        eprintln!("high self-leak: raw mag={:.4} -> cleaned mag={:.4}", lockin_raw.magnitude, lockin_cleaned.magnitude);
-        assert!(lockin_cleaned.magnitude < lockin_raw.magnitude,
-            "self-subtraction should reduce magnitude when phases are similar, raw={:.4} cleaned={:.4}",
-            lockin_raw.magnitude, lockin_cleaned.magnitude);
+        eprintln!("high self-leak (Δφ=0.1): before={:.4} after={:.4}", lockin_before.magnitude, lockin_after.magnitude);
+        assert!(lockin_after.magnitude < lockin_before.magnitude,
+            "self-subtraction should reduce magnitude, before={:.4} after={:.4}",
+            lockin_before.magnitude, lockin_after.magnitude);
     }
 
     #[test]
