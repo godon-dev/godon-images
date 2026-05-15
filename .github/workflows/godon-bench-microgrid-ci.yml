@@ -1,0 +1,139 @@
+name: Godon Bench Microgrid CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'images/godon-bench-microgrid/**'
+      - 'build/**'
+      - '.github/workflows/godon-bench-microgrid-ci.yml'
+  workflow_dispatch:
+
+env:
+  NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.11
+
+jobs:
+  build-and-test:
+    name: Build and Test Microgrid Bench
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Setup Nix
+      uses: cachix/install-nix-action@v22
+      with:
+        nix_path: nixpkgs=${{ env.NIXPKGS_CHANNEL }}
+
+    - name: Build godon-bench-microgrid container with Nix
+      run: |
+        echo "Building godon-bench-microgrid container using established Nix build system..."
+        cd images/godon-bench-microgrid
+        VERSION="test-${{ github.run_number }}" \
+        IMAGE_NAME="godon-bench-microgrid-test" \
+        PROJECT_ROOT="$(git rev-parse --show-toplevel)" \
+        ../../build/build-container-nix.sh \
+          --version "test-${{ github.run_number }}" \
+          --name "godon-bench-microgrid-test" \
+          --builder-file ../../build/Dockerfile.nix-builder
+
+    - name: Test container startup and health
+      run: |
+        echo "Starting godon-bench-microgrid container..."
+
+        docker run -d --name microgrid-test \
+          -p 8090:8090 \
+          godon-bench-microgrid-test:test-${{ github.run_number }}
+
+        echo "Waiting for microgrid bench to start..."
+        sleep 5
+
+        if ! docker ps | grep -q microgrid-test; then
+          echo "Container failed to start"
+          docker logs microgrid-test
+          exit 1
+        fi
+        echo "Container started successfully"
+
+        echo "Testing health endpoint..."
+        HEALTH=$(curl -sf http://localhost:8090/health)
+        echo "Health response: $HEALTH"
+
+        if ! echo "$HEALTH" | grep -q '"status":"ok"'; then
+          echo "Health check failed"
+          docker logs microgrid-test
+          exit 1
+        fi
+        echo "Health check passed"
+
+    - name: Test apply endpoint (simulation)
+      run: |
+        echo "Testing apply endpoint with microgrid parameters..."
+
+        RESPONSE=$(curl -sf -X POST http://localhost:8090/apply \
+          -H 'Content-Type: application/json' \
+          -d '{
+            "power_draw": 500,
+            "storage_dispatch": 100,
+            "local_generation": 200,
+            "sim_steps": 60
+          }')
+
+        echo "Apply response: $RESPONSE"
+
+        for field in throughput equipment_health voltage_stability energy_consumption_kwh grid_frequency_hz; do
+          if ! echo "$RESPONSE" | grep -q "$field"; then
+            echo "Missing field: $field"
+            exit 1
+          fi
+        done
+        echo "All expected fields present"
+
+    - name: Test Prometheus metrics endpoint
+      run: |
+        echo "Testing Prometheus /metrics endpoint..."
+
+        METRICS=$(curl -sf http://localhost:8090/metrics)
+
+        for metric in microgrid_throughput microgrid_equipment_health microgrid_grid_frequency_hz; do
+          if ! echo "$METRICS" | grep -q "$metric"; then
+            echo "Missing Prometheus metric: $metric"
+            exit 1
+          fi
+        done
+        echo "All Prometheus metrics present"
+
+    - name: Test status endpoint
+      run: |
+        STATUS=$(curl -sf http://localhost:8090/status)
+        if ! echo "$STATUS" | grep -q "grid_frequency_hz"; then
+          echo "Status response missing grid_frequency_hz"
+          exit 1
+        fi
+        echo "Status endpoint working"
+
+    - name: Test reset endpoint
+      run: |
+        RESET=$(curl -sf -X POST http://localhost:8090/reset)
+        if ! echo "$RESET" | grep -q '"status":"reset"'; then
+          echo "Reset failed"
+          exit 1
+        fi
+
+        HEALTH=$(curl -sf http://localhost:8090/health)
+        TICK=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin)['tick'])")
+        if [ "$TICK" != "0" ]; then
+          echo "Reset did not reset tick counter: $TICK"
+          exit 1
+        fi
+        echo "Reset successful, tick back to 0"
+
+    - name: Container cleanup
+      if: always()
+      run: |
+        docker stop microgrid-test || true
+        docker rm microgrid-test || true
+        docker rmi godon-bench-microgrid-test:test-${{ github.run_number }} || true
