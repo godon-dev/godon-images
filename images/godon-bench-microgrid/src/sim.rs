@@ -8,6 +8,12 @@ const NOMINAL_VOLTAGE: f64 = 11.0;
 const BASE_GENERATION_KW: f64 = 1000.0;
 const FREQUENCY_SENSITIVITY: f64 = 0.02;
 const VOLTAGE_SENSITIVITY: f64 = 0.005;
+const COUPLING_FREQ_SCALE: f64 = 30000.0;
+const COUPLING_VOLT_SCALE: f64 = 15000.0;
+const FREQ_NORMALIZATION_RANGE: f64 = 25.0;
+const VOLT_NORMALIZATION_RANGE: f64 = 15.0;
+const COUPLING_CONGESTION_SCALE: f64 = 0.5;
+const COUPLING_HEALTH_SENSITIVITY: f64 = 0.002;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct NeighborStatus {
@@ -21,6 +27,7 @@ pub struct CouplingState {
     pub factor: f64,
     pub last_delta_frequency: f64,
     pub last_delta_voltage: f64,
+    pub last_neighbor_load: f64,
 }
 
 impl CouplingState {
@@ -30,6 +37,7 @@ impl CouplingState {
             factor,
             last_delta_frequency: 0.0,
             last_delta_voltage: 0.0,
+            last_neighbor_load: 0.0,
         }
     }
 }
@@ -89,6 +97,7 @@ impl Microgrid {
         if factor <= 0.0 || neighbor_statuses.is_empty() {
             self.coupling.last_delta_frequency = 0.0;
             self.coupling.last_delta_voltage = 0.0;
+            self.coupling.last_neighbor_load = 0.0;
             return;
         }
 
@@ -96,15 +105,14 @@ impl Microgrid {
         for ns in neighbor_statuses {
             total_neighbor_load += Self::neighbor_net_load(ns);
         }
+        self.coupling.last_neighbor_load = total_neighbor_load;
 
-        let imbalance = self.net_load() + total_neighbor_load;
-        let generation_ratio = BASE_GENERATION_KW / (BASE_GENERATION_KW + imbalance.abs().max(1.0));
+        let load_ratio = total_neighbor_load / BASE_GENERATION_KW;
 
         self.coupling.last_delta_frequency =
-            -(imbalance / BASE_GENERATION_KW) * FREQUENCY_SENSITIVITY * factor * 50.0;
+            -load_ratio * FREQUENCY_SENSITIVITY * factor * COUPLING_FREQ_SCALE;
         self.coupling.last_delta_voltage =
-            -(imbalance / BASE_GENERATION_KW) * VOLTAGE_SENSITIVITY * factor * 10.0
-                * generation_ratio;
+            -load_ratio * VOLTAGE_SENSITIVITY * factor * COUPLING_VOLT_SCALE;
     }
 
     pub fn step(&mut self) {
@@ -114,24 +122,28 @@ impl Microgrid {
         };
 
         let net = self.net_load();
-        let total_imbalance = net;
-        let freq_deviation = -(total_imbalance / BASE_GENERATION_KW) * FREQUENCY_SENSITIVITY * 50.0;
-        let voltage_deviation = -(total_imbalance / BASE_GENERATION_KW) * VOLTAGE_SENSITIVITY * 10.0;
+        let self_freq_deviation = -(net / BASE_GENERATION_KW) * FREQUENCY_SENSITIVITY * 50.0;
+        let self_volt_deviation = -(net / BASE_GENERATION_KW) * VOLTAGE_SENSITIVITY * 10.0;
 
         self.grid_frequency_hz =
-            NOMINAL_FREQUENCY + freq_deviation + self.coupling.last_delta_frequency;
+            NOMINAL_FREQUENCY + self_freq_deviation + self.coupling.last_delta_frequency;
         self.grid_voltage_kv =
-            NOMINAL_VOLTAGE + voltage_deviation + self.coupling.last_delta_voltage;
+            NOMINAL_VOLTAGE + self_volt_deviation + self.coupling.last_delta_voltage;
 
-        let freq_dev = (self.grid_frequency_hz - NOMINAL_FREQUENCY).abs();
-        let volt_dev = (self.grid_voltage_kv - NOMINAL_VOLTAGE).abs();
+        let self_freq_dev = self_freq_deviation.abs();
+        let self_volt_dev = self_volt_deviation.abs();
+        let coupling_freq_dev = self.coupling.last_delta_frequency.abs();
+        let coupling_volt_dev = self.coupling.last_delta_voltage.abs();
 
-        let health_degradation = freq_dev * 0.001 + volt_dev * 0.005;
+        let health_degradation = self_freq_dev * 0.001 + self_volt_dev * 0.005;
         if self.equipment_health > 0.3 {
             self.equipment_health -= health_degradation * 0.1;
+            let coupling_health_impact = (coupling_freq_dev * 0.001 + coupling_volt_dev * 0.005)
+                * COUPLING_HEALTH_SENSITIVITY;
+            self.equipment_health -= coupling_health_impact;
             self.equipment_health = self.equipment_health.max(0.3);
         }
-        if freq_dev < 0.5 && volt_dev < 0.2 {
+        if self_freq_dev < 0.5 && self_volt_dev < 0.2 {
             self.equipment_health = (self.equipment_health + 0.0001).min(1.0);
         }
 
@@ -152,14 +164,29 @@ impl Microgrid {
     pub fn metrics(&mut self) -> MetricsResponse {
         let params = self.last_params.clone();
 
-        let freq_dev = (self.grid_frequency_hz - NOMINAL_FREQUENCY).abs();
-        let volt_dev = (self.grid_voltage_kv - NOMINAL_VOLTAGE).abs();
-        let freq_norm = 1.0 - (freq_dev / 2.5).min(1.0);
-        let volt_norm = 1.0 - (volt_dev / 1.5).min(1.0);
-        let efficiency = freq_norm * volt_norm;
+        let net = self.net_load();
+        let self_freq_dev = (-(net / BASE_GENERATION_KW) * FREQUENCY_SENSITIVITY * 50.0).abs();
+        let self_volt_dev = (-(net / BASE_GENERATION_KW) * VOLTAGE_SENSITIVITY * 10.0).abs();
+
+        let self_freq_norm = 1.0 - (self_freq_dev / FREQ_NORMALIZATION_RANGE).min(1.0);
+        let self_volt_norm = 1.0 - (self_volt_dev / VOLT_NORMALIZATION_RANGE).min(1.0);
+
+        let coupling_freq_norm =
+            self.coupling.last_delta_frequency / FREQ_NORMALIZATION_RANGE;
+        let coupling_volt_norm =
+            self.coupling.last_delta_voltage / VOLT_NORMALIZATION_RANGE;
+
+        let freq_norm = self_freq_norm + coupling_freq_norm;
+        let volt_norm = self_volt_norm + coupling_volt_norm;
+
+        let efficiency = 0.5 * freq_norm + 0.5 * volt_norm;
+
+        let neighbor_usage = (self.coupling.last_neighbor_load / BASE_GENERATION_KW).abs();
+        let congestion = 1.0 - neighbor_usage * self.coupling.factor * COUPLING_CONGESTION_SCALE;
+        let congestion = congestion.max(0.1);
 
         let effective_draw = params.as_ref().map_or(0.0, |p| p.power_draw.clamp(0.0, 1000.0));
-        let throughput = effective_draw * 0.001 * efficiency * self.equipment_health;
+        let throughput = effective_draw * 0.001 * efficiency * self.equipment_health * congestion;
 
         MetricsResponse {
             throughput,
