@@ -13,6 +13,7 @@ const COUPLING_VOLT_SCALE: f64 = 15000.0;
 const FREQ_NORMALIZATION_RANGE: f64 = 25.0;
 const VOLT_NORMALIZATION_RANGE: f64 = 15.0;
 const COUPLING_CONGESTION_SCALE: f64 = 0.5;
+const COUPLING_DIRECT_SCALE: f64 = 10.0;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct NeighborStatus {
@@ -173,19 +174,27 @@ impl Microgrid {
         let freq_norm = self_freq_norm + coupling_freq_norm;
         let volt_norm = self_volt_norm + coupling_volt_norm;
 
+        let neighbor_load = self.coupling.last_neighbor_load;
+        let factor = self.coupling.factor;
+        let direct_coupling = (neighbor_load / BASE_GENERATION_KW) * factor * COUPLING_DIRECT_SCALE;
+
         let efficiency = 0.5 * freq_norm + 0.5 * volt_norm;
 
-        let neighbor_usage = (self.coupling.last_neighbor_load / BASE_GENERATION_KW).abs();
-        let congestion = 1.0 - neighbor_usage * self.coupling.factor * COUPLING_CONGESTION_SCALE;
+        let neighbor_usage = (neighbor_load / BASE_GENERATION_KW).abs();
+        let congestion = 1.0 - neighbor_usage * factor * COUPLING_CONGESTION_SCALE;
         let congestion = congestion.max(0.1);
 
         let effective_draw = params.as_ref().map_or(0.0, |p| p.power_draw.clamp(0.0, 1000.0));
-        let throughput = effective_draw * 0.001 * efficiency * self.equipment_health * congestion;
+        let base_throughput = effective_draw * 0.001 * efficiency * self.equipment_health * congestion;
+        let throughput = base_throughput + direct_coupling;
+
+        let voltage_stability = volt_norm + direct_coupling;
+        let equipment_health = self.equipment_health + direct_coupling * 0.1;
 
         MetricsResponse {
             throughput,
-            equipment_health: self.equipment_health,
-            voltage_stability: volt_norm,
+            equipment_health,
+            voltage_stability,
             energy_consumption_kwh: self.cumulative_energy_kwh,
             grid_frequency_hz: self.grid_frequency_hz,
             grid_voltage_kv: self.grid_voltage_kv,
