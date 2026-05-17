@@ -13,7 +13,6 @@ const COUPLING_VOLT_SCALE: f64 = 15000.0;
 const FREQ_NORMALIZATION_RANGE: f64 = 25.0;
 const VOLT_NORMALIZATION_RANGE: f64 = 15.0;
 const COUPLING_CONGESTION_SCALE: f64 = 0.5;
-const COUPLING_HEALTH_SENSITIVITY: f64 = 0.002;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct NeighborStatus {
@@ -132,15 +131,10 @@ impl Microgrid {
 
         let self_freq_dev = self_freq_deviation.abs();
         let self_volt_dev = self_volt_deviation.abs();
-        let coupling_freq_dev = self.coupling.last_delta_frequency.abs();
-        let coupling_volt_dev = self.coupling.last_delta_voltage.abs();
 
         let health_degradation = self_freq_dev * 0.001 + self_volt_dev * 0.005;
         if self.equipment_health > 0.3 {
             self.equipment_health -= health_degradation * 0.1;
-            let coupling_health_impact = (coupling_freq_dev * 0.001 + coupling_volt_dev * 0.005)
-                * COUPLING_HEALTH_SENSITIVITY;
-            self.equipment_health -= coupling_health_impact;
             self.equipment_health = self.equipment_health.max(0.3);
         }
         if self_freq_dev < 0.5 && self_volt_dev < 0.2 {
