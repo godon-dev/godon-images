@@ -2017,8 +2017,11 @@ mod tests {
         // Pure noise — no periodic signal — FFT should NOT flag
         let n = 280;
         let periods = [17_usize, 23, 29];
+        // Use a simple hash to generate pseudo-random noise with no periodic structure
         let noise: Vec<f64> = (0..n).map(|i| {
-            100.0 * (((i as f64 * 1103515245.0 + 12345.0) % 2147483648.0) / 2147483648.0 - 0.5) * 2.0
+            let x = (i as u64).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let norm = ((x >> 33) as f64) / (1u64 << 31) as f64 - 1.0;
+            100.0 * norm
         }).collect();
 
         let fft = super::fft_detect(&noise, &periods);
