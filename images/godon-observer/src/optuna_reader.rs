@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tokio_postgres::{Error, Row};
 use log::{debug, info};
 
@@ -319,12 +319,44 @@ impl OptunaReader {
         // drowns the watermark signal (research shows SNR ~0.75 is breaking point).
         // Use a NON-watermarked parameter for convergence detection, because the
         // watermarked param never converges (the sinusoidal offset keeps it oscillating).
+        // Pick the parameter with the strongest convergence transition (highest early/late std ratio).
         let conv_window = 10;
-        let conv_param_name = sender_trials.iter()
+        let all_param_names: Vec<String> = sender_trials.iter()
             .filter(|t| t.state == "COMPLETE")
-            .filter_map(|t| t.params.keys().next())
-            .find(|k| *k != wm_param_name)
-            .map(|k| k.as_str())
+            .flat_map(|t| t.params.keys())
+            .filter(|k| *k != wm_param_name)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .cloned()
+            .collect();
+        let conv_param_name = all_param_names.iter()
+            .filter_map(|pname| {
+                let values: Vec<f64> = sender_trials.iter()
+                    .filter(|t| t.state == "COMPLETE")
+                    .filter_map(|t| t.params.get(pname.as_str()).copied())
+                    .collect();
+                if values.len() < conv_window * 3 {
+                    return None;
+                }
+                let early_std = {
+                    let s = &values[..conv_window * 2];
+                    let n = s.len() as f64;
+                    let m = s.iter().sum::<f64>() / n;
+                    (s.iter().map(|v| (v - m).powi(2)).sum::<f64>() / n).sqrt()
+                };
+                let late_std = {
+                    let s = &values[values.len().saturating_sub(conv_window * 2)..];
+                    let n = s.len() as f64;
+                    let m = s.iter().sum::<f64>() / n;
+                    (s.iter().map(|v| (v - m).powi(2)).sum::<f64>() / n).sqrt()
+                };
+                if late_std < 1e-12 {
+                    return None;
+                }
+                Some((pname.as_str(), early_std / late_std))
+            })
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(name, _ratio)| name)
             .unwrap_or(wm_param_name);
         let cutoff_idx = convergence_cutoff(&sender_trials, conv_param_name, conv_window);
         let param_std = compute_param_std(&sender_trials, wm_param_name, 4);
