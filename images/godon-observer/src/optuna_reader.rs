@@ -300,7 +300,7 @@ impl OptunaReader {
             wm_raw.clone()
         };
         let wm_type = wm_meta.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let wm_period = if wm_type == "multi_frequency" {
+        let wm_period = if wm_type == "multi_frequency" || wm_type == "multi_frequency_multi_param" {
             wm_meta.get("periods").and_then(|v| v.as_array())
                 .and_then(|arr| arr.first().and_then(|p| as_f64(p)))
                 .unwrap_or(10.0) as usize
@@ -314,13 +314,50 @@ impl OptunaReader {
                     .filter_map(|p| as_f64(p).map(|v| v as usize))
                     .collect())
                 .unwrap_or_else(|| vec![wm_period])
+        } else if wm_type == "multi_frequency_multi_param" {
+            // Collect all periods from all params
+            wm_meta.get("params").and_then(|v| v.as_array())
+                .map(|params| {
+                    let mut all_periods: Vec<usize> = Vec::new();
+                    for p in params {
+                        if let Some(periods) = p.get("periods").and_then(|v| v.as_array()) {
+                            for per in periods {
+                                if let Some(v) = as_f64(per) {
+                                    let p = v as usize;
+                                    if !all_periods.contains(&p) {
+                                        all_periods.push(p);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    all_periods
+                })
+                .unwrap_or_else(|| vec![wm_period])
         } else {
             vec![wm_period]
         };
-        let wm_param_name = wm_meta.get("param_name").and_then(|v| v.as_str()).unwrap_or("light_intensity");
-        let wm_amplitude_raw = wm_meta.get("amplitude").and_then(|v| as_f64(v))
-            .or_else(|| wm_meta.get("total_amplitude").and_then(|v| as_f64(v)))
-            .unwrap_or(0.1);
+        let wm_param_name = if wm_type == "multi_frequency_multi_param" {
+            // First param name for backward compat
+            wm_meta.get("params").and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|p| p.get("param_name")).and_then(|v| v.as_str())
+                .unwrap_or("light_intensity")
+        } else {
+            wm_meta.get("param_name").and_then(|v| v.as_str()).unwrap_or("light_intensity")
+        };
+        let wm_amplitude_raw = if wm_type == "multi_frequency_multi_param" {
+            // Sum amplitudes across all params
+            wm_meta.get("params").and_then(|v| v.as_array())
+                .map(|params| params.iter()
+                    .filter_map(|p| p.get("amplitude").and_then(|v| as_f64(v)))
+                    .sum::<f64>())
+                .unwrap_or(0.1)
+        } else {
+            wm_meta.get("amplitude").and_then(|v| as_f64(v))
+                .or_else(|| wm_meta.get("total_amplitude").and_then(|v| as_f64(v)))
+                .unwrap_or(0.1)
+        };
 
         // Convergence gating: skip exploration phase where optimizer noise
         // drowns the watermark signal (research shows SNR ~0.75 is breaking point).
