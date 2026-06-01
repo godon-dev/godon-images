@@ -317,14 +317,22 @@ impl OptunaReader {
 
         // Convergence gating: skip exploration phase where optimizer noise
         // drowns the watermark signal (research shows SNR ~0.75 is breaking point).
+        // Use a NON-watermarked parameter for convergence detection, because the
+        // watermarked param never converges (the sinusoidal offset keeps it oscillating).
         let conv_window = 10;
-        let cutoff_idx = convergence_cutoff(&sender_trials, wm_param_name, conv_window);
+        let conv_param_name = sender_trials.iter()
+            .filter(|t| t.state == "COMPLETE")
+            .filter_map(|t| t.params.keys().next())
+            .find(|k| *k != wm_param_name)
+            .map(|k| k.as_str())
+            .unwrap_or(wm_param_name);
+        let cutoff_idx = convergence_cutoff(&sender_trials, conv_param_name, conv_window);
         let param_std = compute_param_std(&sender_trials, wm_param_name, 4);
         let snr_estimate = param_std.map(|s| if s > 1e-12 { wm_amplitude_raw / s } else { f64::MAX });
 
         info!(
-            "Watermark detection: type={} period={} param={} amp={:.1} cutoff={:?} param_std={:?} snr_est={:?}",
-            wm_type, wm_period, wm_param_name, wm_amplitude_raw, cutoff_idx, param_std, snr_estimate
+            "Watermark detection: type={} period={} param={} amp={:.1} conv_param={} cutoff={:?} param_std={:?} snr_est={:?}",
+            wm_type, wm_period, wm_param_name, wm_amplitude_raw, conv_param_name, cutoff_idx, param_std, snr_estimate
         );
 
         let wm_signal: Vec<f64> = {
