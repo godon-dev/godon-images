@@ -359,7 +359,13 @@ impl OptunaReader {
             .map(|(name, _ratio)| name)
             .unwrap_or(wm_param_name);
         let cutoff_idx = convergence_cutoff(&sender_trials, conv_param_name, conv_window);
-        let param_std = compute_param_std(&sender_trials, wm_param_name, 4);
+        // Compute param_std on POST-CONVERGENCE trials only.
+        // Using all trials inflates the std with exploration noise, tanking the SNR.
+        let post_cutoff: Vec<TrialRecord> = match cutoff_idx {
+            Some(idx) if idx > 0 => sender_trials.iter().skip(idx).cloned().collect(),
+            _ => sender_trials.clone(),
+        };
+        let param_std = compute_param_std(&post_cutoff, wm_param_name, 4);
         let snr_estimate = param_std.map(|s| if s > 1e-12 { wm_amplitude_raw / s } else { f64::MAX });
 
         info!(
