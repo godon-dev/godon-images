@@ -546,27 +546,14 @@ impl OptunaReader {
                 qual_raw.clone()
             };
 
-            let lockin = lock_in_detect(&cleaned, wm_period as f64, wm_amplitude, wm_phase_offset);
-
-            // FFT spectral detection: robust to non-stationary multi-objective optimization.
-            // Detects narrowband watermark peaks above the broadband optimizer noise floor.
+            // FFT spectral detection: sole detection method.
+            // Lock-in removed — it requires stationarity which multi-objective
+            // Pareto optimization never provides.
             let fft = fft_detect(&cleaned, &wm_all_periods);
 
-            // Permutation test for lock-in p-value
+            // Permutation test for FFT: shuffle destroys periodic structure
             let n_perm = 5000usize;
             let mut rng = fastrand::Rng::new();
-            let mut exceed_count = 0usize;
-            for _ in 0..n_perm {
-                let mut shuffled: Vec<f64> = cleaned.to_vec();
-                shuffle_vec(&mut shuffled, &mut rng);
-                let perm_lockin = lock_in_detect(&shuffled, wm_period as f64, wm_amplitude, wm_phase_offset);
-                if perm_lockin.magnitude >= lockin.magnitude {
-                    exceed_count += 1;
-                }
-            }
-            let p_value = (exceed_count + 1) as f64 / (n_perm + 1) as f64;
-
-            // Permutation test for FFT: shuffle destroys periodic structure
             let mut fft_exceed_count = 0usize;
             for _ in 0..n_perm {
                 let mut shuffled: Vec<f64> = cleaned.to_vec();
@@ -578,49 +565,23 @@ impl OptunaReader {
             }
             let fft_p_value = (fft_exceed_count + 1) as f64 / (n_perm + 1) as f64;
 
-            // Combined detection: use the better of lock-in and FFT
-            // FFT is superior for non-converging multi-objective; lock-in for stationary signals
-            let fft_detected = fft.n_significant >= 2 && fft_p_value < 0.05;
-            let lockin_detected = if lockin.snr > 4.0 {
-                lockin.magnitude > 0.05 && p_value < 0.05
-            } else if lockin.snr > 2.0 {
-                lockin.magnitude > 0.10 && p_value < 0.05
-            } else {
-                lockin.magnitude > 0.15 && p_value < 0.01
-            };
-            let detected = fft_detected || lockin_detected;
-            let best_method = if fft_detected && (!lockin_detected || fft.snr > lockin.snr) {
-                "fft_spectral"
-            } else {
-                "lock_in"
-            };
+            let detected = fft.n_significant >= 2 && fft_p_value < 0.05;
 
             let obj_result = serde_json::json!({
                 "objective_index": obj_idx,
                 "detected": detected,
                 "aligned_trials": n_align,
                 "receiver_trials": receiver_quality.len(),
-                "lock_in": {
-                    "magnitude": round4(lockin.magnitude),
-                    "phase": round4(lockin.phase),
-                    "snr": round4(lockin.snr),
-                    "i_component": round4(lockin.i_component),
-                    "q_component": round4(lockin.q_component),
-                    "detected": lockin_detected,
-                },
                 "fft": {
                     "snr": round4(fft.snr),
                     "combined_power": round4(fft.combined_power),
                     "noise_floor": round4(fft.noise_floor),
                     "n_significant": fft.n_significant,
                     "per_freq": fft.per_freq.iter().map(|(p, pw)| serde_json::json!({"period": p, "power": round4(*pw)})).collect::<Vec<_>>(),
-                    "detected": fft_detected,
+                    "detected": detected,
                     "p_value": round4(fft_p_value),
                 },
-                "best_method": best_method,
-                "best_magnitude": round4(if best_method == "fft_spectral" { fft.snr } else { lockin.magnitude }),
-                "best_lag": (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32,
-                "p_value": round4(if best_method == "fft_spectral" { fft_p_value } else { p_value }),
+                "p_value": round4(fft_p_value),
                 "permutations": n_perm,
                 "residuals": cleaned.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
                 "sender_signal": sig.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
@@ -629,15 +590,12 @@ impl OptunaReader {
 
             if detected && !overall_detected {
                 overall_detected = true;
-                overall_best_corr = if best_method == "fft_spectral" { fft.snr } else { lockin.magnitude };
-                overall_best_lag = (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32;
-                overall_p_value = if best_method == "fft_spectral" { fft_p_value } else { p_value };
+                overall_best_corr = fft.snr;
+                overall_best_lag = 0;
+                overall_p_value = fft_p_value;
             } else if !overall_detected {
-                let corr = if best_method == "fft_spectral" { fft.snr } else { lockin.magnitude };
-                if corr > overall_best_corr {
-                    overall_best_corr = corr;
-                    overall_best_lag = (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32;
-                    overall_p_value = if best_method == "fft_spectral" { fft_p_value } else { p_value };
+                if fft.snr > overall_best_corr {
+                    overall_best_corr = fft.snr;
                 }
             }
 
