@@ -300,17 +300,45 @@ impl OptunaReader {
             wm_raw.clone()
         };
         let wm_type = wm_meta.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let wm_period = wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(10.0) as usize;
+        let wm_period = if wm_type == "multi_frequency" {
+            // For multi-frequency watermarks, use the first period for lock-in detection.
+            // Each component period will produce its own lock-in response; the first is
+            // sufficient for coupling detection.
+            wm_meta.get("periods").and_then(|v| v.as_array())
+                .and_then(|arr| arr.first().and_then(|p| as_f64(p)))
+                .unwrap_or(10.0) as usize
+        } else {
+            wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(10.0) as usize
+        };
+        let wm_param_name = wm_meta.get("param_name").and_then(|v| v.as_str()).unwrap_or("light_intensity");
+        let wm_amplitude_raw = wm_meta.get("amplitude").and_then(|v| as_f64(v))
+            .or_else(|| wm_meta.get("total_amplitude").and_then(|v| as_f64(v)))
+            .unwrap_or(0.1);
+
+        // Convergence gating: skip exploration phase where optimizer noise
+        // drowns the watermark signal (research shows SNR ~0.75 is breaking point).
+        let conv_window = 10;
+        let cutoff_idx = convergence_cutoff(&sender_trials, wm_param_name, conv_window);
+        let param_std = compute_param_std(&sender_trials, wm_param_name, 4);
+        let snr_estimate = param_std.map(|s| if s > 1e-12 { wm_amplitude_raw / s } else { f64::MAX });
+
+        info!(
+            "Watermark detection: type={} period={} param={} amp={:.1} cutoff={:?} param_std={:?} snr_est={:?}",
+            wm_type, wm_period, wm_param_name, wm_amplitude_raw, cutoff_idx, param_std, snr_estimate
+        );
 
         let wm_signal: Vec<f64> = {
             let period = wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(20.0);
             let amplitude = wm_meta.get("amplitude").and_then(|v| as_f64(v)).unwrap_or(0.1);
             let phase_offset = wm_meta.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
-            wm_trials.iter().map(|t| {
-                let idx = t.user_attrs.get("watermark_trial_idx")
-                    .and_then(|v| as_f64(v)).unwrap_or(0.0);
-                amplitude * (2.0 * std::f64::consts::PI * idx / period + phase_offset).sin()
-            }).collect()
+            let start_idx = cutoff_idx.unwrap_or(0);
+            wm_trials.iter()
+                .skip(start_idx)
+                .map(|t| {
+                    let idx = t.user_attrs.get("watermark_trial_idx")
+                        .and_then(|v| as_f64(v)).unwrap_or(0.0);
+                    amplitude * (2.0 * std::f64::consts::PI * idx / period + phase_offset).sin()
+                }).collect()
         };
 
         if wm_signal.len() < 4 {
@@ -439,7 +467,21 @@ impl OptunaReader {
             }
             let p_value = (exceed_count + 1) as f64 / (n_perm + 1) as f64;
 
-            let detected = lockin.magnitude > 0.15 && p_value < 0.05;
+            // SNR-aware detection threshold:
+            // - Fixed threshold 0.15 was too rigid — misses coupling when SNR is moderate.
+            // - Research shows breaking point at SNR ~0.75; we use lock-in SNR as a proxy.
+            // - If we have a good lock-in SNR (>2.0), a lower magnitude is acceptable.
+            // - If lock-in SNR is marginal, we require stronger magnitude evidence.
+            let detected = if lockin.snr > 4.0 {
+                // Very strong lock-in signal — even low magnitude is significant with p<0.05
+                lockin.magnitude > 0.05 && p_value < 0.05
+            } else if lockin.snr > 2.0 {
+                // Moderate lock-in SNR — standard thresholds
+                lockin.magnitude > 0.10 && p_value < 0.05
+            } else {
+                // Low lock-in SNR — require stronger evidence
+                lockin.magnitude > 0.15 && p_value < 0.01
+            };
 
             let obj_result = serde_json::json!({
                 "objective_index": obj_idx,
@@ -491,6 +533,9 @@ impl OptunaReader {
             "receiver_id": receiver_id,
             "watermark_type": wm_type,
             "watermark_trials": wm_signal.len(),
+            "convergence_cutoff": cutoff_idx,
+            "param_std": param_std.map(|v| round4(v)),
+            "snr_estimate": snr_estimate.map(|v| round4(v)),
             "best_method": "lock_in",
             "best_magnitude": round4(overall_best_corr),
             "best_lag": overall_best_lag,
@@ -553,6 +598,61 @@ fn pearson_correlation(x: &[f64], y: &[f64]) -> f64 {
     let denom = vx.sqrt() * vy.sqrt();
     if denom == 0.0 { return 0.0; }
     cov / denom
+}
+
+/// Compute the standard deviation of a single parameter across sender trials.
+/// Returns None if the parameter is not found or there are too few values.
+fn compute_param_std(sender_trials: &[TrialRecord], param_name: &str, min_trials: usize) -> Option<f64> {
+    let values: Vec<f64> = sender_trials.iter()
+        .filter(|t| t.state == "COMPLETE")
+        .filter_map(|t| t.params.get(param_name).copied())
+        .collect();
+    if values.len() < min_trials {
+        return None;
+    }
+    let n = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / n;
+    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n;
+    Some(variance.sqrt())
+}
+
+/// Determine how many initial trials to skip based on convergence analysis.
+/// During the exploration phase, the optimizer's parameter variance is high,
+/// which drowns the watermark signal. We detect convergence by computing a
+/// rolling std of the watermark parameter and finding where it stabilises.
+fn convergence_cutoff(sender_trials: &[TrialRecord], param_name: &str, window: usize) -> Option<usize> {
+    let values: Vec<f64> = sender_trials.iter()
+        .filter(|t| t.state == "COMPLETE")
+        .filter_map(|t| t.params.get(param_name).copied())
+        .collect();
+    if values.len() < window * 2 {
+        return None;
+    }
+    // Compute rolling std with the given window
+    let rolling_std: Vec<f64> = (0..values.len().saturating_sub(window) + 1)
+        .map(|start| {
+            let slice = &values[start..start + window];
+            let n = slice.len() as f64;
+            let mean = slice.iter().sum::<f64>() / n;
+            (slice.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n).sqrt()
+        })
+        .collect();
+    if rolling_std.len() < 4 {
+        return None;
+    }
+    // Find the point where rolling std drops below the final (converged) std * 1.5
+    let final_std = *rolling_std.last().unwrap_or(&0.0);
+    if final_std < 1e-12 {
+        return None;
+    }
+    let threshold = final_std * 1.5;
+    for (i, &s) in rolling_std.iter().enumerate() {
+        if s <= threshold {
+            // Map back to trial index — the i-th rolling window starts at trial i
+            return Some(i);
+        }
+    }
+    None
 }
 
 struct LockInResult {
