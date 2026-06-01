@@ -365,12 +365,16 @@ impl OptunaReader {
             Some(idx) if idx > 0 => sender_trials.iter().skip(idx).cloned().collect(),
             _ => sender_trials.clone(),
         };
-        let param_std = compute_param_std(&post_cutoff, wm_param_name, 4);
-        let snr_estimate = param_std.map(|s| if s > 1e-12 { wm_amplitude_raw / s } else { f64::MAX });
+        // Estimate optimizer noise from a NON-watermarked parameter.
+        // Using the watermarked param inflates std because the sinusoidal
+        // watermark itself contributes A/sqrt(2), capping SNR at ~1.41.
+        // A non-watermarked param reflects the true optimizer residual noise.
+        let noise_std = compute_param_std(&post_cutoff, conv_param_name, 4);
+        let snr_estimate = noise_std.map(|s| if s > 1e-12 { wm_amplitude_raw / s } else { f64::MAX });
 
         info!(
             "Watermark detection: type={} period={} param={} amp={:.1} conv_param={} cutoff={:?} param_std={:?} snr_est={:?}",
-            wm_type, wm_period, wm_param_name, wm_amplitude_raw, conv_param_name, cutoff_idx, param_std, snr_estimate
+            wm_type, wm_period, wm_param_name, wm_amplitude_raw, conv_param_name, cutoff_idx, noise_std, snr_estimate
         );
 
         let wm_signal: Vec<f64> = {
@@ -580,7 +584,7 @@ impl OptunaReader {
             "watermark_type": wm_type,
             "watermark_trials": wm_signal.len(),
             "convergence_cutoff": cutoff_idx,
-            "param_std": param_std.map(|v| round4(v)),
+            "noise_std": noise_std.map(|v| round4(v)),
             "snr_estimate": snr_estimate.map(|v| round4(v)),
             "best_method": "lock_in",
             "best_magnitude": round4(overall_best_corr),
