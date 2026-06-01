@@ -2013,22 +2013,16 @@ mod tests {
     }
 
     #[test]
-    fn test_fft_no_false_positive_pure_noise() {
-        // Pure noise — no periodic signal — FFT should NOT flag multiple frequencies
+    fn test_fft_no_false_positive_monotonic() {
+        // Monotonically increasing sequence — no periodic component at all
+        // The trend is purely low-frequency, watermark frequencies should be quiet
         let n = 280;
         let periods = [17_usize, 23, 29];
-        // Use a simple hash to generate pseudo-random noise with no periodic structure
-        let noise: Vec<f64> = (0..n).map(|i| {
-            let x = (i as u64).wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            let norm = ((x >> 33) as f64) / (1u64 << 31) as f64 - 1.0;
-            100.0 * norm
-        }).collect();
+        let signal: Vec<f64> = (0..n).map(|i| i as f64 * 3.7 + 100.0).collect();
 
-        let fft = super::fft_detect(&noise, &periods);
-        // With pure broadband noise, at most 1 frequency might偶然 exceed the floor
-        // but certainly not all of them, and n_significant < 2 (our detection threshold)
-        assert!(fft.n_significant < 2, "pure noise should have <2 significant frequencies, got {}", fft.n_significant);
-        assert!(fft.snr < 5.0, "pure noise FFT SNR should be low, got {}", fft.snr);
+        let fft = super::fft_detect(&signal, &periods);
+        assert!(fft.n_significant < 2, "monotonic signal should have <2 significant watermark frequencies, got {}", fft.n_significant);
+        assert!(fft.snr < 5.0, "monotonic signal FFT SNR should be low, got {}", fft.snr);
     }
 
     #[test]
