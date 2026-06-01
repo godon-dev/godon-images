@@ -301,14 +301,21 @@ impl OptunaReader {
         };
         let wm_type = wm_meta.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
         let wm_period = if wm_type == "multi_frequency" {
-            // For multi-frequency watermarks, use the first period for lock-in detection.
-            // Each component period will produce its own lock-in response; the first is
-            // sufficient for coupling detection.
             wm_meta.get("periods").and_then(|v| v.as_array())
                 .and_then(|arr| arr.first().and_then(|p| as_f64(p)))
                 .unwrap_or(10.0) as usize
         } else {
             wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(10.0) as usize
+        };
+        // Extract all periods for FFT spectral detection
+        let wm_all_periods: Vec<usize> = if wm_type == "multi_frequency" {
+            wm_meta.get("periods").and_then(|v| v.as_array())
+                .map(|arr| arr.iter()
+                    .filter_map(|p| as_f64(p).map(|v| v as usize))
+                    .collect())
+                .unwrap_or_else(|| vec![wm_period])
+        } else {
+            vec![wm_period]
         };
         let wm_param_name = wm_meta.get("param_name").and_then(|v| v.as_str()).unwrap_or("light_intensity");
         let wm_amplitude_raw = wm_meta.get("amplitude").and_then(|v| as_f64(v))
@@ -504,6 +511,11 @@ impl OptunaReader {
 
             let lockin = lock_in_detect(&cleaned, wm_period as f64, wm_amplitude, wm_phase_offset);
 
+            // FFT spectral detection: robust to non-stationary multi-objective optimization.
+            // Detects narrowband watermark peaks above the broadband optimizer noise floor.
+            let fft = fft_detect(&cleaned, &wm_all_periods);
+
+            // Permutation test for lock-in p-value
             let n_perm = 5000usize;
             let mut rng = fastrand::Rng::new();
             let mut exceed_count = 0usize;
@@ -517,20 +529,33 @@ impl OptunaReader {
             }
             let p_value = (exceed_count + 1) as f64 / (n_perm + 1) as f64;
 
-            // SNR-aware detection threshold:
-            // - Fixed threshold 0.15 was too rigid — misses coupling when SNR is moderate.
-            // - Research shows breaking point at SNR ~0.75; we use lock-in SNR as a proxy.
-            // - If we have a good lock-in SNR (>2.0), a lower magnitude is acceptable.
-            // - If lock-in SNR is marginal, we require stronger magnitude evidence.
-            let detected = if lockin.snr > 4.0 {
-                // Very strong lock-in signal — even low magnitude is significant with p<0.05
+            // Permutation test for FFT: shuffle destroys periodic structure
+            let mut fft_exceed_count = 0usize;
+            for _ in 0..n_perm {
+                let mut shuffled: Vec<f64> = cleaned.to_vec();
+                shuffle_vec(&mut shuffled, &mut rng);
+                let perm_fft = fft_detect(&shuffled, &wm_all_periods);
+                if perm_fft.snr >= fft.snr {
+                    fft_exceed_count += 1;
+                }
+            }
+            let fft_p_value = (fft_exceed_count + 1) as f64 / (n_perm + 1) as f64;
+
+            // Combined detection: use the better of lock-in and FFT
+            // FFT is superior for non-converging multi-objective; lock-in for stationary signals
+            let fft_detected = fft.n_significant >= 2 && fft_p_value < 0.05;
+            let lockin_detected = if lockin.snr > 4.0 {
                 lockin.magnitude > 0.05 && p_value < 0.05
             } else if lockin.snr > 2.0 {
-                // Moderate lock-in SNR — standard thresholds
                 lockin.magnitude > 0.10 && p_value < 0.05
             } else {
-                // Low lock-in SNR — require stronger evidence
                 lockin.magnitude > 0.15 && p_value < 0.01
+            };
+            let detected = fft_detected || lockin_detected;
+            let best_method = if fft_detected && (!lockin_detected || fft.snr > lockin.snr) {
+                "fft_spectral"
+            } else {
+                "lock_in"
             };
 
             let obj_result = serde_json::json!({
@@ -544,12 +569,21 @@ impl OptunaReader {
                     "snr": round4(lockin.snr),
                     "i_component": round4(lockin.i_component),
                     "q_component": round4(lockin.q_component),
-                    "detected": detected,
+                    "detected": lockin_detected,
                 },
-                "best_method": "lock_in",
-                "best_magnitude": round4(lockin.magnitude),
+                "fft": {
+                    "snr": round4(fft.snr),
+                    "combined_power": round4(fft.combined_power),
+                    "noise_floor": round4(fft.noise_floor),
+                    "n_significant": fft.n_significant,
+                    "per_freq": fft.per_freq.iter().map(|(p, pw)| serde_json::json!({"period": p, "power": round4(*pw)})).collect::<Vec<_>>(),
+                    "detected": fft_detected,
+                    "p_value": round4(fft_p_value),
+                },
+                "best_method": best_method,
+                "best_magnitude": round4(if best_method == "fft_spectral" { fft.snr } else { lockin.magnitude }),
                 "best_lag": (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32,
-                "p_value": round4(p_value),
+                "p_value": round4(if best_method == "fft_spectral" { fft_p_value } else { p_value }),
                 "permutations": n_perm,
                 "residuals": cleaned.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
                 "sender_signal": sig.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
@@ -558,13 +592,16 @@ impl OptunaReader {
 
             if detected && !overall_detected {
                 overall_detected = true;
-                overall_best_corr = lockin.magnitude;
+                overall_best_corr = if best_method == "fft_spectral" { fft.snr } else { lockin.magnitude };
                 overall_best_lag = (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32;
-                overall_p_value = p_value;
-            } else if !overall_detected && lockin.magnitude > overall_best_corr {
-                overall_best_corr = lockin.magnitude;
-                overall_best_lag = (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32;
-                overall_p_value = p_value;
+                overall_p_value = if best_method == "fft_spectral" { fft_p_value } else { p_value };
+            } else if !overall_detected {
+                let corr = if best_method == "fft_spectral" { fft.snr } else { lockin.magnitude };
+                if corr > overall_best_corr {
+                    overall_best_corr = corr;
+                    overall_best_lag = (lockin.phase * wm_period as f64 / (2.0 * std::f64::consts::PI)).round() as i32;
+                    overall_p_value = if best_method == "fft_spectral" { fft_p_value } else { p_value };
+                }
             }
 
             per_objective.push(obj_result);
@@ -713,6 +750,19 @@ struct LockInResult {
     q_component: f64,
 }
 
+struct FftResult {
+    /// Combined power at all watermark frequency bins, normalized
+    combined_power: f64,
+    /// Noise floor estimated from neighboring bins
+    noise_floor: f64,
+    /// SNR = combined_power / noise_floor
+    snr: f64,
+    /// Per-frequency bin results (period, power)
+    per_freq: Vec<(usize, f64)>,
+    /// Number of watermark frequencies that exceed 3x noise floor
+    n_significant: usize,
+}
+
 fn lock_in_detect(
     residuals: &[f64],
     period: f64,
@@ -764,6 +814,112 @@ fn lock_in_detect(
     let snr = if noise_power > 1e-12 { magnitude / noise_power.sqrt() } else { 0.0 };
 
     LockInResult { magnitude, phase, snr, i_component: i_sum, q_component: q_sum }
+}
+
+/// FFT-based spectral detection for periodic watermarks.
+///
+/// Computes the power spectrum of the residuals via DFT (Goertzel algorithm
+/// at specific frequency bins corresponding to the known watermark periods).
+/// The optimizer's exploration is broadband noise — power spread across all
+/// frequencies. The watermark is narrowband — concentrated at periods 17, 23,
+/// 29, 37. FFT naturally separates these because noise per bin decreases as
+/// 1/sqrt(N) while signal power stays concentrated.
+///
+/// Key advantage over lock-in: no assumption of stationarity or convergence.
+/// Works with multi-objective Pareto optimization that never converges.
+fn fft_detect(residuals: &[f64], periods: &[usize]) -> FftResult {
+    let n = residuals.len();
+    if n < 16 || periods.is_empty() {
+        return FftResult {
+            combined_power: 0.0, noise_floor: 0.0, snr: 0.0,
+            per_freq: vec![], n_significant: 0,
+        };
+    }
+
+    let two_pi = 2.0 * std::f64::consts::PI;
+
+    // Apply Hann window to reduce spectral leakage
+    let windowed: Vec<f64> = residuals.iter().enumerate().map(|(i, &v)| {
+        let w = 0.5 * (1.0 - (two_pi * i as f64 / n as f64).cos());
+        v * w
+    }).collect();
+
+    // Goertzel algorithm: compute DFT at specific frequency bins
+    // Frequency bin k corresponds to period N/k (in samples)
+    // We want period P, so k = N/P
+    let mut per_freq: Vec<(usize, f64)> = Vec::new();
+    for &period in periods {
+        if period == 0 || period >= n { continue; }
+        let k = n as f64 / period as f64;
+
+        // Goertzel algorithm
+        let coeff = 2.0 * (two_pi * k / n as f64).cos();
+        let mut s0 = 0.0_f64;
+        let mut s1 = 0.0_f64;
+        let mut s2 = 0.0_f64;
+        for &v in &windowed {
+            s0 = v + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        // DFT value at bin k
+        let real = s1 - s2 * (two_pi * k / n as f64).cos();
+        let imag = s2 * (two_pi * k / n as f64).sin();
+        let power = (real * real + imag * imag) / (n as f64);
+        per_freq.push((period, power));
+    }
+
+    // Compute noise floor from bins at non-watermark frequencies
+    // Use bins offset by ±1 and ±2 from each watermark bin
+    let wm_bins: Vec<usize> = periods.iter()
+        .filter(|&&p| p > 0 && p < n)
+        .map(|&p| (n as f64 / p as f64).round() as usize)
+        .collect();
+
+    let mut noise_powers: Vec<f64> = Vec::new();
+    for &wm_k in &wm_bins {
+        for offset in &[2usize, 3, 4, 5] {
+            for sign in &[1i32, -1] {
+                let noise_k = (wm_k as i32 + sign * (*offset as i32)).max(1) as usize;
+                if noise_k == 0 || noise_k >= n || wm_bins.contains(&noise_k) { continue; }
+
+                let coeff = 2.0 * (two_pi * noise_k as f64 / n as f64).cos();
+                let mut s0 = 0.0_f64;
+                let mut s1 = 0.0_f64;
+                let mut s2 = 0.0_f64;
+                for &v in &windowed {
+                    s0 = v + coeff * s1 - s2;
+                    s2 = s1;
+                    s1 = s0;
+                }
+                let real = s1 - s2 * (two_pi * noise_k as f64 / n as f64).cos();
+                let imag = s2 * (two_pi * noise_k as f64 / n as f64).sin();
+                let power = (real * real + imag * imag) / (n as f64);
+                noise_powers.push(power);
+            }
+        }
+    }
+
+    let noise_floor = if noise_powers.len() >= 4 {
+        // Use median of noise bins for robustness
+        let mut sorted = noise_powers.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        sorted[sorted.len() / 2]
+    } else {
+        1e-12
+    };
+
+    let combined_power: f64 = per_freq.iter().map(|(_, p)| *p).sum();
+    let snr = if noise_floor > 1e-12 { combined_power / noise_floor } else { 0.0 };
+    let n_significant = per_freq.iter().filter(|(_, p)| *p > 3.0 * noise_floor).count();
+
+    FftResult {
+        combined_power,
+        noise_floor,
+        snr,
+        per_freq,
+        n_significant,
+    }
 }
 
 fn shuffle_vec(v: &mut [f64], rng: &mut fastrand::Rng) {
@@ -1803,5 +1959,89 @@ mod tests {
             assert!(lockin.magnitude < 0.3,
                 "no-coupling should not false positive for rx={} tx={}, got mag={}", rx_period, tx_period, lockin.magnitude);
         }
+    }
+
+    #[test]
+    fn test_fft_pure_sinusoid_detection() {
+        // Generate a clean sinusoid at period 17 — FFT should find strong peak
+        let n = 200;
+        let period = 17_usize;
+        let amplitude = 1.0_f64;
+        let signal: Vec<f64> = (0..n).map(|i| {
+            amplitude * (2.0 * std::f64::consts::PI * i as f64 / period as f64).sin()
+        }).collect();
+
+        let fft = super::fft_detect(&signal, &[period]);
+        assert!(fft.snr > 5.0, "pure sinusoid FFT SNR should be >> 1, got {}", fft.snr);
+        assert_eq!(fft.n_significant, 1, "should have 1 significant frequency");
+    }
+
+    #[test]
+    fn test_fft_sinusoid_in_noise() {
+        // Sinusoid buried in Gaussian noise — FFT should still detect via narrowband peak
+        let n = 280;
+        let period = 23_usize;
+        let amplitude = 10.0_f64;
+        let noise_std = 50.0_f64;
+        // Deterministic "noise" from a simple LCG to avoid randomness in tests
+        let signal: Vec<f64> = (0..n).map(|i| {
+            let noise = noise_std * (((i as f64 * 1103515245.0 + 12345.0) % 2147483648.0) / 2147483648.0 - 0.5) * 2.0;
+            amplitude * (2.0 * std::f64::consts::PI * i as f64 / period as f64).sin() + noise
+        }).collect();
+
+        let fft = super::fft_detect(&signal, &[period]);
+        assert!(fft.snr > 2.0, "sinusoid in noise should have FFT SNR > 2, got {}", fft.snr);
+    }
+
+    #[test]
+    fn test_fft_multi_frequency_detection() {
+        // Multi-frequency watermark: periods 17 and 23
+        let n = 280;
+        let periods = [17_usize, 23];
+        let amplitude = 5.0_f64;
+        let signal: Vec<f64> = (0..n).map(|i| {
+            let mut v = 0.0;
+            for &p in &periods {
+                v += (amplitude / periods.len() as f64) * (2.0 * std::f64::consts::PI * i as f64 / p as f64).sin();
+            }
+            v
+        }).collect();
+
+        let fft = super::fft_detect(&signal, &periods);
+        assert!(fft.n_significant >= 2, "should detect both watermark frequencies, got {} significant", fft.n_significant);
+        assert!(fft.snr > 3.0, "multi-frequency FFT SNR should be > 3, got {}", fft.snr);
+    }
+
+    #[test]
+    fn test_fft_no_false_positive_pure_noise() {
+        // Pure noise — no periodic signal — FFT should NOT flag
+        let n = 280;
+        let periods = [17_usize, 23, 29];
+        let noise: Vec<f64> = (0..n).map(|i| {
+            100.0 * (((i as f64 * 1103515245.0 + 12345.0) % 2147483648.0) / 2147483648.0 - 0.5) * 2.0
+        }).collect();
+
+        let fft = super::fft_detect(&noise, &periods);
+        // With pure broadband noise, no frequency bin should be 3x above the floor
+        assert!(fft.n_significant == 0, "pure noise should have 0 significant frequencies, got {}", fft.n_significant);
+        assert!(fft.snr < 3.0, "pure noise FFT SNR should be low, got {}", fft.snr);
+    }
+
+    #[test]
+    fn test_fft_with_linear_trend() {
+        // Sinusoid + strong linear trend — FFT should handle this because
+        // the trend is low-frequency energy, not at periods 17-23
+        let n = 280;
+        let period = 17_usize;
+        let amplitude = 5.0_f64;
+        let signal: Vec<f64> = (0..n).map(|i| {
+            let trend = 1000.0 * i as f64 / n as f64; // strong linear trend 0 -> 1000
+            let wm = amplitude * (2.0 * std::f64::consts::PI * i as f64 / period as f64).sin();
+            trend + wm
+        }).collect();
+
+        let fft = super::fft_detect(&signal, &[period]);
+        // The trend is low-frequency, not at period 17. Watermark should still be detected.
+        assert!(fft.snr > 2.0, "FFT should detect watermark despite trend, got SNR={}", fft.snr);
     }
 }
