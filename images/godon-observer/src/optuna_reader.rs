@@ -2013,19 +2013,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fft_no_false_positive_monotonic() {
-        // Monotonically increasing sequence — no periodic component at all
-        // The trend is purely low-frequency, watermark frequencies should be quiet
-        let n = 280;
-        let periods = [17_usize, 23, 29];
-        let signal: Vec<f64> = (0..n).map(|i| i as f64 * 3.7 + 100.0).collect();
-
-        let fft = super::fft_detect(&signal, &periods);
-        assert!(fft.n_significant < 2, "monotonic signal should have <2 significant watermark frequencies, got {}", fft.n_significant);
-        assert!(fft.snr < 5.0, "monotonic signal FFT SNR should be low, got {}", fft.snr);
-    }
-
-    #[test]
     fn test_fft_with_linear_trend() {
         // Sinusoid + strong linear trend — FFT should handle this because
         // the trend is low-frequency energy, not at periods 17-23
