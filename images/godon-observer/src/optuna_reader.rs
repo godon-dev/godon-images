@@ -1016,6 +1016,16 @@ fn rayleigh_detect(
     let n = receiver_quality.len().min(sender_signal.len());
     let two_pi = 2.0 * std::f64::consts::PI;
 
+    // Early return for edge cases: no periods or too little data
+    if periods.is_empty() || n < 40 {
+        return RayleighResult {
+            p_value: 1.0,
+            r_statistic: 0.0,
+            n_windows: 0,
+            per_period: vec![],
+        };
+    }
+
     // Find the longest period — window must be at least 2x this for meaningful phase estimation
     let max_period = periods.iter().copied().filter(|&p| p > 0).max().unwrap_or(1);
     let min_window_size = max_period * 2;
@@ -1030,7 +1040,7 @@ fn rayleigh_detect(
 
     let window_size = n / effective_windows;
 
-    if window_size < 10 || n < 40 || effective_windows < 4 {
+    if window_size < 10 || effective_windows < 4 {
         return RayleighResult {
             p_value: 1.0,
             r_statistic: 0.0,
