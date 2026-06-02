@@ -468,7 +468,9 @@ impl OptunaReader {
         let mut overall_best_lag = 0_i32;
         let mut overall_p_value = 1.0_f64;
 
-        let rcv_wm: Option<(f64, f64, f64, String)> = receiver_trials.iter()
+        // Extract receiver's watermark periods and phases for self-subtraction.
+        // Handles both legacy single-frequency and multi_frequency_multi_param formats.
+        let rcv_wm_components: Vec<(f64, f64)> = receiver_trials.iter()
             .filter(|t| t.user_attrs.contains_key("watermark"))
             .filter_map(|t| {
                 let raw = &t.user_attrs["watermark"];
@@ -477,13 +479,47 @@ impl OptunaReader {
                 } else {
                     raw.clone()
                 };
-                let amp = wm.get("amplitude").and_then(|v| as_f64(v))?;
-                let per = wm.get("period").and_then(|v| as_f64(v))?;
-                let phase = wm.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
-                let param_name = wm.get("param_name").and_then(|v| v.as_str()).unwrap_or("light_intensity").to_string();
-                Some((amp, per, phase, param_name))
+                let wm_type = wm.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+                if wm_type == "multi_frequency_multi_param" {
+                    // Extract all (period, phase_offset) pairs from all params
+                    let params = wm.get("params")?.as_array()?;
+                    let mut components: Vec<(f64, f64)> = Vec::new();
+                    for p in params {
+                        let periods = p.get("periods").and_then(|v| v.as_array());
+                        let phases = p.get("phase_offsets").and_then(|v| v.as_array());
+                        if let (Some(periods), Some(phases)) = (periods, phases) {
+                            for (per, pha) in periods.iter().zip(phases.iter()) {
+                                if let (Some(period), Some(phase)) = (as_f64(per), as_f64(pha)) {
+                                    components.push((period, phase));
+                                }
+                            }
+                        }
+                    }
+                    if components.is_empty() { None } else { Some(components) }
+                } else if wm_type == "multi_frequency" {
+                    let periods = wm.get("periods").and_then(|v| v.as_array())?;
+                    let phases = wm.get("phase_offsets").and_then(|v| v.as_array());
+                    let mut components: Vec<(f64, f64)> = Vec::new();
+                    for (i, per) in periods.iter().enumerate() {
+                        if let Some(period) = as_f64(per) {
+                            let phase = phases.as_ref()
+                                .and_then(|p| p.get(i))
+                                .and_then(|v| as_f64(v))
+                                .unwrap_or(0.0);
+                            components.push((period, phase));
+                        }
+                    }
+                    if components.is_empty() { None } else { Some(components) }
+                } else {
+                    // Legacy single-frequency format
+                    let per = wm.get("period").and_then(|v| as_f64(v))?;
+                    let phase = wm.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
+                    Some(vec![(per, phase)])
+                }
             })
-            .next();
+            .next()
+            .unwrap_or_default();
 
         let wm_amplitude = wm_meta.get("amplitude").and_then(|v| as_f64(v)).unwrap_or(0.1);
         let wm_phase_offset = wm_meta.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
@@ -536,15 +572,17 @@ impl OptunaReader {
             let sig = &aligned_signal[..n_align];
             let qual_raw: Vec<f64> = aligned_quality[..n_align].iter().map(|(v, _)| *v).collect();
 
-            let cleaned = if let Some((rcv_amp, rcv_per, rcv_phase, _)) = rcv_wm {
-                let self_subtracted = subtract_self_modulation(
-                    &qual_raw, &aligned_quality[..n_align],
-                    rcv_per, rcv_amp, rcv_phase,
+            // Self-subtraction: remove receiver's own watermark influence
+            // to isolate coupling signal from the sender.
+            // Subtract each (period, phase) component sequentially.
+            let mut cleaned = qual_raw.clone();
+            for (rcv_per, rcv_phase) in &rcv_wm_components {
+                cleaned = subtract_self_modulation(
+                    &cleaned, &aligned_quality[..n_align],
+                    *rcv_per, 0.0, // amplitude=0 triggers full regression estimation
+                    *rcv_phase,
                 );
-                self_subtracted
-            } else {
-                qual_raw.clone()
-            };
+            }
 
             // FFT spectral detection: sole detection method.
             // Lock-in removed — it requires stationarity which multi-objective
