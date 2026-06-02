@@ -364,11 +364,27 @@ impl OptunaReader {
         // Use a NON-watermarked parameter for convergence detection, because the
         // watermarked param never converges (the sinusoidal offset keeps it oscillating).
         // Pick the parameter with the strongest convergence transition (highest early/late std ratio).
+        // Exclude ALL watermarked params — they never converge due to sinusoidal modulation.
         let conv_window = 10;
+        let watermarked_params: std::collections::HashSet<String> = if wm_type == "multi_frequency_multi_param" {
+            wm_meta.get("params").and_then(|v| v.as_array())
+                .map(|params| params.iter()
+                    .filter_map(|p| p.get("param_name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                    .collect())
+                .unwrap_or_else(|| {
+                    let mut s = std::collections::HashSet::new();
+                    s.insert(wm_param_name.to_string());
+                    s
+                })
+        } else {
+            let mut s = std::collections::HashSet::new();
+            s.insert(wm_param_name.to_string());
+            s
+        };
         let all_param_names: Vec<String> = sender_trials.iter()
             .filter(|t| t.state == "COMPLETE")
             .flat_map(|t| t.params.keys())
-            .filter(|k| *k != wm_param_name)
+            .filter(|k| !watermarked_params.contains(*k))
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .cloned()
@@ -558,6 +574,11 @@ impl OptunaReader {
                     }
                 }
             }
+            info!(
+                "obj[{}] alignment: wm_trials={} wm_signal_len={} overlap=[{}, {}] rcv_quality={} aligned_sig={} overlap=[{},{}]",
+                obj_idx, wm_trials.len(), wm_signal.len(), overlap_start, overlap_end,
+                receiver_quality.len(), aligned_idx_sig.len(), wm_start, wm_end
+            );
             aligned_idx_sig.sort_by_key(|(idx, _)| *idx);
             let aligned_signal: Vec<f64> = aligned_idx_sig.iter().map(|(_, v)| *v).collect();
 
