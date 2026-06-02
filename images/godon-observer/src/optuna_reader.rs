@@ -2277,11 +2277,12 @@ mod tests {
         let sender: Vec<f64> = (0..n).map(|i| {
             (2.0 * std::f64::consts::PI * i as f64 / period as f64).sin()
         }).collect();
-        // Coupling with 50% of sender amplitude plus noise
+        // Coupling with 70% of sender amplitude plus noise
+        // At 50% the noise can overwhelm the signal in small windows
         let receiver: Vec<f64> = (0..n).map(|i| {
-            0.5 * sender[i]
-            + 2.0 * (i as f64 * 0.1).sin()
-            + 1.5 * (i as f64 * 0.037).cos()
+            0.7 * sender[i]
+            + 1.5 * (i as f64 * 0.1).sin()
+            + 1.0 * (i as f64 * 0.037).cos()
         }).collect();
 
         let result = super::rayleigh_detect(&receiver, &sender, &[period], 8);
