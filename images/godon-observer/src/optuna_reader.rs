@@ -559,7 +559,7 @@ impl OptunaReader {
                 let mut shuffled: Vec<f64> = cleaned.to_vec();
                 shuffle_vec(&mut shuffled, &mut rng);
                 let perm_fft = fft_detect(&shuffled, &wm_all_periods);
-                if perm_fft.snr >= fft.snr {
+                if perm_fft.combined_power >= fft.combined_power {
                     fft_exceed_count += 1;
                 }
             }
