@@ -2271,16 +2271,14 @@ mod tests {
     #[test]
     fn test_rayleigh_coupling_with_noise() {
         // Coupled signal: receiver = sender + small noise.
-        // The noise uses high-frequency components (period << window size)
-        // so they average out in each window and don't interfere with
-        // phase estimation at the watermark frequency.
+        // Uses period=17 so it fits within 8 windows of ~31 samples each.
         let n = 250;
-        let period = 37_usize;
+        let period = 17_usize;
         let two_pi = 2.0 * std::f64::consts::PI;
         let sender: Vec<f64> = (0..n).map(|i| {
             (two_pi * i as f64 / period as f64).sin()
         }).collect();
-        // Full coupling plus high-frequency noise that doesn't leak into WM frequency
+        // Full coupling plus high-frequency noise
         let receiver: Vec<f64> = (0..n).map(|i| {
             sender[i]
             + 0.5 * (two_pi * i as f64 / 3.0).sin()
