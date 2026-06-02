@@ -574,7 +574,8 @@ impl OptunaReader {
 
             // Self-subtraction: remove receiver's own watermark influence
             // to isolate coupling signal from the sender.
-            // Subtract each (period, phase) component sequentially.
+            // Subtract all receiver periods — the regression should separate
+            // self-influence from coupling because they have different phases/amplitudes.
             let mut cleaned = qual_raw.clone();
             for (rcv_per, rcv_phase) in &rcv_wm_components {
                 cleaned = subtract_self_modulation(
@@ -603,26 +604,47 @@ impl OptunaReader {
             }
             let fft_p_value = (fft_exceed_count + 1) as f64 / (n_perm + 1) as f64;
 
-            // Detection: permutation p-value is the primary criterion.
-            // SNR/n_significant is a secondary signal but not required — a strong
-            // p-value alone is sufficient (e.g. clean sinusoid below noise floor).
-            let detected = fft_p_value < 0.05;
+            // Windowed Rayleigh phase-coherence test.
+            // Tests whether the timing relationship (phase) between sender signal
+            // and receiver quality is consistent across independent time windows.
+            // Coupling produces stable phase; optimizer noise produces random phase.
+            let rayleigh = rayleigh_detect(&qual_raw, sig, &wm_all_periods, 8);
+
+            // Detection: Rayleigh p-value is the primary criterion.
+            // FFT permutation p-value is secondary evidence.
+            // Rayleigh is preferred because it tests phase consistency across windows,
+            // which optimizer noise cannot fake. FFT permutation tests spectral power
+            // which can produce false positives from optimizer autocorrelation.
+            let detected = rayleigh.p_value < 0.05 || fft_p_value < 0.05;
 
             let obj_result = serde_json::json!({
                 "objective_index": obj_idx,
                 "detected": detected,
                 "aligned_trials": n_align,
                 "receiver_trials": receiver_quality.len(),
+                "rayleigh": {
+                    "p_value": round4(rayleigh.p_value),
+                    "r_statistic": round4(rayleigh.r_statistic),
+                    "n_windows": rayleigh.n_windows,
+                    "per_period": rayleigh.per_period.iter().map(|(period, p_val, r, phases)| {
+                        serde_json::json!({
+                            "period": period,
+                            "p_value": round4(*p_val),
+                            "r_statistic": round4(*r),
+                            "phases_deg": phases.iter().map(|d| round4(*d)).collect::<Vec<f64>>(),
+                        })
+                    }).collect::<Vec<_>>(),
+                },
                 "fft": {
                     "snr": round4(fft.snr),
                     "combined_power": round4(fft.combined_power),
                     "noise_floor": round4(fft.noise_floor),
                     "n_significant": fft.n_significant,
                     "per_freq": fft.per_freq.iter().map(|(p, pw)| serde_json::json!({"period": p, "power": round4(*pw)})).collect::<Vec<_>>(),
-                    "detected": detected,
+                    "detected": fft_p_value < 0.05,
                     "p_value": round4(fft_p_value),
                 },
-                "p_value": round4(fft_p_value),
+                "p_value": round4(rayleigh.p_value.min(fft_p_value)),
                 "permutations": n_perm,
                 "residuals": cleaned.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
                 "sender_signal": sig.iter().map(|v| round4(*v)).collect::<Vec<f64>>(),
@@ -799,6 +821,22 @@ struct FftResult {
     n_significant: usize,
 }
 
+/// Result of windowed Rayleigh phase-coherence test.
+/// Splits the signal into windows, computes cross-spectrum phase between
+/// sender signal and receiver quality in each window at watermark frequencies,
+/// then tests whether phases are clustered (Rayleigh test for non-uniformity).
+/// Coupling produces consistent phase across windows; optimizer noise does not.
+struct RayleighResult {
+    /// Rayleigh test p-value (lower = more evidence of coupling)
+    p_value: f64,
+    /// Mean resultant length R (0 = random phases, 1 = perfectly clustered)
+    r_statistic: f64,
+    /// Number of windows used
+    n_windows: usize,
+    /// Per-period results: (period, p_value, r_statistic, phases_in_degrees)
+    per_period: Vec<(usize, f64, f64, Vec<f64>)>,
+}
+
 fn lock_in_detect(
     residuals: &[f64],
     period: f64,
@@ -958,6 +996,129 @@ fn fft_detect(residuals: &[f64], periods: &[usize]) -> FftResult {
     }
 }
 
+/// Windowed Rayleigh phase-coherence test for coupling detection.
+///
+/// Splits the receiver quality and sender signal into windows. In each window,
+/// computes the cross-spectrum (receiver × conj(sender)) at each watermark frequency.
+/// If coupling exists, the phase of the cross-spectrum should be consistent across
+/// windows (the timing relationship between sender and receiver is stable).
+/// If no coupling, phases are uniformly distributed on the circle.
+///
+/// The Rayleigh test measures non-uniformity: R = |mean(unit_vectors)| where
+/// R→1 means all phases point the same direction (coupling), R→0 means random.
+/// p-value ≈ exp(-n_windows * R²) under the null hypothesis of uniform phases.
+fn rayleigh_detect(
+    receiver_quality: &[f64],
+    sender_signal: &[f64],
+    periods: &[usize],
+    n_windows: usize,
+) -> RayleighResult {
+    let n = receiver_quality.len().min(sender_signal.len());
+    let window_size = n / n_windows;
+    let two_pi = 2.0 * std::f64::consts::PI;
+
+    // Need at least 10 samples per window for meaningful Goertzel
+    if window_size < 10 || n < 40 {
+        return RayleighResult {
+            p_value: 1.0,
+            r_statistic: 0.0,
+            n_windows: 0,
+            per_period: vec![],
+        };
+    }
+
+    let actual_windows = n / window_size;
+    let mut per_period: Vec<(usize, f64, f64, Vec<f64>)> = Vec::new();
+
+    for &period in periods {
+        if period == 0 || period >= window_size {
+            continue;
+        }
+
+        let mut phases: Vec<f64> = Vec::new();
+        let mut powers: Vec<f64> = Vec::new();
+
+        for w in 0..actual_windows {
+            let start = w * window_size;
+            let end = start + window_size;
+            if end > n { break; }
+
+            let rcv = &receiver_quality[start..end];
+            let snd = &sender_signal[start..end];
+            let wn = rcv.len();
+
+            // Apply Hann window
+            let rcv_w: Vec<f64> = rcv.iter().enumerate()
+                .map(|(i, &v)| v * 0.5 * (1.0 - (two_pi * i as f64 / wn as f64).cos()))
+                .collect();
+            let snd_w: Vec<f64> = snd.iter().enumerate()
+                .map(|(i, &v)| v * 0.5 * (1.0 - (two_pi * i as f64 / wn as f64).cos()))
+                .collect();
+
+            let k = wn as f64 / period as f64;
+
+            // Goertzel for receiver
+            let coeff = 2.0 * (two_pi * k / wn as f64).cos();
+            let mut s0 = 0.0_f64; let mut s1 = 0.0_f64; let mut s2 = 0.0_f64;
+            for &v in &rcv_w { s0 = v + coeff * s1 - s2; s2 = s1; s1 = s0; }
+            let re_r = s1 - s2 * (two_pi * k / wn as f64).cos();
+            let im_r = s2 * (two_pi * k / wn as f64).sin();
+
+            // Goertzel for sender
+            let mut s0 = 0.0_f64; let mut s1 = 0.0_f64; let mut s2 = 0.0_f64;
+            for &v in &snd_w { s0 = v + coeff * s1 - s2; s2 = s1; s1 = s0; }
+            let re_s = s1 - s2 * (two_pi * k / wn as f64).cos();
+            let im_s = s2 * (two_pi * k / wn as f64).sin();
+
+            // Cross-spectrum: FFT_rcv × conj(FFT_snd)
+            let cross_re = re_r * re_s + im_r * im_s;
+            let cross_im = im_r * re_s - re_r * im_s;
+
+            let phase = cross_im.atan2(cross_re);
+            let power = cross_re * cross_re + cross_im * cross_im;
+
+            phases.push(phase);
+            powers.push(power);
+        }
+
+        if phases.len() < 4 {
+            per_period.push((period, 1.0, 0.0, vec![]));
+            continue;
+        }
+
+        // Unweighted Rayleigh test
+        let n_p = phases.len() as f64;
+        let cos_sum: f64 = phases.iter().map(|p| p.cos()).sum();
+        let sin_sum: f64 = phases.iter().map(|p| p.sin()).sum();
+        let rx = cos_sum / n_p;
+        let ry = sin_sum / n_p;
+        let r = (rx * rx + ry * ry).sqrt();
+
+        // Rayleigh p-value: p ≈ exp(-n * R²)
+        let p_val = (-n_p * r * r).exp();
+
+        let phases_deg: Vec<f64> = phases.iter()
+            .map(|p| (p * 180.0 / std::f64::consts::PI).rem_euclid(360.0))
+            .map(|d| if d > 180.0 { d - 360.0 } else { d })
+            .collect();
+
+        per_period.push((period, p_val, r, phases_deg));
+    }
+
+    // Overall: use the best (lowest p-value) across periods
+    let (best_period, best_p, best_r, best_phases) = per_period.iter()
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|&(p, pv, r, ref ph)| (p, pv, r, ph.clone()))
+        .unwrap_or((0, 1.0, 0.0, vec![]));
+
+    RayleighResult {
+        p_value: best_p,
+        r_statistic: best_r,
+        n_windows: actual_windows,
+        per_period,
+    }
+}
+
 fn shuffle_vec(v: &mut [f64], rng: &mut fastrand::Rng) {
     for i in (1..v.len()).rev() {
         let j = rng.usize(..=i);
@@ -973,7 +1134,7 @@ fn subtract_self_modulation(
     receiver_phase: f64,
 ) -> Vec<f64> {
     let n = quality.len();
-    if n < 4 || period <= 0.0 || amplitude <= 0.0 {
+    if n < 4 || period <= 0.0 {
         return quality.to_vec();
     }
 
@@ -2064,5 +2225,78 @@ mod tests {
         let fft = super::fft_detect(&signal, &[period]);
         // The trend is low-frequency, not at period 17. Watermark should still be detected.
         assert!(fft.snr > 2.0, "FFT should detect watermark despite trend, got SNR={}", fft.snr);
+    }
+
+    // === Rayleigh tests ===
+
+    #[test]
+    fn test_rayleigh_perfect_coupling() {
+        // Perfect coupling: receiver = copy of sender signal
+        // Phases should be perfectly consistent → p-value ≈ 0
+        let n = 250;
+        let period = 29_usize;
+        let sender: Vec<f64> = (0..n).map(|i| {
+            (2.0 * std::f64::consts::PI * i as f64 / period as f64).sin()
+        }).collect();
+        let receiver = sender.clone();
+
+        let result = super::rayleigh_detect(&receiver, &sender, &[period], 8);
+        assert!(result.p_value < 0.01,
+            "Perfect coupling should have p < 0.01, got p={}", result.p_value);
+        assert!(result.r_statistic > 0.9,
+            "Perfect coupling should have R > 0.9, got R={}", result.r_statistic);
+    }
+
+    #[test]
+    fn test_rayleigh_no_coupling_random() {
+        // No coupling: receiver is random noise, unrelated to sender
+        // Phases should be random → p-value ≈ 1
+        let n = 250;
+        let period = 29_usize;
+        let sender: Vec<f64> = (0..n).map(|i| {
+            (2.0 * std::f64::consts::PI * i as f64 / period as f64).sin()
+        }).collect();
+        // Deterministic but uncorrelated signal (slow ramp — no relationship to sender)
+        let receiver: Vec<f64> = (0..n).map(|i| {
+            (i as f64 * 0.1).sin() + (i as f64 * 0.037).cos() * 3.0
+        }).collect();
+
+        let result = super::rayleigh_detect(&receiver, &sender, &[period], 8);
+        assert!(result.p_value > 0.1,
+            "Random noise should have p > 0.1, got p={}", result.p_value);
+        assert!(result.r_statistic < 0.5,
+            "Random noise should have R < 0.5, got R={}", result.r_statistic);
+    }
+
+    #[test]
+    fn test_rayleigh_coupling_with_noise() {
+        // Coupled signal buried in noise: receiver = 0.5 * sender + random noise
+        // Should still detect because phase is consistent across windows
+        let n = 250;
+        let period = 37_usize;
+        let sender: Vec<f64> = (0..n).map(|i| {
+            (2.0 * std::f64::consts::PI * i as f64 / period as f64).sin()
+        }).collect();
+        // Coupling with 50% of sender amplitude plus noise
+        let receiver: Vec<f64> = (0..n).map(|i| {
+            0.5 * sender[i]
+            + 2.0 * (i as f64 * 0.1).sin()
+            + 1.5 * (i as f64 * 0.037).cos()
+        }).collect();
+
+        let result = super::rayleigh_detect(&receiver, &sender, &[period], 8);
+        assert!(result.p_value < 0.05,
+            "Noisy coupling should still detect, got p={}", result.p_value);
+    }
+
+    #[test]
+    fn test_rayleigh_insufficient_data() {
+        // Too few samples → should return p=1.0 gracefully
+        let sender = vec![1.0, 2.0, 3.0];
+        let receiver = vec![1.0, 2.0, 3.0];
+
+        let result = super::rayleigh_detect(&receiver, &sender, &[17], 8);
+        assert_eq!(result.p_value, 1.0);
+        assert_eq!(result.n_windows, 0);
     }
 }
