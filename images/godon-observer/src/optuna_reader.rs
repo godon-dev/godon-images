@@ -1011,14 +1011,26 @@ fn rayleigh_detect(
     receiver_quality: &[f64],
     sender_signal: &[f64],
     periods: &[usize],
-    n_windows: usize,
+    max_windows: usize,
 ) -> RayleighResult {
     let n = receiver_quality.len().min(sender_signal.len());
-    let window_size = n / n_windows;
     let two_pi = 2.0 * std::f64::consts::PI;
 
-    // Need at least 10 samples per window for meaningful Goertzel
-    if window_size < 10 || n < 40 {
+    // Find the longest period — window must be at least 2x this for meaningful phase estimation
+    let max_period = periods.iter().copied().filter(|&p| p > 0).max().unwrap_or(1);
+    let min_window_size = max_period * 2;
+
+    // Adapt window count: use fewer windows if data is limited, ensuring each window
+    // can measure phase at the longest watermark period.
+    // More windows = more statistical power, but smaller windows = noisier phase estimates.
+    let effective_windows = {
+        let from_data = n / min_window_size.max(10);
+        max_windows.min(from_data).max(4).min(n / 10)
+    };
+
+    let window_size = n / effective_windows;
+
+    if window_size < 10 || n < 40 || effective_windows < 4 {
         return RayleighResult {
             p_value: 1.0,
             r_statistic: 0.0,
@@ -1027,7 +1039,7 @@ fn rayleigh_detect(
         };
     }
 
-    let actual_windows = n / window_size;
+    let actual_windows = effective_windows;
     let mut per_period: Vec<(usize, f64, f64, Vec<f64>)> = Vec::new();
 
     for &period in periods {
