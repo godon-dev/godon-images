@@ -437,18 +437,31 @@ impl OptunaReader {
             wm_type, wm_period, wm_param_name, wm_amplitude_raw, conv_param_name, cutoff_idx, noise_std, snr_estimate
         );
 
+        // Build the sender signal from actual parameter values.
+        // For multi_frequency_multi_param, use the first watermarked param's real values
+        // — these carry the actual sinusoidal modulation the optimizer injected.
+        // For legacy formats, synthesize from metadata as before.
         let wm_signal: Vec<f64> = {
-            let period = wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(20.0);
-            let amplitude = wm_meta.get("amplitude").and_then(|v| as_f64(v)).unwrap_or(0.1);
-            let phase_offset = wm_meta.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
             let start_idx = cutoff_idx.unwrap_or(0);
-            wm_trials.iter()
-                .skip(start_idx)
-                .map(|t| {
-                    let idx = t.user_attrs.get("watermark_trial_idx")
-                        .and_then(|v| as_f64(v)).unwrap_or(0.0);
-                    amplitude * (2.0 * std::f64::consts::PI * idx / period + phase_offset).sin()
-                }).collect()
+            if wm_type == "multi_frequency_multi_param" {
+                // Use actual sender parameter values for the primary watermarked param.
+                // This captures the real modulation signal including any optimizer interactions.
+                wm_trials.iter()
+                    .skip(start_idx)
+                    .filter_map(|t| t.params.get(wm_param_name).copied())
+                    .collect()
+            } else {
+                let period = wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(20.0);
+                let amplitude = wm_meta.get("amplitude").and_then(|v| as_f64(v)).unwrap_or(0.1);
+                let phase_offset = wm_meta.get("phase_offset").and_then(|v| as_f64(v)).unwrap_or(0.0);
+                wm_trials.iter()
+                    .skip(start_idx)
+                    .map(|t| {
+                        let idx = t.user_attrs.get("watermark_trial_idx")
+                            .and_then(|v| as_f64(v)).unwrap_or(0.0);
+                        amplitude * (2.0 * std::f64::consts::PI * idx / period + phase_offset).sin()
+                    }).collect()
+            }
         };
 
         if wm_signal.len() < 4 {
