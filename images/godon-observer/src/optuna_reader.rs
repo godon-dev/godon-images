@@ -565,7 +565,10 @@ impl OptunaReader {
             }
             let fft_p_value = (fft_exceed_count + 1) as f64 / (n_perm + 1) as f64;
 
-            let detected = fft.n_significant >= 2 && fft_p_value < 0.05;
+            // Detection: permutation p-value is the primary criterion.
+            // SNR/n_significant is a secondary signal but not required — a strong
+            // p-value alone is sufficient (e.g. clean sinusoid below noise floor).
+            let detected = fft_p_value < 0.05;
 
             let obj_result = serde_json::json!({
                 "objective_index": obj_idx,
