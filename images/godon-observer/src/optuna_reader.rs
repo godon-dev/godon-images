@@ -437,19 +437,51 @@ impl OptunaReader {
             wm_type, wm_period, wm_param_name, wm_amplitude_raw, conv_param_name, cutoff_idx, noise_std, snr_estimate
         );
 
-        // Build the sender signal from actual parameter values.
-        // For multi_frequency_multi_param, use the first watermarked param's real values
-        // — these carry the actual sinusoidal modulation the optimizer injected.
-        // For legacy formats, synthesize from metadata as before.
+        // Build the watermark template signal for cross-spectrum analysis.
+        // For multi_frequency_multi_param, reconstruct the sum-of-sinusoids from
+        // the per-param metadata (amplitude, periods, phase_offsets).
+        // For legacy formats, use the single sinusoid from top-level metadata.
         let wm_signal: Vec<f64> = {
             let start_idx = cutoff_idx.unwrap_or(0);
             if wm_type == "multi_frequency_multi_param" {
-                // Use actual sender parameter values for the primary watermarked param.
-                // This captures the real modulation signal including any optimizer interactions.
+                // Reconstruct the multi-frequency watermark template for the primary param.
+                // Each param has amplitude, periods[], phase_offsets[].
+                // The template = sum of sinusoids at known frequencies with known phases.
+                let params_meta = wm_meta.get("params").and_then(|v| v.as_array());
+                let base_params: Vec<(f64, Vec<usize>, Vec<f64>)> = params_meta
+                    .map(|params| params.iter()
+                        .filter_map(|p| {
+                            let amp = p.get("amplitude").and_then(|v| as_f64(v))?;
+                            let periods: Vec<usize> = p.get("periods")
+                                .and_then(|v| v.as_array())
+                                .map(|arr| arr.iter()
+                                    .filter_map(|v| as_f64(v).map(|x| x as usize))
+                                    .collect())
+                                .unwrap_or_default();
+                            let phases: Vec<f64> = p.get("phase_offsets")
+                                .and_then(|v| v.as_array())
+                                .map(|arr| arr.iter()
+                                    .filter_map(|v| as_f64(v))
+                                    .collect())
+                                .unwrap_or_default();
+                            Some((amp, periods, phases))
+                        })
+                        .collect())
+                    .unwrap_or_default();
+
                 wm_trials.iter()
                     .skip(start_idx)
-                    .filter_map(|t| t.params.get(wm_param_name).copied())
-                    .collect()
+                    .map(|t| {
+                        let idx = t.user_attrs.get("watermark_trial_idx")
+                            .and_then(|v| as_f64(v)).unwrap_or(0.0);
+                        let mut signal = 0.0_f64;
+                        for (amp, periods, phases) in &base_params {
+                            for (per, pha) in periods.iter().zip(phases.iter()) {
+                                signal += amp * (2.0 * std::f64::consts::PI * idx / (*per as f64) + *pha).sin();
+                            }
+                        }
+                        signal
+                    }).collect()
             } else {
                 let period = wm_meta.get("period").and_then(|v| as_f64(v)).unwrap_or(20.0);
                 let amplitude = wm_meta.get("amplitude").and_then(|v| as_f64(v)).unwrap_or(0.1);
