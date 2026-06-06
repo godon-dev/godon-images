@@ -747,7 +747,7 @@ impl OptunaReader {
             "convergence_cutoff": cutoff_idx,
             "noise_std": noise_std.map(|v| round4(v)),
             "snr_estimate": snr_estimate.map(|v| round4(v)),
-            "best_method": "lock_in",
+            "best_method": "fft_rayleigh",
             "best_magnitude": round4(overall_best_corr),
             "best_lag": overall_best_lag,
             "p_value": round4(overall_p_value),
