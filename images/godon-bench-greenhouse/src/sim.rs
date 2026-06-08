@@ -45,21 +45,29 @@
 // be recovered later. This tests whether the optimizer can identify and exploit
 // time-limited opportunities.
 //
-// INTER-GREENHOUSE COUPLING
+// INTER-GREENHOUSE COUPLING (Structural, Proximity-Based)
 //
-// Multiple greenhouse instances can be coupled through hidden physical channels.
-// Each greenhouse fetches its neighbors' status via HTTP and folds their activity
-// into its own ambient conditions. Four coupling channels exist:
+// Multiple greenhouse instances standing right next to each other share
+// physical infrastructure at the structural level. Coupling is not a
+// perturbation added after zone physics — it is a first-class part of
+// the zone equations:
 //
-//   Waste heat:      Neighbor avg temp → nudges outside_temp (proximity heat bleed)
-//   CO2 exhaust:     Neighbor energy usage → nudges outside CO2 (wind carries exhaust)
-//   Power sag:       Neighbor energy usage → reduces effective light (shared grid)
-//   Humidity drift:  Neighbor avg humidity → nudges outside humidity (moisture migration)
+//   Shared wall:     The wall between greenhouses is a zone boundary with
+//     5× the conductance of inter-zone walls (0.25). Thin shared wall
+//     (polycarbonate/aluminum) transfers heat readily.
 //
-// The coupling is controlled by COUPLING_FACTOR (0.0 = none, higher = stronger).
-// Breeders optimizing one greenhouse cannot observe the coupling -- they only see
-// mysterious variance in their objectives. This creates discoverable hidden structure
-// for post-hoc causality analysis (cross-correlation, Granger causality).
+//   Air exchange:    A shared ventilation duct connects the greenhouses.
+//     Mixing rate depends on BOTH greenhouses' vent openings — higher
+//     activity = more exchange. CO2 and humidity move toward the mixed-air
+//     average. Nonlinear: coupling strength depends on optimizer behavior.
+//
+//   Shared water tank: Finite reservoir (20L) with slow well influx
+//     (0.01 L/tick). Both greenhouses drain it. When combined outflux
+//     exceeds influx, the tank depletes. Effective irrigation scales
+//     with remaining tank fraction. Genuine scarcity coupling.
+//
+// Coupling is controlled by COUPLING_FACTOR (0.0 = none, higher = stronger).
+// All channels directly modify zone state, not outside conditions.
 
 use crate::types::*;
 use rand::Rng;
@@ -152,34 +160,46 @@ pub struct NeighborStatus {
     pub trial_water_liters: f64,
 }
 
-/// Hidden coupling state between greenhouses.
+/// Shared coupling state between adjacent greenhouses.
 ///
-/// Each tick, the greenhouse fetches neighbor statuses and computes four deltas
-/// that silently modify its own ambient conditions. The optimizer cannot observe
-/// these deltas directly -- it only sees the resulting variance in objectives.
+/// Two greenhouses right next to each other share physical infrastructure
+/// at the structural level — not as perturbations added after zone physics,
+/// but as first-class parts of the zone equations:
 ///
 /// Coupling channels:
-///   - delta_temp:     Neighbor waste heat → raises outside temperature
-///   - delta_co2:      Neighbor CO2 exhaust → raises outside CO2 baseline
-///   - delta_light:    Neighbor power draw → reduces effective grow light intensity
-///   - delta_humidity:  Neighbor humidity → shifts outside humidity baseline
+///   - Shared wall:     Zone boundary conduction to neighbor zones (thermal)
+///   - Air exchange:    Shared ventilation duct mixing air between greenhouses
+///   - Water tank:      Finite shared reservoir with slow well influx
+///   - Humidity:        Moisture transfer through semi-permeable shared wall
 pub struct CouplingState {
     /// URLs of neighbor greenhouses (comma-separated from COUPLING_NEIGHBORS env var).
     pub neighbors: Vec<String>,
     /// Coupling strength multiplier (0.0 = no coupling, 0.05 = weak, 0.2 = strong).
     pub factor: f64,
-    /// Last computed waste heat delta from neighbors (°C shift to outside_temp).
+    /// Last computed thermal coupling delta (°C shift to zone temp).
     pub last_delta_temp: f64,
-    /// Last computed CO2 exhaust delta from neighbors (ppm shift to outside_co2).
+    /// Last computed CO2 air exchange delta (ppm shift to zone CO2).
     pub last_delta_co2: f64,
-    /// Last computed power sag delta from neighbors (fraction reducing effective light).
+    /// Removed (power sag). Kept at 0.0 for backward compatibility.
     pub last_delta_light: f64,
-    /// Last computed humidity drift delta from neighbors (ratio shift to outside_humidity).
+    /// Last computed humidity exchange delta (ratio shift to zone humidity).
     pub last_delta_humidity: f64,
+    /// Last computed water pressure reduction from shared tank depletion.
+    pub last_delta_water: f64,
+    /// Shared water tank level (liters). Starts at capacity, depletes
+    /// when combined draw exceeds influx. Slowly refills from well.
+    pub shared_water_tank: f64,
+    /// Shared water tank capacity (liters).
+    pub shared_water_capacity: f64,
+    /// Well influx rate (liters per tick). Slow refill.
+    pub shared_water_influx: f64,
+    /// Neighbor's reported water consumption for current tick cycle.
+    neighbor_water_draw: f64,
 }
 
 impl CouplingState {
     pub fn new(neighbors: Vec<String>, factor: f64) -> Self {
+        let capacity = 20.0;
         Self {
             neighbors,
             factor,
@@ -187,6 +207,11 @@ impl CouplingState {
             last_delta_co2: 0.0,
             last_delta_light: 0.0,
             last_delta_humidity: 0.0,
+            last_delta_water: 0.0,
+            shared_water_tank: capacity,
+            shared_water_capacity: capacity,
+            shared_water_influx: 0.01, // slow well refill: 0.01 liters/tick
+            neighbor_water_draw: 0.0,
         }
     }
 }
@@ -226,6 +251,9 @@ pub struct Greenhouse {
     rng: ChaCha8Rng,
     /// Hidden coupling state to neighbor greenhouses.
     pub coupling: CouplingState,
+    /// Accumulated crop quality (0.0-1.0). Degrades with stress events,
+    /// slowly recovers. Affected by damage_factor.
+    pub crop_quality: f64,
 }
 
 /// Crop developmental phase -- determines optimal temperature/CO2/water ranges
@@ -289,6 +317,7 @@ impl Greenhouse {
             seed,
             rng: ChaCha8Rng::seed_from_u64(seed),
             coupling: CouplingState::new(neighbors, coupling_factor),
+            crop_quality: 1.0,
         }
     }
 
@@ -472,7 +501,6 @@ impl Greenhouse {
             let wall_transfer = (neighbor_avg - zone.temp) * 0.05;
 
             // Heat loss through greenhouse shell to outside (insulation factor 0.1)
-            // Note: outside_temp already includes coupling waste heat delta.
             let heat_loss_outside = (zone.temp - self.outside_temp) * 0.1;
 
             // Ventilation cooling: proportional to vent opening and temp difference.
@@ -518,19 +546,31 @@ impl Greenhouse {
             // --- CO2 dynamics ---
 
             // CO2 is lost through ventilation (exchanged with outside CO2).
-            // Note: outside_co2 includes coupling exhaust delta from neighbors.
             let co2_loss_vent = vent * (zone.co2 - outside_co2) * 0.2;
             // Plants consume CO2 proportional to their growth rate
             let co2_plant_uptake = zone.growth_rate_for() * 0.5;
             zone.co2 += dt * (co2_inject - co2_loss_vent - co2_plant_uptake);
             zone.co2 = zone.co2.clamp(100.0, 3000.0);
 
+            // --- Structural coupling (direct zone-level) ---
+            // Applied AFTER zone physics, BEFORE growth calculation.
+            // Coupling is a first-class part of zone equations, not an afterthought.
+
+            zone.temp += self.coupling.last_delta_temp * dt;
+            zone.co2 += self.coupling.last_delta_co2 * dt;
+            zone.co2 = zone.co2.clamp(100.0, 3000.0);
+            zone.humidity += self.coupling.last_delta_humidity * dt;
+            zone.humidity = zone.humidity.clamp(0.1, 0.99);
+
+            // Shared water tank: effective irrigation scales with remaining water.
+            // irrigation is the optimizer's requested rate; scarcity reduces it.
+            let effective_irrigation = irrigation
+                * (1.0 - self.coupling.last_delta_water);
+
             // --- Growth accumulation ---
 
             // Calculate effective light (solar after shading + supplemental grow lights).
-            // Coupling power sag reduces effective light intensity.
-            let effective_light = (self.solar_radiation * (1.0 - shading) + light)
-                * (1.0 - self.coupling.last_delta_light);
+            let effective_light = self.solar_radiation * (1.0 - shading) + light;
 
             // Growth rate depends on current crop phase (non-stationary optimum),
             // phase-dependent sensitivities (critical windows), and irreversible
@@ -538,7 +578,7 @@ impl Greenhouse {
             let growth = zone.growth_rate_for_params(
                 effective_light,
                 co2_inject,
-                irrigation,
+                effective_irrigation,
                 &crop_phase,
                 co2_sensitivity,
                 water_sensitivity,
@@ -551,8 +591,6 @@ impl Greenhouse {
         // Energy: heating effort (proportional to setpoint excess), vent fan power,
         // and grow light power. These create the multi-objective tradeoff:
         // more heating/light = faster growth but higher energy cost.
-        // Energy usage is also the coupling signal -- high energy use in one
-        // greenhouse causes power sag and CO2 exhaust in its neighbor.
         let total_heating: f64 = params
             .heating_setpoints
             .iter()
@@ -565,6 +603,40 @@ impl Greenhouse {
         self.trial_energy_kwh += dt * (total_heating + total_venting + total_lighting);
         self.trial_water_liters += dt * params.irrigation * 0.1;
 
+        // --- Shared water tank dynamics ---
+        // Drain: my irrigation draw reduces the tank
+        let my_draw = params.irrigation * 0.3 * dt; // liters this tick
+        let neighbor_draw = self.coupling.neighbor_water_draw * 0.01 * dt; // scaled estimate
+        let total_draw = my_draw + neighbor_draw;
+        self.coupling.shared_water_tank -= total_draw;
+        // Refill: slow well influx
+        self.coupling.shared_water_tank += self.coupling.shared_water_influx * dt;
+        // Clamp
+        self.coupling.shared_water_tank = self.coupling.shared_water_tank
+            .clamp(0.0, self.coupling.shared_water_capacity);
+
+        // --- Crop quality tracking ---
+        // Degrades with stress events, slowly recovers.
+        let avg_damage: f64 = self.zones.iter().map(|z| z.damage_factor).sum::<f64>()
+            / self.zones.len().max(1) as f64;
+        let mut stress_count = 0;
+        for zone in &self.zones {
+            if zone.temp > 35.0 || zone.temp < 8.0 { stress_count += 1; }
+            if zone.co2 < 200.0 || zone.co2 > 2500.0 { stress_count += 1; }
+        }
+        let irrigation = params.irrigation;
+        if irrigation > 2.5 || irrigation < 0.1 { stress_count += 1; }
+
+        // Degradation from stress events
+        self.crop_quality -= 0.001 * stress_count as f64 * dt;
+        // Slow recovery when no stress
+        if stress_count == 0 {
+            self.crop_quality += 0.0002 * dt;
+        }
+        // Scale by average damage factor
+        self.crop_quality *= (0.999 + 0.001 * avg_damage);
+        self.crop_quality = self.crop_quality.clamp(0.0, 1.0);
+
         self.tick += 1;
     }
 
@@ -576,8 +648,7 @@ impl Greenhouse {
         }
     }
 
-    /// Update weather conditions based on the active weather mode, then apply
-    /// coupling deltas from neighbor greenhouses.
+    /// Update weather conditions based on the active weather mode.
     ///
     /// Smooth: deterministic Lissajous oscillations. Same tick always produces
     ///         the same weather. Good for verifying convergence.
@@ -592,10 +663,8 @@ impl Greenhouse {
     ///        and cloud bursts. They can push zones into guardrail territory
     ///        even with reasonable parameters, forcing rollback and re-convergence.
     ///
-    /// After weather computation, coupling deltas are folded in:
-    ///   - outside_temp += coupling waste heat delta
-    ///   - outside_co2 = 420ppm + coupling exhaust delta
-    ///   - outside_humidity = 0.4 + coupling humidity drift delta
+    /// Coupling no longer modifies weather — proximity coupling is applied
+    /// directly to zone state in step().
     fn update_weather(&mut self) {
         let t = self.tick as f64 * 0.01;
 
@@ -636,39 +705,34 @@ impl Greenhouse {
             }
         }
 
-        // Fold in coupling deltas from neighbor greenhouses.
-        // These silently modify the "outside" conditions, creating hidden
-        // correlations between greenhouses that the optimizer cannot directly observe.
-        self.outside_temp += self.coupling.last_delta_temp;
-        self.outside_co2 = 420.0 + self.coupling.last_delta_co2;
-        self.outside_humidity = (0.4 + self.coupling.last_delta_humidity).clamp(0.1, 0.99);
+        // Coupling no longer modifies outside conditions.
+        // Proximity-based coupling is applied directly to zone state in step().
+        self.outside_co2 = 420.0;
+        self.outside_humidity = 0.4;
     }
 
-    /// Compute coupling deltas from neighbor greenhouse statuses.
+    /// Compute structural coupling from neighbor greenhouse statuses.
     ///
-    /// Called by the /apply handler before running simulation steps. Fetches
-    /// each neighbor's current state via GET /status and computes four deltas:
+    /// Coupling is a first-class part of zone physics, not a perturbation
+    /// added after the fact. Three structural channels:
     ///
-    ///   Waste heat:      (neighbor_avg_temp - 20°C) × factor × 0.1
-    ///                    A hot neighbor raises the "outside" temperature,
-    ///                    reducing cooling effectiveness and nudging guardrails.
+    ///   SHARED WALL (thermal): The wall between greenhouses is treated as
+    ///     a zone boundary with 5× the conductance of inter-zone walls (0.25).
+    ///     Thin shared wall (polycarbonate/aluminum) transfers heat readily.
     ///
-    ///   CO2 exhaust:     neighbor_energy_kwh × factor × 2.0
-    ///                    High energy use implies high activity, which produces
-    ///                    CO2 that drifts into this greenhouse's air intake.
-    ///                    Raises outside CO2 baseline, reducing vent effectiveness.
+    ///   AIR EXCHANGE (CO2 + humidity): A shared ventilation duct connects
+    ///     the two greenhouses. Air mixing rate depends on BOTH greenhouses'
+    ///     vent openings — higher activity = more exchange. Nonlinear:
+    ///     air_exchange = (my_vent + neighbor_vent) * factor * 0.3
+    ///     CO2 and humidity move toward the mixed-air average.
     ///
-    ///   Power sag:       neighbor_energy_kwh × factor × 0.01
-    ///                    Both greenhouses on the same grid. High neighbor load
-    ///                    causes voltage drop, reducing actual grow light output.
-    ///                    Applied as (1.0 - delta) multiplier on effective light.
+    ///   SHARED WATER TANK: Finite reservoir (20L) with slow well influx
+    ///     (0.01 L/tick). Both greenhouses drain it. When combined outflux
+    ///     exceeds influx, the tank depletes. Effective irrigation scales
+    ///     with remaining tank fraction: irrigation * (tank / capacity).
+    ///     Neighbor's draw depletes the shared resource — genuine scarcity.
     ///
-    ///   Humidity drift:  (neighbor_avg_humidity - 0.5) × factor × 0.05
-    ///                    Moisture migrates between adjacent structures. A humid
-    ///                    neighbor raises outside humidity, reducing vent drying.
-    ///
-    /// The deltas are stored and applied in update_weather() on every subsequent
-    /// tick until the next /apply call refreshes them.
+    /// Deltas are stored and applied in step().
     pub fn apply_coupling(&mut self, neighbor_statuses: &[NeighborStatus]) {
         let factor = self.coupling.factor;
         if factor <= 0.0 || neighbor_statuses.is_empty() {
@@ -676,13 +740,25 @@ impl Greenhouse {
             self.coupling.last_delta_co2 = 0.0;
             self.coupling.last_delta_light = 0.0;
             self.coupling.last_delta_humidity = 0.0;
+            self.coupling.last_delta_water = 0.0;
+            self.coupling.neighbor_water_draw = 0.0;
             return;
         }
 
+        let my_avg_temp = self.zones.iter().map(|z| z.temp).sum::<f64>()
+            / self.zones.len().max(1) as f64;
+        let my_avg_co2 = self.zones.iter().map(|z| z.co2).sum::<f64>()
+            / self.zones.len().max(1) as f64;
+        let my_avg_humidity = self.zones.iter().map(|z| z.humidity).sum::<f64>()
+            / self.zones.len().max(1) as f64;
+        let my_avg_vent = self.last_params.as_ref().map_or(0.0, |p| {
+            p.vent_openings.iter().sum::<f64>() / p.vent_openings.len().max(1) as f64
+        });
+
         let mut delta_temp = 0.0;
         let mut delta_co2 = 0.0;
-        let mut delta_light = 0.0;
         let mut delta_humidity = 0.0;
+        let mut total_neighbor_water = 0.0;
 
         for ns in neighbor_statuses {
             let neighbor_avg_temp = if ns.zones.is_empty() {
@@ -690,26 +766,59 @@ impl Greenhouse {
             } else {
                 ns.zones.iter().map(|z| z.temp).sum::<f64>() / ns.zones.len() as f64
             };
+            let neighbor_avg_co2 = if ns.zones.is_empty() {
+                400.0
+            } else {
+                ns.zones.iter().map(|z| z.co2).sum::<f64>() / ns.zones.len() as f64
+            };
             let neighbor_avg_humidity = if ns.zones.is_empty() {
                 0.5
             } else {
                 ns.zones.iter().map(|z| z.humidity).sum::<f64>() / ns.zones.len() as f64
             };
+            total_neighbor_water += ns.trial_water_liters;
 
-            // Waste heat: neighbor's excess temperature bleeds into outside air
-            delta_temp += (neighbor_avg_temp - 20.0) * factor * 0.1;
-            // CO2 exhaust: neighbor's energy consumption as proxy for CO2 output
-            delta_co2 += ns.trial_energy_kwh * factor * 2.0;
-            // Power sag: neighbor's load reduces this greenhouse's light effectiveness
-            delta_light += ns.trial_energy_kwh * factor * 0.01;
-            // Humidity drift: neighbor's moisture migrates through shared environment
-            delta_humidity += (neighbor_avg_humidity - 0.5) * factor * 0.05;
+            // SHARED WALL (thermal): same conductance as inter-zone walls.
+            // Factor scales the effective wall area. At factor=1.0,
+            // neighbor zones conduct heat as strongly as own zones.
+            delta_temp += (neighbor_avg_temp - my_avg_temp) * factor * 0.25;
+
+            // AIR EXCHANGE (CO2 + humidity): shared ventilation duct.
+            // Mixing rate depends on BOTH greenhouses' vent openings.
+            // Higher activity = more air exchange = stronger coupling.
+            let neighbor_avg_vent = if ns.zones.is_empty() {
+                0.0
+            } else {
+                // Estimate from energy usage as proxy for activity level
+                (ns.trial_energy_kwh / 10.0).min(1.0)
+            };
+            let air_exchange_rate = (my_avg_vent + neighbor_avg_vent) * factor * 0.3;
+
+            // CO2: mixed air moves both toward the average
+            let co2_mixed = (my_avg_co2 + neighbor_avg_co2) / 2.0;
+            delta_co2 += (co2_mixed - my_avg_co2) * air_exchange_rate;
+
+            // HUMIDITY: same air exchange carries moisture
+            let hum_mixed = (my_avg_humidity + neighbor_avg_humidity) / 2.0;
+            delta_humidity += (hum_mixed - my_avg_humidity) * air_exchange_rate;
         }
+
+        // SHARED WATER TANK: finite reservoir with slow well influx.
+        // Update tank level based on neighbor's reported water consumption.
+        // My own consumption is deducted in step() each tick.
+        self.coupling.neighbor_water_draw = total_neighbor_water;
+
+        // Compute water scarcity factor: what fraction of irrigation is available
+        let tank_fraction = (self.coupling.shared_water_tank
+            / self.coupling.shared_water_capacity)
+            .clamp(0.0, 1.0);
+        let water_scarcity = 1.0 - tank_fraction; // 0 = full tank, 1 = empty
 
         self.coupling.last_delta_temp = delta_temp;
         self.coupling.last_delta_co2 = delta_co2;
-        self.coupling.last_delta_light = delta_light;
+        self.coupling.last_delta_light = 0.0;
         self.coupling.last_delta_humidity = delta_humidity;
+        self.coupling.last_delta_water = water_scarcity;
     }
 
     /// Compute the current metrics snapshot from the greenhouse state.
@@ -786,6 +895,8 @@ impl Greenhouse {
             growth_rate: noisy_growth,
             trial_energy_kwh: noisy_energy,
             trial_water_liters: noisy_water,
+            water_efficiency: noisy_growth / noisy_water.max(0.001),
+            crop_quality: self.crop_quality,
             max_temp: noisy_temps.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
             min_temp: noisy_temps.iter().cloned().fold(f64::INFINITY, f64::min),
             max_humidity: noisy_humidities.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
@@ -798,7 +909,8 @@ impl Greenhouse {
             crop_phase: format!("{:?}", crop_phase).to_lowercase(),
             coupling_delta_temp: self.coupling.last_delta_temp,
             coupling_delta_co2: self.coupling.last_delta_co2,
-            coupling_delta_light: self.coupling.last_delta_light,
+            coupling_delta_light: 0.0,
+            coupling_delta_water: self.coupling.last_delta_water,
             coupling_delta_humidity: self.coupling.last_delta_humidity,
         }
     }
