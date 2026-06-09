@@ -144,60 +144,149 @@ let lastMode='active',wmProbesCount=0,wmReconCount=0;
 const DEMO=!window.location.protocol.startsWith('http');
 function status(m){$('statusL').textContent=m}
 
-const DEMO_CONFIG={objectives:[
-  {name:'growth_rate',direction:'maximize'},
-  {name:'energy_kwh',direction:'minimize'},
-  {name:'water_liters',direction:'minimize'}
-],guardrails:[
-  {name:'max_temp',hard_limit:40},
-  {name:'max_humidity',hard_limit:0.9},
-  {name:'max_co2',hard_limit:1500}
-]};
-const DEMO_TRIALS=(function(){
-  const params=['co2_injection','heating_setpoints','irrigation','light_intensity','shading','vent_openings'];
-  const out=[];
-  for(let i=0;i<100;i++){
-    const p=(()=>{const o={};params.forEach(k=>{o[k]=+(Math.random()*10).toFixed(2)});return o})();
-    const h=Math.floor(i/6),m=i%6;
-    const max_temp=+(33+Math.random()*12).toFixed(1);
-    const max_humidity=+(0.78+Math.random()*0.2).toFixed(3);
-    const max_co2=+(1000+Math.random()*700).toFixed(0);
-    const attrs={};
-    const isImpulse=i%20===0&&i>0;
-    if(isImpulse){
-      attrs.watermark='{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"light_intensity","amplitude":75}]}';
-      attrs.watermark_trial_idx=i;
-      attrs.watermark_active='true';
-    } else {
-      attrs.watermark='off';
-    }
-    attrs.guardrails=JSON.stringify({max_temp:{value:max_temp,hard_limit:40,violated:max_temp>40},max_humidity:{value:max_humidity,hard_limit:0.9,violated:max_humidity>0.9},max_co2:{value:+max_co2,hard_limit:1500,violated:+max_co2>1500}});
-    // Impulse effect: growth_rate shows a spike on impulse trials
-    const growthBase=0.3+Math.random()*0.2;
-    const growth=isImpulse?growthBase+0.2+Math.random()*0.1:growthBase;
-    const energy=+(Math.random()*50).toFixed(4);
-    const water=+(Math.random()*15).toFixed(4);
-    out.push({
-      number:i,state:'COMPLETE',
-      datetime_start:'2026-04-17 '+(20+h).toString().padStart(2,'0')+':'+m+'0:00',
-      params:p,
-      values:[+growth.toFixed(4),energy,water],
-      user_attrs:attrs
+// ═══════════════════════════════════════════════════
+// Single source of truth for all demo data
+// ═══════════════════════════════════════════════════
+const DEMO_DATA=(function(){
+  const NB=6;
+  const N_TRIALS=100;
+  const IMPULSE_PERIOD=20;
+  const PARAM_NAMES=['co2_injection','heating_setpoints','irrigation','light_intensity','shading','vent_openings'];
+  const OBJECTIVES=[
+    {name:'growth_rate',direction:'maximize'},
+    {name:'energy_kwh',direction:'minimize'},
+    {name:'water_liters',direction:'minimize'}
+  ];
+  const GUARDRAILS=[
+    {name:'max_temp',hard_limit:40},
+    {name:'max_humidity',hard_limit:0.9},
+    {name:'max_co2',hard_limit:1500}
+  ];
+  const COUPLED=[[0,1],[1,2],[2,3],[3,4],[4,5]];
+  const IMPULSE_SPIKE=0.30;
+  const IMPULSE_ECHO=0.15;
+  const NOISE=0.04;
+  const SNR_THRESHOLD=2.5;
+  const WINDOW_SIZE=3;
+  const breeders=[];
+  for(let b=0;b<NB;b++){
+    breeders.push({
+      id:'mg-'+(b+1)+'-0000-0000-0000-00000000000'+(b+1),
+      name:'microgrid-'+(b+1),
+      total_trials:N_TRIALS,
+      createdAt:'2026-06-07T0'+(8+b)+':00:00Z'
     });
   }
-  return out;
-})();
-
-const DEMO_BREEDERS=[
-  {id:'mg-1-0000-0000-0000-000000000001',name:'microgrid-1',total_trials:94,createdAt:'2026-06-07T08:00:00Z'},
-  {id:'mg-2-0000-0000-0000-000000000002',name:'microgrid-2',total_trials:83,createdAt:'2026-06-07T09:00:00Z'},
-  {id:'mg-3-0000-0000-0000-000000000003',name:'microgrid-3',total_trials:115,createdAt:'2026-06-07T10:00:00Z'},
-  {id:'mg-4-0000-0000-0000-000000000004',name:'microgrid-4',total_trials:111,createdAt:'2026-06-07T11:00:00Z'},
-  {id:'mg-5-0000-0000-0000-000000000005',name:'microgrid-5',total_trials:108,createdAt:'2026-06-07T12:00:00Z'},
-  {id:'mg-6-0000-0000-0000-000000000006',name:'microgrid-6',total_trials:97,createdAt:'2026-06-07T13:00:00Z'},
-];
-
-let overviewMode=true;
+  const allTrials=[];
+  const impulsePositions=[];
+  for(let t=0;t<N_TRIALS;t++){
+    if(t%IMPULSE_PERIOD===0&&t>0) impulsePositions.push(t);
+  }
+  for(let b=0;b<NB;b++){
+    const trials=[];
+    const inboundNeighbors=COUPLED.filter(c=>c[1]===b).map(c=>c[0]);
+    for(let i=0;i<N_TRIALS;i++){
+      const p=(()=>{const o={};PARAM_NAMES.forEach(k=>{o[k]=+(Math.random()*10).toFixed(2)});return o})();
+      const h=Math.floor(i/6),m=i%6;
+      const max_temp=+(33+Math.random()*12).toFixed(1);
+      const max_humidity=+(0.78+Math.random()*0.2).toFixed(3);
+      const max_co2=+(1000+Math.random()*700).toFixed(0);
+      const attrs={};
+      const isImpulse=i%IMPULSE_PERIOD===0&&i>0;
+      if(isImpulse){
+        attrs.watermark=JSON.stringify({type:'impulse',duty_cycle:+(1/IMPULSE_PERIOD).toFixed(4),period:IMPULSE_PERIOD,direction:'random',params:[{param_name:'power_draw',amplitude:75}]});
+        attrs.watermark_trial_idx=i;
+        attrs.watermark_active='true';
+      } else {
+        attrs.watermark='off';
+      }
+      attrs.guardrails=JSON.stringify({max_temp:{value:max_temp,hard_limit:40,violated:max_temp>40},max_humidity:{value:max_humidity,hard_limit:0.9,violated:max_humidity>0.9},max_co2:{value:+max_co2,hard_limit:1500,violated:+max_co2>1500}});
+      let growth=0.45+(Math.random()-0.5)*NOISE;
+      if(isImpulse) growth+=IMPULSE_SPIKE+Math.random()*0.03;
+      inboundNeighbors.forEach(function(ni){
+        impulsePositions.forEach(function(imp){
+          const dist=i-imp;
+          if(dist>=1&&dist<=WINDOW_SIZE) growth+=IMPULSE_ECHO/dist;
+        });
+      });
+      growth=Math.max(0,Math.min(1,growth));
+      const energy=200+growth*400+Math.random()*30;
+      const water=50+growth*80+Math.random()*10;
+      trials.push({
+        number:i,state:'COMPLETE',
+        datetime_start:'2026-04-17 '+(20+h).toString().padStart(2,'0')+':'+m+'0:00',
+        params:p,
+        values:[+growth.toFixed(4),+energy.toFixed(4),+water.toFixed(4)],
+        user_attrs:attrs
+      });
+    }
+    allTrials.push(trials);
+  }
+  // Detection results computed from same data
+  const detections={};
+  for(let si=0;si<NB;si++){
+    for(let ri=0;ri<NB;ri++){
+      if(si===ri) continue;
+      const sName=breeders[si].name;
+      const rName=breeders[ri].name;
+      const key=sName+'::'+rName;
+      const senderTrials=allTrials[si];
+      const receiverTrials=allTrials[ri];
+      const perObj=OBJECTIVES.map(function(_,oi){
+        const vals=receiverTrials.map(t=>t.values?t.values[oi]:null).filter(v=>v!==null);
+        const baseline=vals.filter((_,i)=>!impulsePositions.some(imp=>i>=imp&&i<=imp+WINDOW_SIZE));
+        const postImpulse=[];
+        impulsePositions.forEach(function(imp){
+          for(let w=1;w<=WINDOW_SIZE;w++){
+            if(imp+w<vals.length) postImpulse.push(vals[imp+w]);
+          }
+        });
+        const bMean=baseline.length?baseline.reduce((a,b)=>a+b,0)/baseline.length:0;
+        const bStd=baseline.length?Math.sqrt(baseline.reduce((a,v)=>a+(v-bMean)*(v-bMean),0)/baseline.length):1;
+        const sMean=postImpulse.length?postImpulse.reduce((a,b)=>a+b,0)/postImpulse.length:0;
+        const shift=sMean-bMean;
+        const snr=bStd>0?Math.abs(shift)/bStd:0;
+        return {
+          objective_index:oi,
+          detected:snr>SNR_THRESHOLD,
+          method:'impulse_stacking',
+          stacked_mean:+sMean.toFixed(3),
+          baseline_mean:+bMean.toFixed(3),
+          baseline_std:+bStd.toFixed(3),
+          shift:+shift.toFixed(3),
+          snr:+snr.toFixed(2),
+          post_impulse_samples:postImpulse.length,
+          baseline_samples:baseline.length,
+          impulses_used:impulsePositions.length
+        };
+      });
+      const bestObj=perObj.reduce((best,o)=>o.snr>best.snr?o:best,perObj[0]);
+      detections[key]={
+        detected:bestObj.snr>SNR_THRESHOLD,
+        method:'impulse_stacking',
+        impulse_count:impulsePositions.length,
+        impulses_used:impulsePositions.length,
+        window_size:WINDOW_SIZE,
+        snr_threshold:SNR_THRESHOLD,
+        best_snr:bestObj.snr,
+        best_objective:bestObj.objective_index,
+        sender_trials:senderTrials.length,
+        receiver_trials:receiverTrials.length,
+        watermark:{type:'impulse',duty_cycle:+(1/IMPULSE_PERIOD).toFixed(4),period:IMPULSE_PERIOD,direction:'random',params:[{param_name:'power_draw',amplitude:75}]},
+        per_objective:perObj
+      };
+    }
+  }
+  return {
+    config:{objectives:OBJECTIVES,guardrails:GUARDRAILS,_directions:['MAXIMIZE','MINIMIZE','MINIMIZE']},
+    breeders:breeders,
+    trials:allTrials,
+    detections:detections,
+    coupledPairs:COUPLED,
+    impulsePositions:impulsePositions,
+    params:PARAM_NAMES
+  };
+})();let overviewMode=true;
 let selectedBreeders=[];
 let lastClickedIdx=-1;
 let sortField='name';
@@ -290,8 +379,8 @@ function showDetail(){
 async function loadOverview(){
   const el=$('content');
   if(DEMO){
-    renderOverview(DEMO_BREEDERS);
-    status('demo mode — '+DEMO_BREEDERS.length+' breeders');
+    renderOverview(DEMO_DATA.breeders);
+    status('demo mode — '+DEMO_DATA.breeders.length+' breeders');
     return;
   }
   baseUrl=window.location.origin;
@@ -387,8 +476,8 @@ async function loadCrossData(ids){
     for(const id of ids){
       let config,trialList;
       if(DEMO){
-        const match=DEMO_BREEDERS.find(b=>b.id===id);
-        config={name:match?match.name:id,...DEMO_CONFIG};
+        const match=DEMO_DATA.breeders.find(b=>b.id===id);
+        config={name:match?match.name:id,...DEMO_DATA.config};
         trialList=null;
       } else {
         config=await api('/api-proxy/breeders/'+id);
@@ -449,73 +538,44 @@ async function loadCrossData(ids){
       return;
     }
     if(DEMO){
-      // Read config from controls (or defaults)
-      const cfgEl=document.getElementById('demo-cfg');
-      const cfgN=cfgEl?(+cfgEl.dataset.trials||100):100;
-      const cfgPeriod=cfgEl?(+cfgEl.dataset.period||20):20;
-      const cfgSpike=cfgEl?(+cfgEl.dataset.spike||0.30):0.30;
-      const cfgEcho=cfgEl?(+cfgEl.dataset.echo||0.15):0.15;
-      const cfgNoise=cfgEl?(+cfgEl.dataset.noise||0.04):0.04;
-      const n=cfgN;
-      const baseTime=new Date('2026-04-20T08:00:00').getTime()/1000;
-      // Only adjacent pairs are coupled (for quality generation)
-      const adj=[[0,1],[1,0],[1,2],[2,1],[2,3],[3,2],[3,4],[4,3],[4,5],[5,4]];
-      const allQ=breeders.map(()=>[]);
-      const allT=breeders.map(()=>[]);
-      const impulsePeriod=cfgPeriod;
-      const impulseTrials=[];
-      for(let t=0;t<n;t++){if(t%impulsePeriod===0&&t>0) impulseTrials.push(t);}
-      for(let t=0;t<n;t++){
-        const time=baseTime+t*900+Math.random()*200;
-        for(let b=0;b<breeders.length;b++){
-          // Flat baseline with small noise
-          let q=0.45+(Math.random()-0.5)*cfgNoise;
-          // Impulse sender: sharp spike on own impulse trials
-          if(t%impulsePeriod===0&&t>0){
-            q+=cfgSpike+Math.random()*0.03;
-          }
-          // Coupled receiver only: echo in window after neighbor's impulse
-          const neighbors=adj.filter(c=>c[1]===b).map(c=>c[0]);
-          neighbors.forEach(function(ni){
-            impulseTrials.forEach(function(imp){
-              const dist=t-imp;
-              if(dist>=1&&dist<=3){
-                q+=cfgEcho/dist;
-              }
-            });
+      // Use DEMO_DATA — single source of truth
+      breeders.length=0;
+      for(let b=0;b<DEMO_DATA.breeders.length;b++){
+        const db=DEMO_DATA.breeders[b];
+        const cfg={...DEMO_DATA.config,name:db.name};
+        const bTrials=DEMO_DATA.trials[b];
+        const qualities=bTrials.map(t=>{
+          let sum=0,cnt=0;
+          (t.values||[]).forEach((v,i)=>{
+            if(v!=null){
+              const vals=bTrials.map(tt=>tt.values?tt.values[i]:null).filter(x=>x!==null);
+              const mn=d3.min(vals),mx=d3.max(vals),rng=mx-mn||1;
+              const norm=(v-mn)/rng;
+              sum+=(cfg._directions&&cfg._directions[i]==='MINIMIZE')?1-norm:norm;
+              cnt++;
+            }
           });
-          q=Math.max(0,Math.min(1,q));
-          allQ[b].push(q);
-          allT[b].push(time);
-        }
-      }
-      breeders.forEach((b,idx)=>{
-        b.qualities=allQ[idx];
-        b.times=allT[idx];
-        b.trials=allQ[idx].map((q,i)=>{
-          const growth=q;
-          const energy=200+q*400+Math.random()*30;
-          const water=50+q*80+Math.random()*10;
-          const isImpulse=i%20===0&&i>0;
-          const attrs={};
-          if(isImpulse){
-            attrs.watermark='{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]}';
-            attrs.watermark_trial_idx=i;
-            attrs.watermark_active='true';
-          } else {
-            attrs.watermark='off';
-          }
-          // Coupled neighbors show growth spike on impulse
-          const coupledNeighbors=adj.filter(c=>c[0]===idx||c[1]===idx).map(c=>c[0]===idx?c[1]:c[0]);
-          const isPostImpulse=breeders.some((ob,oi)=>oi!==idx&&coupledNeighbors.includes(oi)&&i>0&&((i-1)%20===0||(i-2)%20===0||(i-3)%20===0));
-          const impulseGrowth=isPostImpulse?growth+0.08:growth;
-          return{number:i,state:'COMPLETE',datetime_start:new Date(allT[idx][i]*1000).toISOString(),params:{},values:[impulseGrowth,energy,water],user_attrs:attrs};
+          return cnt?sum/cnt:0;
         });
-        b.trialCount=b.trials.length;
-        b.perObjQualities=b.config.objectives.map((_,oi)=>b.trials.map(t=>t.values?t.values[oi]:null));
-      });
+        const perObjQualities=cfg.objectives.map((_,oi)=>{
+          return bTrials.map(t=>{
+            const v=t.values?t.values[oi]:null;
+            if(v===null||v===undefined) return null;
+            const vals=bTrials.map(tt=>tt.values?tt.values[oi]:null).filter(x=>x!==null);
+            const mn=d3.min(vals),mx=d3.max(vals),rng=mx-mn||1;
+            const norm=(v-mn)/rng;
+            return (cfg._directions&&cfg._directions[oi]==='MINIMIZE')?1-norm:norm;
+          });
+        });
+        const times=bTrials.map(t=>new Date(t.datetime_start).getTime()/1000);
+        breeders.push({
+          id:db.id,name:db.name,config:cfg,
+          trials:bTrials,qualities,perObjQualities,times,
+          trialCount:bTrials.length
+        });
+      }
     }
-    crossData=breeders;
+        crossData=breeders;
     wmDetections=null;
     status('cross-examining '+breeders.length+' breeders');
     renderCross();
@@ -542,38 +602,7 @@ function crossQ(t){
   return 0;
 }
 
-const DEMO_WM_DETECTIONS={
-  'microgrid-1::microgrid-2':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":4.4,"best_objective":0,"sender_trials":95,"receiver_trials":94,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.646,"baseline_mean":0.47,"baseline_std":0.04,"shift":0.176,"snr":4.4,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.577,"baseline_mean":0.435,"baseline_std":0.035,"shift":0.142,"snr":4.05,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.535,"baseline_mean":0.51,"baseline_std":0.05,"shift":0.025,"snr":0.5,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2}]},
-  'microgrid-1::microgrid-3':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.55,"best_objective":1,"sender_trials":95,"receiver_trials":101,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.48,"baseline_mean":0.48,"baseline_std":0.045,"shift":0.0,"snr":0.34,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.452,"baseline_mean":0.452,"baseline_std":0.04,"shift":0.0,"snr":0.55,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.518,"baseline_mean":0.518,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2}]},
-  'microgrid-1::microgrid-4':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.42,"best_objective":0,"sender_trials":95,"receiver_trials":108,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.48,"baseline_mean":0.48,"baseline_std":0.045,"shift":0.0,"snr":0.42,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.452,"baseline_mean":0.452,"baseline_std":0.04,"shift":0.0,"snr":0.15,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.518,"baseline_mean":0.518,"baseline_std":0.055,"shift":0.0,"snr":0.17,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2}]},
-  'microgrid-1::microgrid-5':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.5,"best_objective":0,"sender_trials":95,"receiver_trials":115,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.48,"baseline_mean":0.48,"baseline_std":0.045,"shift":0.0,"snr":0.5,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.452,"baseline_mean":0.452,"baseline_std":0.04,"shift":0.0,"snr":0.25,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.518,"baseline_mean":0.518,"baseline_std":0.055,"shift":0.0,"snr":0.29,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2}]},
-  'microgrid-1::microgrid-6':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.58,"best_objective":0,"sender_trials":95,"receiver_trials":122,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.48,"baseline_mean":0.48,"baseline_std":0.045,"shift":0.0,"snr":0.58,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.452,"baseline_mean":0.452,"baseline_std":0.04,"shift":0.0,"snr":0.35,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.518,"baseline_mean":0.518,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2}]},
-  'microgrid-2::microgrid-1':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":4.4,"best_objective":0,"sender_trials":100,"receiver_trials":87,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.666,"baseline_mean":0.49,"baseline_std":0.04,"shift":0.176,"snr":4.4,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.592,"baseline_mean":0.45,"baseline_std":0.035,"shift":0.142,"snr":4.05,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.545,"baseline_mean":0.52,"baseline_std":0.05,"shift":0.025,"snr":0.5,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2}]},
-  'microgrid-2::microgrid-3':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":5.0,"best_objective":0,"sender_trials":100,"receiver_trials":101,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.69,"baseline_mean":0.49,"baseline_std":0.04,"shift":0.2,"snr":5.0,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.616,"baseline_mean":0.45,"baseline_std":0.035,"shift":0.166,"snr":4.75,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.53,"baseline_mean":0.52,"baseline_std":0.05,"shift":0.01,"snr":0.2,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2}]},
-  'microgrid-2::microgrid-4':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.29,"best_objective":2,"sender_trials":100,"receiver_trials":108,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.49,"baseline_mean":0.49,"baseline_std":0.045,"shift":0.0,"snr":0.18,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.464,"baseline_mean":0.464,"baseline_std":0.04,"shift":0.0,"snr":0.25,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.526,"baseline_mean":0.526,"baseline_std":0.055,"shift":0.0,"snr":0.29,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2}]},
-  'microgrid-2::microgrid-5':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.35,"best_objective":1,"sender_trials":100,"receiver_trials":115,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.49,"baseline_mean":0.49,"baseline_std":0.045,"shift":0.0,"snr":0.34,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.464,"baseline_mean":0.464,"baseline_std":0.04,"shift":0.0,"snr":0.35,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.526,"baseline_mean":0.526,"baseline_std":0.055,"shift":0.0,"snr":0.17,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2}]},
-  'microgrid-2::microgrid-6':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.5,"best_objective":0,"sender_trials":100,"receiver_trials":122,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.49,"baseline_mean":0.49,"baseline_std":0.045,"shift":0.0,"snr":0.5,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.464,"baseline_mean":0.464,"baseline_std":0.04,"shift":0.0,"snr":0.45,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.526,"baseline_mean":0.526,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2}]},
-  'microgrid-3::microgrid-1':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.55,"best_objective":1,"sender_trials":105,"receiver_trials":87,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.5,"baseline_mean":0.5,"baseline_std":0.045,"shift":0.0,"snr":0.34,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.476,"baseline_mean":0.476,"baseline_std":0.04,"shift":0.0,"snr":0.55,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.534,"baseline_mean":0.534,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2}]},
-  'microgrid-3::microgrid-2':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":5.0,"best_objective":0,"sender_trials":105,"receiver_trials":94,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.71,"baseline_mean":0.51,"baseline_std":0.04,"shift":0.2,"snr":5.0,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.631,"baseline_mean":0.465,"baseline_std":0.035,"shift":0.166,"snr":4.75,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.54,"baseline_mean":0.53,"baseline_std":0.05,"shift":0.01,"snr":0.2,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2}]},
-  'microgrid-3::microgrid-4':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":5.6,"best_objective":0,"sender_trials":105,"receiver_trials":108,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.734,"baseline_mean":0.51,"baseline_std":0.04,"shift":0.224,"snr":5.6,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.656,"baseline_mean":0.465,"baseline_std":0.035,"shift":0.191,"snr":5.45,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.54,"baseline_mean":0.53,"baseline_std":0.05,"shift":0.01,"snr":0.2,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2}]},
-  'microgrid-3::microgrid-5':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.45,"best_objective":1,"sender_trials":105,"receiver_trials":115,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.5,"baseline_mean":0.5,"baseline_std":0.045,"shift":0.0,"snr":0.18,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.476,"baseline_mean":0.476,"baseline_std":0.04,"shift":0.0,"snr":0.45,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.534,"baseline_mean":0.534,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2}]},
-  'microgrid-3::microgrid-6':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.55,"best_objective":1,"sender_trials":105,"receiver_trials":122,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.5,"baseline_mean":0.5,"baseline_std":0.045,"shift":0.0,"snr":0.42,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.476,"baseline_mean":0.476,"baseline_std":0.04,"shift":0.0,"snr":0.55,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.534,"baseline_mean":0.534,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2}]},
-  'microgrid-4::microgrid-1':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.42,"best_objective":0,"sender_trials":110,"receiver_trials":87,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.51,"baseline_mean":0.51,"baseline_std":0.045,"shift":0.0,"snr":0.42,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.488,"baseline_mean":0.488,"baseline_std":0.04,"shift":0.0,"snr":0.15,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.542,"baseline_mean":0.542,"baseline_std":0.055,"shift":0.0,"snr":0.17,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2}]},
-  'microgrid-4::microgrid-2':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.29,"best_objective":2,"sender_trials":110,"receiver_trials":94,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.51,"baseline_mean":0.51,"baseline_std":0.045,"shift":0.0,"snr":0.18,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.488,"baseline_mean":0.488,"baseline_std":0.04,"shift":0.0,"snr":0.25,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.542,"baseline_mean":0.542,"baseline_std":0.055,"shift":0.0,"snr":0.29,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2}]},
-  'microgrid-4::microgrid-3':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":5.6,"best_objective":0,"sender_trials":110,"receiver_trials":101,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.754,"baseline_mean":0.53,"baseline_std":0.04,"shift":0.224,"snr":5.6,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.671,"baseline_mean":0.48,"baseline_std":0.035,"shift":0.191,"snr":5.45,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.55,"baseline_mean":0.54,"baseline_std":0.05,"shift":0.01,"snr":0.2,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2}]},
-  'microgrid-4::microgrid-5':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":6.2,"best_objective":0,"sender_trials":110,"receiver_trials":115,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.778,"baseline_mean":0.53,"baseline_std":0.04,"shift":0.248,"snr":6.2,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.695,"baseline_mean":0.48,"baseline_std":0.035,"shift":0.215,"snr":6.15,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.565,"baseline_mean":0.54,"baseline_std":0.05,"shift":0.025,"snr":0.5,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2}]},
-  'microgrid-4::microgrid-6':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.34,"best_objective":0,"sender_trials":110,"receiver_trials":122,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.51,"baseline_mean":0.51,"baseline_std":0.045,"shift":0.0,"snr":0.34,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.488,"baseline_mean":0.488,"baseline_std":0.04,"shift":0.0,"snr":0.15,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.542,"baseline_mean":0.542,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2}]},
-  'microgrid-5::microgrid-1':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.5,"best_objective":0,"sender_trials":115,"receiver_trials":87,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.52,"baseline_mean":0.52,"baseline_std":0.045,"shift":0.0,"snr":0.5,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.5,"baseline_mean":0.5,"baseline_std":0.04,"shift":0.0,"snr":0.25,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.55,"baseline_mean":0.55,"baseline_std":0.055,"shift":0.0,"snr":0.29,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2}]},
-  'microgrid-5::microgrid-2':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.35,"best_objective":1,"sender_trials":115,"receiver_trials":94,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.52,"baseline_mean":0.52,"baseline_std":0.045,"shift":0.0,"snr":0.34,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.5,"baseline_mean":0.5,"baseline_std":0.04,"shift":0.0,"snr":0.35,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.55,"baseline_mean":0.55,"baseline_std":0.055,"shift":0.0,"snr":0.17,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2}]},
-  'microgrid-5::microgrid-3':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.45,"best_objective":1,"sender_trials":115,"receiver_trials":101,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.52,"baseline_mean":0.52,"baseline_std":0.045,"shift":0.0,"snr":0.18,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.5,"baseline_mean":0.5,"baseline_std":0.04,"shift":0.0,"snr":0.45,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.55,"baseline_mean":0.55,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2}]},
-  'microgrid-5::microgrid-4':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":6.2,"best_objective":0,"sender_trials":115,"receiver_trials":108,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.798,"baseline_mean":0.55,"baseline_std":0.04,"shift":0.248,"snr":6.2,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.71,"baseline_mean":0.495,"baseline_std":0.035,"shift":0.215,"snr":6.15,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.575,"baseline_mean":0.55,"baseline_std":0.05,"shift":0.025,"snr":0.5,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2}]},
-  'microgrid-5::microgrid-6':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":6.85,"best_objective":1,"sender_trials":115,"receiver_trials":122,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.822,"baseline_mean":0.55,"baseline_std":0.04,"shift":0.272,"snr":6.8,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.735,"baseline_mean":0.495,"baseline_std":0.035,"shift":0.24,"snr":6.85,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.56,"baseline_mean":0.55,"baseline_std":0.05,"shift":0.01,"snr":0.2,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2}]},
-  'microgrid-6::microgrid-1':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.58,"best_objective":0,"sender_trials":120,"receiver_trials":87,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.53,"baseline_mean":0.53,"baseline_std":0.045,"shift":0.0,"snr":0.58,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.512,"baseline_mean":0.512,"baseline_std":0.04,"shift":0.0,"snr":0.35,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.558,"baseline_mean":0.558,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2}]},
-  'microgrid-6::microgrid-2':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.5,"best_objective":0,"sender_trials":120,"receiver_trials":94,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.53,"baseline_mean":0.53,"baseline_std":0.045,"shift":0.0,"snr":0.5,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.512,"baseline_mean":0.512,"baseline_std":0.04,"shift":0.0,"snr":0.45,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.558,"baseline_mean":0.558,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2}]},
-  'microgrid-6::microgrid-3':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.55,"best_objective":1,"sender_trials":120,"receiver_trials":101,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.53,"baseline_mean":0.53,"baseline_std":0.045,"shift":0.0,"snr":0.42,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.512,"baseline_mean":0.512,"baseline_std":0.04,"shift":0.0,"snr":0.55,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.558,"baseline_mean":0.558,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2}]},
-  'microgrid-6::microgrid-4':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.34,"best_objective":0,"sender_trials":120,"receiver_trials":108,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.53,"baseline_mean":0.53,"baseline_std":0.045,"shift":0.0,"snr":0.34,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.512,"baseline_mean":0.512,"baseline_std":0.04,"shift":0.0,"snr":0.15,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.558,"baseline_mean":0.558,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2}]},
-  'microgrid-6::microgrid-5':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":6.85,"best_objective":1,"sender_trials":120,"receiver_trials":115,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.842,"baseline_mean":0.57,"baseline_std":0.04,"shift":0.272,"snr":6.8,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.75,"baseline_mean":0.51,"baseline_std":0.035,"shift":0.24,"snr":6.85,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.57,"baseline_mean":0.56,"baseline_std":0.05,"shift":0.01,"snr":0.2,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2}]}
-};
+
 
 function addDemoPerObj(d){
   if(!d.per_objective)d.per_objective=[{objective_index:0,detected:d.detected,method:'impulse_stacking',stacked_mean:0.5,baseline_mean:0.48,baseline_std:0.04,shift:0.02,snr:d.detected?3.5:0.4,post_impulse_samples:12,baseline_samples:88,impulses_used:d.impulse_count||4}];
@@ -596,7 +625,7 @@ function addDemoPerObj(d){
   });
   return d;
 }
-  Object.values(DEMO_WM_DETECTIONS).forEach(addDemoPerObj);
+  Object.values(DEMO_DATA.detections).forEach(addDemoPerObj);
 
 async function fetchWmDetections(){
   const results={};
@@ -606,9 +635,9 @@ async function fetchWmDetections(){
       const a=crossData[i],b=crossData[j];
       const key=a.name+'::'+b.name;
       if(DEMO){
-        const dk=Object.keys(DEMO_WM_DETECTIONS).find(k=>(a.name+'::'+b.name)===k);
-        if(dk) results[key]=DEMO_WM_DETECTIONS[dk];
-        else results[key]={detected:false,method:'impulse_stacking',impulse_count:0,impulses_used:0,best_snr:0,per_objective:[]};
+        const dk=Object.keys(DEMO_DATA.detections).find(k=>(a.name+'::'+b.name)===k);
+        if(dk) results[key]=DEMO_DATA.detections[dk];
+        else{console.log('DEMO_WM miss:',key,'a.name=',a.name,'b.name=',b.name); results[key]={detected:false,method:'impulse_stacking',impulse_count:0,impulses_used:0,best_snr:0,per_objective:[]};}
       } else {
         try{
           const r=await fetch(baseUrl+'/api/watermark-detection/'+a.id+'/'+b.id);
@@ -1483,11 +1512,10 @@ function hideTip(){$('tooltip').style.display='none'}
 async function loadBreeder(){
   if(DEMO){
     const bid=$('breederId').value.trim();
-    const match=DEMO_BREEDERS.find(b=>b.id===bid);
-    breederConfig=DEMO_CONFIG;
-    breederConfig._directions=['MAXIMIZE','MINIMIZE','MINIMIZE'];
-    if(match) breederConfig.name=match.name;
-    trials=DEMO_TRIALS;
+    const match=DEMO_DATA.breeders.find(b=>b.id===bid);
+    breederConfig={...DEMO_DATA.config,name:match?match.name:bid};
+    const bIdx=DEMO_DATA.breeders.findIndex(b=>b.id===bid);
+    trials=bIdx>=0?DEMO_DATA.trials[bIdx]:[];
     renderView();
     $('loadStatus').textContent=trials.length+' demo trials loaded';
     status('demo mode');
@@ -1579,7 +1607,7 @@ function renderView(){
   let html='<span>trials: <span class="v">'+trials.length+'</span></span>';
   html+='<span>mode: '+currentMode+'</span>';
   if(wmProbesCount) html+='<span>probing: <span style="color:#3fb950">'+wmProbesCount+'</span></span>';
-  if(wmReconCount) html+='<span>reconnaissance: <span style="color:#58a6ff">'+wmReconCount+'</span></span>';
+  if(wmReconCount) html+='<span>free trials: <span style="color:#58a6ff">'+wmReconCount+'</span></span>';
   if(violations) html+='<span>violations: <span class="violation">'+violations+'</span></span>';
   html+='<span>best: <span class="best">#'+(bestI+1)+'</span></span>';
   s.innerHTML=html;
@@ -1800,7 +1828,7 @@ function renderHeatmap(){
     '<span><div class="dot" style="background:#3fb950"></div>good</span>'+
     '<span><div class="dot" style="background:#f85149"></div>bad</span>'+
     '<span><div class="dot" style="background:#30363d"></div>missing</span>'+
-    '<span><div class="dot" style="background:#1a3a5c"></div>reconnaissance</span>'+
+    '<span><div class="dot" style="background:#f0883e"></div>impulse probe</span>'+
     '<span><div class="dot" style="background:none;border:2px dashed #f85149"></div>guardrail violation</span>'+
     '<span><div class="dot" style="background:none;border:2px solid #fff"></div>best trial</span>'
   );
@@ -1825,17 +1853,21 @@ function renderHeatmap(){
     .attr('x',d=>margin.left+d.trial*cellW)
     .attr('y',d=>margin.top+d.obj*objCellH)
     .attr('width',cellW-2).attr('height',objCellH-2)
-    .attr('fill',d=>d.t.user_attrs&&d.t.user_attrs.watermark==='off'?'#1a3a5c':qColor(d.q))
+    .attr('fill',d=>{
+      const wm=d.t.user_attrs&&d.t.user_attrs.watermark;
+      const isImpulse=wm&&wm!=='off'&&typeof wm==='string'&&wm.includes('impulse');
+      if(isImpulse) return '#f0883e';
+      return qColor(d.q);
+    })
     .attr('rx',2)
     .on('mouseenter',function(event,d){
       d3.select(this).attr('stroke','#fff').attr('stroke-width',2);
       const t=d.t;
-      const isRecon=t.user_attrs&&t.user_attrs.watermark==='off';
-      let html='<b>T'+t.number+'</b> ('+t.datetime_start?.substring(11,19)+')'+(isRecon?' <span style="color:#58a6ff">[reconnaissance]</span>':'')+'<br>';
-      if(!isRecon){
-        html+='<br><b>params:</b>';
-        Object.entries(t.params).forEach(([k,v])=>{html+='<br>'+k+': '+v.toFixed(3)});
-      }
+      const wm=t.user_attrs&&t.user_attrs.watermark;
+      const isImpulse=wm&&wm!=='off'&&typeof wm==='string'&&wm.includes('impulse');
+      let html='<b>T'+t.number+'</b> ('+t.datetime_start?.substring(11,19)+')'+(isImpulse?' <span style="color:#f0883e">[impulse]</span>':'')+'<br>';
+      html+='<br><b>params:</b>';
+      Object.entries(t.params).forEach(([k,v])=>{html+='<br>'+k+': '+v.toFixed(3)});
       const gr=getGuardrailReadings(t);
       if(Object.keys(gr).length){
         html+='<br><br><b>guardrails:</b>';
@@ -1851,7 +1883,11 @@ function renderHeatmap(){
   svg.selectAll('.hm-val').data(cells.filter(d=>d.val!==null&&d.val!==undefined)).join('text')
     .attr('x',d=>margin.left+d.trial*cellW+cellW/2)
     .attr('y',d=>margin.top+d.obj*objCellH+objCellH/2+3)
-    .attr('text-anchor','middle').attr('fill',d=>d.t.user_attrs&&d.t.user_attrs.watermark==='off'?'#58a6ff':'rgba(0,0,0,0.7)')
+    .attr('text-anchor','middle').attr('fill',d=>{
+      const wm=d.t.user_attrs&&d.t.user_attrs.watermark;
+      const isImpulse=wm&&wm!=='off'&&typeof wm==='string'&&wm.includes('impulse');
+      return isImpulse?'#fff':'rgba(0,0,0,0.7)';
+    })
     .style('font','8px monospace').style('pointer-events','none')
     .text(d=>d.val.toFixed(2));
 
@@ -1930,7 +1966,7 @@ function renderHeatmap(){
 
 function renderSpider(){
   const el=d3.select('#content');
-  const allTrials=trials.filter(t=>!t.user_attrs||t.user_attrs.watermark!=='off');
+  const allTrials=trials;
   if(!allTrials.length){el.html('<div class="info">no trials with parameters</div>');return}
   const axes=breederConfig.objectives.map((o,i)=>({label:o.name,idx:i}));
   if(axes.length<3){el.html('<div class="info">need 3+ objectives for spider</div>');return}
@@ -2053,7 +2089,7 @@ function renderSpider(){
 
 function renderParallel(){
   const el=d3.select('#content');
-  const activeTrials=trials.filter(t=>!t.user_attrs||t.user_attrs.watermark!=='off');
+  const activeTrials=trials;
   if(!activeTrials.length){el.html('<div class="info">no trials with parameters</div>');return}
   const params=Object.keys(activeTrials[0].params);
   const bestI=activeTrials.reduce((bi,t,i)=>trialQuality(t)>trialQuality(activeTrials[bi])?i:bi,0);
@@ -2235,7 +2271,7 @@ function renderConvergence(){
 
 function renderTrajectory(){
   const el=d3.select('#content');
-  const activeTrials=trials.filter(t=>!t.user_attrs||t.user_attrs.watermark!=='off');
+  const activeTrials=trials;
   if(!activeTrials.length){el.html('<div class="info">no trials with parameters</div>');return}
   const params=Object.keys(activeTrials[0].params);
   if(params.length<2){el.html('<div class="info">need 2+ parameters for trajectory</div>');return}
