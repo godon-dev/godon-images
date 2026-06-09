@@ -602,6 +602,18 @@ function crossQ(t){
   return 0;
 }
 
+// Parse watermark metadata and return whether this trial is an active impulse probe.
+// The breeder stamps watermark config on every trial, but only actual impulse probes
+// have {active: true}. Free trials have the config without active, or watermark="off".
+function isActiveImpulse(t) {
+  if (!t || !t.user_attrs) return false;
+  const wm = t.user_attrs.watermark;
+  if (!wm || wm === 'off') return false;
+  let parsed = wm;
+  if (typeof wm === 'string') { try { parsed = JSON.parse(wm); } catch(e) { return false; } }
+  return parsed && parsed.active === true;
+}
+
 
 
 function addDemoPerObj(d){
@@ -1220,7 +1232,7 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
     // Shade impulse trials
     trials.forEach((t,i)=>{
       const wm=t.user_attrs&&t.user_attrs.watermark;
-      if(wm&&wm!=='off'&&typeof wm==='string'&&wm.includes('impulse')){
+      if(isActiveImpulse(t)){
         const tx=x(allTimes[i]);
         g.append('rect').attr('x',tx-2).attr('y',0).attr('width',4).attr('height',height)
           .attr('fill','rgba(240,136,62,0.15)').style('pointer-events','none');
@@ -1638,8 +1650,8 @@ function renderInterferenceView(){
     return;
   }
 
-  const wmOff=trials.filter(t=>t.user_attrs&&t.user_attrs.watermark==='off');
-  const wmOn=trials.filter(t=>t.user_attrs&&t.user_attrs.watermark&&t.user_attrs.watermark!=='off');
+  const wmOn=trials.filter(t=>isActiveImpulse(t));
+  const wmOff=trials.filter(t=>!isActiveImpulse(t));
   const pctOn=trials.length?Math.round(wmOn.length/trials.length*100):0;
   const firstWmTrial=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
   const headerWmType=firstWmTrial?(() => { try { return JSON.parse(firstWmTrial.user_attrs.watermark) } catch(e) { return {type:'on_off'} } })() : {type:'on_off'};
@@ -1733,7 +1745,7 @@ function renderInterferenceChart(parent){
         .text('impulse: '+sinParam+' (duty_cycle='+((chartWmInfo.duty_cycle||0.02)*100).toFixed(0)+'%)');
       trials.forEach((t,i)=>{
         const wm=t.user_attrs&&t.user_attrs.watermark;
-        if(wm&&wm!=='off'&&typeof wm==='string'&&wm.includes('impulse')){
+        if(isActiveImpulse(t)){
           const tx=x(i);
           g.append('rect').attr('x',tx-2).attr('y',0).attr('width',4).attr('height',height)
             .attr('fill','rgba(240,136,62,0.2)').style('pointer-events','none');
@@ -1855,7 +1867,7 @@ function renderHeatmap(){
     .attr('width',cellW-2).attr('height',objCellH-2)
     .attr('fill',d=>{
       const wm=d.t.user_attrs&&d.t.user_attrs.watermark;
-      const isImpulse=wm&&wm!=='off'&&typeof wm==='string'&&wm.includes('impulse');
+      const isImpulse=isActiveImpulse(d.t);
       if(isImpulse) return '#f0883e';
       return qColor(d.q);
     })
@@ -1864,7 +1876,7 @@ function renderHeatmap(){
       d3.select(this).attr('stroke','#fff').attr('stroke-width',2);
       const t=d.t;
       const wm=t.user_attrs&&t.user_attrs.watermark;
-      const isImpulse=wm&&wm!=='off'&&typeof wm==='string'&&wm.includes('impulse');
+      const isImpulse=isActiveImpulse(d.t);
       let html='<b>T'+t.number+'</b> ('+t.datetime_start?.substring(11,19)+')'+(isImpulse?' <span style="color:#f0883e">[impulse]</span>':'')+'<br>';
       html+='<br><b>params:</b>';
       Object.entries(t.params).forEach(([k,v])=>{html+='<br>'+k+': '+v.toFixed(3)});
@@ -1885,7 +1897,7 @@ function renderHeatmap(){
     .attr('y',d=>margin.top+d.obj*objCellH+objCellH/2+3)
     .attr('text-anchor','middle').attr('fill',d=>{
       const wm=d.t.user_attrs&&d.t.user_attrs.watermark;
-      const isImpulse=wm&&wm!=='off'&&typeof wm==='string'&&wm.includes('impulse');
+      const isImpulse=isActiveImpulse(d.t);
       return isImpulse?'#fff':'rgba(0,0,0,0.7)';
     })
     .style('font','8px monospace').style('pointer-events','none')
