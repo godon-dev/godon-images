@@ -689,10 +689,10 @@ async function renderCross(){
     if(wmType==='impulse'){
       sum.text(crossData.length+' breeders \u2014 '+wmOn+' impulse probes, '+wmOff+' free \u2014 '+detected+'/'+total+' directions detected (impulse stacking)');
     } else {
-      sum.text(crossData.length+' breeders — '+wmOn+' probing, '+wmOff+' reconnaissance — '+detected+'/'+total+' directions detected');
+      sum.text(crossData.length+' breeders — '+wmOn+' impulse probes, '+wmOff+' free trials — '+detected+'/'+total+' directions detected');
     }
   } else {
-    el.append('div').attr('class','info').style('margin-bottom','8px').text('no interference probing data — probing activates automatically when neighbors are detected');
+    el.append('div').attr('class','info').style('margin-bottom','8px').text('no interference data — impulse probing activates automatically when neighbors are detected');
   }
 
   if(crossView==='ranked') renderCrossRanked(el);
@@ -1100,12 +1100,12 @@ function renderCrossInterference(el){
 
   const anyWatermark=crossData.some(b=>b.trials.some(t=>t.user_attrs&&t.user_attrs.watermark));
   if(!anyWatermark){
-    el.append('div').attr('class','info').text('no interference probing data — probing activates automatically when neighbors are detected');
+    el.append('div').attr('class','info').text('no interference data — impulse probing activates automatically when neighbors are detected');
     return;
   }
 
   el.append('div').attr('class','info').style('margin-bottom','12px')
-    .text('interference probing overlay — per-objective quality traces with watermark modulation shading');
+    .text('interference overlay — per-objective quality traces with impulse probe shading');
 
   const sampleB=crossData.find(b=>b.trials.some(t=>t.user_attrs&&t.user_attrs.watermark));
   const allObjNames=sampleB&&sampleB.config&&sampleB.config.objectives?sampleB.config.objectives.map(o=>o.name):[];
@@ -1265,8 +1265,8 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
         const curObjName=tObjNames[objIdx]||'quality';
         html+='<br>'+curObjName+': '+(useRaw?q.toFixed(3):(q*100).toFixed(1)+'%');
         if(wmType==='on_off'){
-          if(!isOff) html+='<br><span style="color:#3fb950">probing</span>';
-          else html+='<br><span style="color:#58a6ff">reconnaissance</span>';
+          if(!isOff) html+='<br><span style="color:#f0883e">impulse probe</span>';
+          else html+='<br><span style="color:#58a6ff">free trial</span>';
         } else if((wmType==='sinusoidal'||wmType==='impulse')){
           if(wmType==='impulse'){
             html+='<br><span style="color:#f0883e">impulse probe</span>';
@@ -1308,8 +1308,8 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
     }
     legend.append('span').html('<div class="dot" style="background:#8b949e"></div>inactive');
   } else {
-    legend.append('span').html('<div class="dot" style="background:#3fb950"></div>probing');
-    legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>reconnaissance');
+    legend.append('span').html('<div class="dot" style="background:#f0883e"></div>impulse probe');
+    legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>free trial');
   }
 }
 
@@ -1599,14 +1599,14 @@ function renderView(){
   wmReconCount=_wmOff.length;
   const lastTrial=trials[trials.length-1];
   const lastWm=lastTrial&&lastTrial.user_attrs&&lastTrial.user_attrs.watermark;
-  lastMode=lastWm&&lastWm!=='off'?'probing':'active';
-  const currentMode=lastMode==='probing'?'<span style="color:#3fb950">probing</span>':'<span style="color:#c9d1d9">active</span>';
+  lastMode=lastWm&&lastWm!=='off'?'impulse':'active';
+  const currentMode=lastMode==='impulse'?'<span style="color:#f0883e">impulse</span>':'<span style="color:#c9d1d9">active</span>';
 
   const s=$('summary');
   s.style.display='block';
   let html='<span>trials: <span class="v">'+trials.length+'</span></span>';
   html+='<span>mode: '+currentMode+'</span>';
-  if(wmProbesCount) html+='<span>probing: <span style="color:#3fb950">'+wmProbesCount+'</span></span>';
+  if(wmProbesCount) html+='<span>impulse probes: <span style="color:#f0883e">'+wmProbesCount+'</span></span>';
   if(wmReconCount) html+='<span>free trials: <span style="color:#58a6ff">'+wmReconCount+'</span></span>';
   if(violations) html+='<span>violations: <span class="violation">'+violations+'</span></span>';
   html+='<span>best: <span class="best">#'+(bestI+1)+'</span></span>';
@@ -1634,7 +1634,7 @@ function renderInterferenceView(){
 
   const wmTrials=trials.filter(t=>t.user_attrs&&t.user_attrs.watermark);
   if(!wmTrials.length){
-    el.html('<div class="info">no interference probing data — watermarking activates automatically when neighbors are detected</div>');
+    el.html('<div class="info">no interference impulse data — watermarking activates automatically when neighbors are detected</div>');
     return;
   }
 
@@ -1646,14 +1646,14 @@ function renderInterferenceView(){
 
   const wrap=el.append('div').style('padding','12px').style('background','#0d1117').style('border','1px solid #21262d').style('border-radius','6px');
   wrap.append('div').style('font','bold 12px monospace').style('color','#c9d1d9').style('margin-bottom','4px')
-    .text('interference probing');
+    .text('interference impulse');
   if((headerWmType.type==='sinusoidal'||headerWmType.type==='impulse')){
     const pn=headerWmType.params&&headerWmType.params[0]?headerWmType.params[0].param_name:'';
     wrap.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','10px')
       .text('impulse probing — '+pn+' (duty_cycle='+((headerWmType.duty_cycle||0.02)*100).toFixed(0)+'%) — '+wmOn.length+' impulses / '+trials.length+' total trials');
   } else {
     wrap.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','10px')
-      .text(headerWmType.type+' pattern — '+wmOn.length+' active / '+wmOff.length+' reconnaissance / '+trials.length+' total ('+pctOn+'% probing)');
+      .text(headerWmType.type+' pattern — '+wmOn.length+' active / '+wmOff.length+' free trials / '+trials.length+' total ('+pctOn+'% impulse)');
   }
 
   renderInterferenceChart(wrap);
@@ -1755,7 +1755,7 @@ function renderInterferenceChart(parent){
       let phaseLabel='free trial';
       if(chartWmType==='on_off'){
         dotColor=isOff?'#58a6ff':'#3fb950';
-        phaseLabel=isOff?'reconnaissance':'probing';
+        phaseLabel=isOff?'free trial':'impulse probe';
       } else if(chartWmType==='impulse'){
         dotColor=isOff?'#58a6ff':'#f0883e';
         phaseLabel=isOff?'free trial':'impulse probe';
@@ -1803,9 +1803,9 @@ function renderInterferenceChart(parent){
     );
   } else {
     parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
-      '<span><div class="dot" style="background:#3fb950"></div>probing trial</span>'+
-      '<span><div class="dot" style="background:#58a6ff"></div>reconnaissance</span>'+
-      '<span><div class="dot" style="background:rgba(63,185,80,0.25)"></div>active probing window</span>'
+      '<span><div class="dot" style="background:#f0883e"></div>impulse probe trial</span>'+
+      '<span><div class="dot" style="background:#58a6ff"></div>free trial</span>'+
+      '<span><div class="dot" style="background:rgba(240,136,62,0.25)"></div>post-impulse window</span>'
     );
   }
 }
@@ -2513,7 +2513,7 @@ function renderGuardrails(){
     '<span style="color:#d29922">- - hard limit</span>'+
     '<span><div class="dot" style="background:#f85149"></div>violated</span>'+
     '<span><div class="dot" style="background:#3fb950"></div>safe</span>'+
-    '<span><div class="dot" style="background:#58a6ff;opacity:0.3"></div>reconnaissance</span>'+
+    '<span><div class="dot" style="background:#58a6ff;opacity:0.3"></div>free trial</span>'+
     '<span style="color:#8b949e">top band: violation intensity | charts: readings per trial</span>'
   );
 
