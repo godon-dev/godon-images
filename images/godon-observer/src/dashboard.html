@@ -155,7 +155,7 @@ const DEMO_TRIALS=(function(){
     const max_co2=+(1000+Math.random()*700).toFixed(0);
     const attrs={};
     if(i%20<2){
-      attrs.watermark='{"type":"multi_frequency_multi_param","periods":[17,23],"params":[{"param_name":"light_intensity","amplitude":75}]}';
+      attrs.watermark='{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"light_intensity","amplitude":75}]}';
       attrs.watermark_trial_idx=i;
     } else {
       attrs.watermark='off';
@@ -468,7 +468,7 @@ const couples=[[0,1],[0,2],[0,3],[0,4],[0,5],[1,0],[1,2],[1,3],[1,4],[1,5],[2,0]
           const isWmTrial=i%wmPeriod<2;
           const attrs={};
           if(isWmTrial){
-            attrs.watermark='{"type":"multi_frequency_multi_param","periods":['+((idx*2+1)*6+11)+','+((idx*2+2)*6+11)+'],"params":[{"param_name":"power_draw","amplitude":75}]}';
+            attrs.watermark='{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]}';
             attrs.watermark_trial_idx=i;
           } else {
             attrs.watermark='off';
@@ -492,7 +492,7 @@ const couples=[[0,1],[0,2],[0,3],[0,4],[0,5],[1,0],[1,2],[1,3],[1,4],[1,5],[2,0]
 let crossView='ranked';
 
 let wmDetections=null;
-let wmSort='magnitude';
+let wmSort='snr';
 let wmSortDir=-1;
 
 function crossTierColor(t){return t==='detected'?'#f85149':t==='not_detected'?'#3fb950':'#8b949e'}
@@ -507,55 +507,58 @@ function crossQ(t){
 }
 
 const DEMO_WM_DETECTIONS={
-  'microgrid-1::microgrid-2':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.48,best_lag:-3,p_value:0.008,watermark_trials:94,per_objective:[{objective_index:0,detected:true,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.437,phase:-3.03,snr:4.37,detected:true},best_method:'fft_rayleigh',best_magnitude:0.437,best_lag:0,p_value:0.004},{objective_index:1,detected:true,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.451,phase:-3.0,snr:4.51,detected:true},best_method:'fft_rayleigh',best_magnitude:0.451,best_lag:0,p_value:0.017},{objective_index:2,detected:false,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.01,phase:-2.97,snr:0.3,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:0,p_value:0.59}]},
-  'microgrid-1::microgrid-3':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.21,best_lag:-3,p_value:0.015,watermark_trials:94,per_objective:[{objective_index:0,detected:false,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.01,phase:-2.92,snr:0.4,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:3,p_value:0.44},{objective_index:1,detected:true,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.221,phase:-2.89,snr:2.21,detected:true},best_method:'fft_rayleigh',best_magnitude:0.221,best_lag:3,p_value:0.02},{objective_index:2,detected:false,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.01,phase:-2.86,snr:0.4,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:3,p_value:0.66}]},
-  'microgrid-1::microgrid-4':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.15,best_lag:-3,p_value:0.49,watermark_trials:94,per_objective:[{objective_index:0,detected:false,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.01,phase:-2.81,snr:0.5,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-1,p_value:0.51},{objective_index:1,detected:false,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.01,phase:-2.78,snr:0.2,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-1,p_value:0.62},{objective_index:2,detected:false,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.01,phase:-2.75,snr:0.5,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-1,p_value:0.73}]},
-  'microgrid-1::microgrid-5':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.05,best_lag:-3,p_value:0.52,watermark_trials:94,per_objective:[{objective_index:0,detected:false,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.01,phase:-2.7,snr:0.6,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:2,p_value:0.58},{objective_index:1,detected:false,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.01,phase:-2.67,snr:0.3,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:2,p_value:0.69},{objective_index:2,detected:false,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.01,phase:-2.64,snr:0.6,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:2,p_value:0.8}]},
-  'microgrid-1::microgrid-6':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-3,p_value:0.55,watermark_trials:94,per_objective:[{objective_index:0,detected:false,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.01,phase:-2.59,snr:0.7,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-2,p_value:0.65},{objective_index:1,detected:false,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.01,phase:-2.56,snr:0.4,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-2,p_value:0.76},{objective_index:2,detected:false,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.01,phase:-2.53,snr:0.7,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-2,p_value:0.87}]},
-  'microgrid-2::microgrid-1':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.42,best_lag:0,p_value:0.014,watermark_trials:83,per_objective:[{objective_index:0,detected:true,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.365,phase:-3.07,snr:3.65,detected:true},best_method:'fft_rayleigh',best_magnitude:0.365,best_lag:2,p_value:0.008},{objective_index:1,detected:true,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.378,phase:-3.04,snr:3.78,detected:true},best_method:'fft_rayleigh',best_magnitude:0.378,best_lag:2,p_value:0.021},{objective_index:2,detected:false,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.01,phase:-3.01,snr:0.3,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:2,p_value:0.55}]},
-  'microgrid-2::microgrid-3':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.48,best_lag:0,p_value:0.009,watermark_trials:83,per_objective:[{objective_index:0,detected:true,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.523,phase:-2.85,snr:5.23,detected:true},best_method:'fft_rayleigh',best_magnitude:0.523,best_lag:1,p_value:0.014},{objective_index:1,detected:true,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.538,phase:-2.82,snr:5.38,detected:true},best_method:'fft_rayleigh',best_magnitude:0.538,best_lag:1,p_value:0.027},{objective_index:2,detected:false,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.013,phase:-2.79,snr:0.5,detected:false},best_method:'fft_rayleigh',best_magnitude:0.013,best_lag:1,p_value:0.69}]},
-  'microgrid-2::microgrid-4':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.2,best_lag:0,p_value:0.016,watermark_trials:83,per_objective:[{objective_index:0,detected:false,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.01,phase:-2.74,snr:0.6,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-3,p_value:0.54},{objective_index:1,detected:true,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.166,phase:-2.71,snr:1.66,detected:true},best_method:'fft_rayleigh',best_magnitude:0.166,best_lag:-3,p_value:0.03},{objective_index:2,detected:false,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.01,phase:-2.68,snr:0.6,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-3,p_value:0.76}]},
-  'microgrid-2::microgrid-5':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.09,best_lag:0,p_value:0.63,watermark_trials:83,per_objective:[{objective_index:0,detected:false,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.01,phase:-2.63,snr:0.7,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:0,p_value:0.61},{objective_index:1,detected:false,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.01,phase:-2.6,snr:0.4,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:0,p_value:0.72},{objective_index:2,detected:false,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.01,phase:-2.57,snr:0.7,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:0,p_value:0.83}]},
-  'microgrid-2::microgrid-6':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.04,best_lag:0,p_value:0.66,watermark_trials:83,per_objective:[{objective_index:0,detected:false,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.01,phase:-2.52,snr:0.2,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:3,p_value:0.68},{objective_index:1,detected:false,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.01,phase:-2.49,snr:0.5,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:3,p_value:0.79},{objective_index:2,detected:false,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.01,phase:-2.46,snr:0.2,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:3,p_value:0.9}]},
-  'microgrid-3::microgrid-1':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.22,best_lag:3,p_value:0.008,watermark_trials:115,per_objective:[{objective_index:0,detected:false,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.01,phase:-3.0,snr:0.4,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:0,p_value:0.36},{objective_index:1,detected:true,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.213,phase:-2.97,snr:2.13,detected:true},best_method:'fft_rayleigh',best_magnitude:0.213,best_lag:0,p_value:0.028},{objective_index:2,detected:false,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.01,phase:-2.94,snr:0.4,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:0,p_value:0.58}]},
-  'microgrid-3::microgrid-2':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.42,best_lag:3,p_value:0.015,watermark_trials:115,per_objective:[{objective_index:0,detected:true,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.441,phase:-2.89,snr:4.41,detected:true},best_method:'fft_rayleigh',best_magnitude:0.441,best_lag:3,p_value:0.018},{objective_index:1,detected:true,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.454,phase:-2.86,snr:4.54,detected:true},best_method:'fft_rayleigh',best_magnitude:0.454,best_lag:3,p_value:0.031},{objective_index:2,detected:false,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.011,phase:-2.83,snr:0.5,detected:false},best_method:'fft_rayleigh',best_magnitude:0.011,best_lag:3,p_value:0.65}]},
-  'microgrid-3::microgrid-4':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.48,best_lag:3,p_value:0.01,watermark_trials:115,per_objective:[{objective_index:0,detected:true,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.418,phase:-2.67,snr:4.18,detected:true},best_method:'fft_rayleigh',best_magnitude:0.418,best_lag:2,p_value:0.024},{objective_index:1,detected:true,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.432,phase:-2.64,snr:4.32,detected:true},best_method:'fft_rayleigh',best_magnitude:0.432,best_lag:2,p_value:0.037},{objective_index:2,detected:false,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.017,phase:-2.61,snr:0.7,detected:false},best_method:'fft_rayleigh',best_magnitude:0.017,best_lag:2,p_value:0.79}]},
-  'microgrid-3::microgrid-5':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.19,best_lag:3,p_value:0.74,watermark_trials:115,per_objective:[{objective_index:0,detected:false,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.01,phase:-2.56,snr:0.2,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-2,p_value:0.64},{objective_index:1,detected:false,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.01,phase:-2.53,snr:0.5,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-2,p_value:0.75},{objective_index:2,detected:false,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.01,phase:-2.5,snr:0.2,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-2,p_value:0.86}]},
-  'microgrid-3::microgrid-6':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.13,best_lag:3,p_value:0.77,watermark_trials:115,per_objective:[{objective_index:0,detected:false,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.01,phase:-2.45,snr:0.3,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:1,p_value:0.71},{objective_index:1,detected:false,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.01,phase:-2.42,snr:0.6,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:1,p_value:0.82},{objective_index:2,detected:false,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.01,phase:-2.39,snr:0.3,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:1,p_value:0.93}]},
-  'microgrid-4::microgrid-1':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.13,best_lag:-1,p_value:0.73,watermark_trials:111,per_objective:[{objective_index:0,detected:false,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.01,phase:-2.93,snr:0.5,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-2,p_value:0.39},{objective_index:1,detected:false,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.01,phase:-2.9,snr:0.2,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-2,p_value:0.5},{objective_index:2,detected:false,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.01,phase:-2.87,snr:0.5,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-2,p_value:0.61}]},
-  'microgrid-4::microgrid-2':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.21,best_lag:-1,p_value:0.009,watermark_trials:111,per_objective:[{objective_index:0,detected:false,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.01,phase:-2.82,snr:0.6,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:1,p_value:0.46},{objective_index:1,detected:true,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.241,phase:-2.79,snr:2.41,detected:true},best_method:'fft_rayleigh',best_magnitude:0.241,best_lag:1,p_value:0.038},{objective_index:2,detected:false,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.01,phase:-2.76,snr:0.6,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:1,p_value:0.68}]},
-  'microgrid-4::microgrid-3':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.42,best_lag:-1,p_value:0.016,watermark_trials:111,per_objective:[{objective_index:0,detected:true,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.349,phase:-2.71,snr:3.49,detected:true},best_method:'fft_rayleigh',best_magnitude:0.349,best_lag:-3,p_value:0.028},{objective_index:1,detected:true,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.361,phase:-2.68,snr:3.61,detected:true},best_method:'fft_rayleigh',best_magnitude:0.361,best_lag:-3,p_value:0.041},{objective_index:2,detected:false,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.014,phase:-2.65,snr:0.7,detected:false},best_method:'fft_rayleigh',best_magnitude:0.014,best_lag:-3,p_value:0.75}]},
-  'microgrid-4::microgrid-5':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.48,best_lag:-1,p_value:0.011,watermark_trials:111,per_objective:[{objective_index:0,detected:true,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.504,phase:-2.49,snr:5.04,detected:true},best_method:'fft_rayleigh',best_magnitude:0.504,best_lag:3,p_value:0.034},{objective_index:1,detected:true,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.518,phase:-2.46,snr:5.18,detected:true},best_method:'fft_rayleigh',best_magnitude:0.518,best_lag:3,p_value:0.047},{objective_index:2,detected:false,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.021,phase:-2.43,snr:0.3,detected:false},best_method:'fft_rayleigh',best_magnitude:0.021,best_lag:3,p_value:0.89}]},
-  'microgrid-4::microgrid-6':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.18,best_lag:-1,p_value:0.018,watermark_trials:111,per_objective:[{objective_index:0,detected:false,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.01,phase:-2.38,snr:0.4,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-1,p_value:0.74},{objective_index:1,detected:true,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.214,phase:-2.35,snr:2.14,detected:true},best_method:'fft_rayleigh',best_magnitude:0.214,best_lag:-1,p_value:0.001},{objective_index:2,detected:false,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.01,phase:-2.32,snr:0.4,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-1,p_value:0.31}]},
-  'microgrid-5::microgrid-1':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.03,best_lag:2,p_value:0.84,watermark_trials:108,per_objective:[{objective_index:0,detected:false,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.01,phase:-2.86,snr:0.6,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:3,p_value:0.42},{objective_index:1,detected:false,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.01,phase:-2.83,snr:0.3,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:3,p_value:0.53},{objective_index:2,detected:false,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.01,phase:-2.8,snr:0.6,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:3,p_value:0.64}]},
-  'microgrid-5::microgrid-2':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.17,best_lag:2,p_value:0.87,watermark_trials:108,per_objective:[{objective_index:0,detected:false,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.01,phase:-2.75,snr:0.7,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-1,p_value:0.49},{objective_index:1,detected:false,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.01,phase:-2.72,snr:0.4,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-1,p_value:0.6},{objective_index:2,detected:false,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.01,phase:-2.69,snr:0.7,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-1,p_value:0.71}]},
-  'microgrid-5::microgrid-3':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.2,best_lag:2,p_value:0.4,watermark_trials:108,per_objective:[{objective_index:0,detected:false,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.01,phase:-2.64,snr:0.2,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:2,p_value:0.56},{objective_index:1,detected:false,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.01,phase:-2.61,snr:0.5,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:2,p_value:0.67},{objective_index:2,detected:false,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.01,phase:-2.58,snr:0.2,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:2,p_value:0.78}]},
-  'microgrid-5::microgrid-4':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.42,best_lag:2,p_value:0.017,watermark_trials:108,per_objective:[{objective_index:0,detected:true,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.424,phase:-2.53,snr:4.24,detected:true},best_method:'fft_rayleigh',best_magnitude:0.424,best_lag:-2,p_value:0.038},{objective_index:1,detected:true,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.437,phase:-2.5,snr:4.37,detected:true},best_method:'fft_rayleigh',best_magnitude:0.437,best_lag:-2,p_value:0.002},{objective_index:2,detected:false,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.017,phase:-2.47,snr:0.3,detected:false},best_method:'fft_rayleigh',best_magnitude:0.017,best_lag:-2,p_value:0.85}]},
-  'microgrid-5::microgrid-6':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.48,best_lag:2,p_value:0.012,watermark_trials:108,per_objective:[{objective_index:0,detected:true,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.398,phase:-2.31,snr:3.98,detected:true},best_method:'fft_rayleigh',best_magnitude:0.398,best_lag:-3,p_value:0.044},{objective_index:1,detected:true,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.413,phase:-2.28,snr:4.13,detected:true},best_method:'fft_rayleigh',best_magnitude:0.413,best_lag:-3,p_value:0.008},{objective_index:2,detected:false,aligned_trials:97,receiver_trials:97,fft:{magnitude:0.024,phase:-2.25,snr:0.5,detected:false},best_method:'fft_rayleigh',best_magnitude:0.024,best_lag:-3,p_value:0.34}]},
-  'microgrid-6::microgrid-1':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-2,p_value:0.45,watermark_trials:97,per_objective:[{objective_index:0,detected:false,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.01,phase:-2.79,snr:0.7,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:1,p_value:0.45},{objective_index:1,detected:false,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.01,phase:-2.76,snr:0.4,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:1,p_value:0.56},{objective_index:2,detected:false,aligned_trials:94,receiver_trials:94,fft:{magnitude:0.01,phase:-2.73,snr:0.7,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:1,p_value:0.67}]},
-  'microgrid-6::microgrid-2':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.02,best_lag:-2,p_value:0.48,watermark_trials:97,per_objective:[{objective_index:0,detected:false,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.01,phase:-2.68,snr:0.2,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-3,p_value:0.52},{objective_index:1,detected:false,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.01,phase:-2.65,snr:0.5,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-3,p_value:0.63},{objective_index:2,detected:false,aligned_trials:83,receiver_trials:83,fft:{magnitude:0.01,phase:-2.62,snr:0.2,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:-3,p_value:0.74}]},
-  'microgrid-6::microgrid-3':{detected:false,best_method:'fft_rayleigh',best_magnitude:0.11,best_lag:-2,p_value:0.51,watermark_trials:97,per_objective:[{objective_index:0,detected:false,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.01,phase:-2.57,snr:0.3,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:0,p_value:0.59},{objective_index:1,detected:false,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.01,phase:-2.54,snr:0.6,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:0,p_value:0.7},{objective_index:2,detected:false,aligned_trials:115,receiver_trials:115,fft:{magnitude:0.01,phase:-2.51,snr:0.3,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:0,p_value:0.81}]},
-  'microgrid-6::microgrid-4':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.19,best_lag:-2,p_value:0.011,watermark_trials:97,per_objective:[{objective_index:0,detected:false,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.01,phase:-2.46,snr:0.4,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:3,p_value:0.66},{objective_index:1,detected:true,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.211,phase:-2.43,snr:2.11,detected:true},best_method:'fft_rayleigh',best_magnitude:0.211,best_lag:3,p_value:0.009},{objective_index:2,detected:false,aligned_trials:111,receiver_trials:111,fft:{magnitude:0.01,phase:-2.4,snr:0.4,detected:false},best_method:'fft_rayleigh',best_magnitude:0.01,best_lag:3,p_value:0.88}]},
-  'microgrid-6::microgrid-5':{detected:true,best_method:'fft_rayleigh',best_magnitude:0.42,best_lag:-2,p_value:0.018,watermark_trials:97,per_objective:[{objective_index:0,detected:true,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.5,phase:-2.35,snr:5.0,detected:true},best_method:'fft_rayleigh',best_magnitude:0.5,best_lag:-1,p_value:0.048},{objective_index:1,detected:true,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.344,phase:-2.32,snr:3.44,detected:true},best_method:'fft_rayleigh',best_magnitude:0.344,best_lag:-1,p_value:0.012},{objective_index:2,detected:false,aligned_trials:108,receiver_trials:108,fft:{magnitude:0.021,phase:-2.29,snr:0.5,detected:false},best_method:'fft_rayleigh',best_magnitude:0.021,best_lag:-1,p_value:0.3}]}
+  'microgrid-1::microgrid-2':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":4.4,"best_objective":0,"sender_trials":95,"receiver_trials":94,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.646,"baseline_mean":0.47,"baseline_std":0.04,"shift":0.176,"snr":4.4,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.577,"baseline_mean":0.435,"baseline_std":0.035,"shift":0.142,"snr":4.05,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.535,"baseline_mean":0.51,"baseline_std":0.05,"shift":0.025,"snr":0.5,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2}]},
+  'microgrid-1::microgrid-3':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.55,"best_objective":1,"sender_trials":95,"receiver_trials":101,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.48,"baseline_mean":0.48,"baseline_std":0.045,"shift":0.0,"snr":0.34,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.452,"baseline_mean":0.452,"baseline_std":0.04,"shift":0.0,"snr":0.55,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.518,"baseline_mean":0.518,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2}]},
+  'microgrid-1::microgrid-4':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.42,"best_objective":0,"sender_trials":95,"receiver_trials":108,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.48,"baseline_mean":0.48,"baseline_std":0.045,"shift":0.0,"snr":0.42,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.452,"baseline_mean":0.452,"baseline_std":0.04,"shift":0.0,"snr":0.15,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.518,"baseline_mean":0.518,"baseline_std":0.055,"shift":0.0,"snr":0.17,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2}]},
+  'microgrid-1::microgrid-5':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.5,"best_objective":0,"sender_trials":95,"receiver_trials":115,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.48,"baseline_mean":0.48,"baseline_std":0.045,"shift":0.0,"snr":0.5,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.452,"baseline_mean":0.452,"baseline_std":0.04,"shift":0.0,"snr":0.25,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.518,"baseline_mean":0.518,"baseline_std":0.055,"shift":0.0,"snr":0.29,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2}]},
+  'microgrid-1::microgrid-6':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.58,"best_objective":0,"sender_trials":95,"receiver_trials":122,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.48,"baseline_mean":0.48,"baseline_std":0.045,"shift":0.0,"snr":0.58,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.452,"baseline_mean":0.452,"baseline_std":0.04,"shift":0.0,"snr":0.35,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.518,"baseline_mean":0.518,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2}]},
+  'microgrid-2::microgrid-1':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":4.4,"best_objective":0,"sender_trials":100,"receiver_trials":87,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.666,"baseline_mean":0.49,"baseline_std":0.04,"shift":0.176,"snr":4.4,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.592,"baseline_mean":0.45,"baseline_std":0.035,"shift":0.142,"snr":4.05,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.545,"baseline_mean":0.52,"baseline_std":0.05,"shift":0.025,"snr":0.5,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2}]},
+  'microgrid-2::microgrid-3':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":5.0,"best_objective":0,"sender_trials":100,"receiver_trials":101,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.69,"baseline_mean":0.49,"baseline_std":0.04,"shift":0.2,"snr":5.0,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.616,"baseline_mean":0.45,"baseline_std":0.035,"shift":0.166,"snr":4.75,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.53,"baseline_mean":0.52,"baseline_std":0.05,"shift":0.01,"snr":0.2,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2}]},
+  'microgrid-2::microgrid-4':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.29,"best_objective":2,"sender_trials":100,"receiver_trials":108,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.49,"baseline_mean":0.49,"baseline_std":0.045,"shift":0.0,"snr":0.18,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.464,"baseline_mean":0.464,"baseline_std":0.04,"shift":0.0,"snr":0.25,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.526,"baseline_mean":0.526,"baseline_std":0.055,"shift":0.0,"snr":0.29,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2}]},
+  'microgrid-2::microgrid-5':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.35,"best_objective":1,"sender_trials":100,"receiver_trials":115,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.49,"baseline_mean":0.49,"baseline_std":0.045,"shift":0.0,"snr":0.34,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.464,"baseline_mean":0.464,"baseline_std":0.04,"shift":0.0,"snr":0.35,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.526,"baseline_mean":0.526,"baseline_std":0.055,"shift":0.0,"snr":0.17,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2}]},
+  'microgrid-2::microgrid-6':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.5,"best_objective":0,"sender_trials":100,"receiver_trials":122,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.49,"baseline_mean":0.49,"baseline_std":0.045,"shift":0.0,"snr":0.5,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.464,"baseline_mean":0.464,"baseline_std":0.04,"shift":0.0,"snr":0.45,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.526,"baseline_mean":0.526,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2}]},
+  'microgrid-3::microgrid-1':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.55,"best_objective":1,"sender_trials":105,"receiver_trials":87,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.5,"baseline_mean":0.5,"baseline_std":0.045,"shift":0.0,"snr":0.34,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.476,"baseline_mean":0.476,"baseline_std":0.04,"shift":0.0,"snr":0.55,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.534,"baseline_mean":0.534,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2}]},
+  'microgrid-3::microgrid-2':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":5.0,"best_objective":0,"sender_trials":105,"receiver_trials":94,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.71,"baseline_mean":0.51,"baseline_std":0.04,"shift":0.2,"snr":5.0,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.631,"baseline_mean":0.465,"baseline_std":0.035,"shift":0.166,"snr":4.75,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.54,"baseline_mean":0.53,"baseline_std":0.05,"shift":0.01,"snr":0.2,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2}]},
+  'microgrid-3::microgrid-4':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":5.6,"best_objective":0,"sender_trials":105,"receiver_trials":108,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.734,"baseline_mean":0.51,"baseline_std":0.04,"shift":0.224,"snr":5.6,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.656,"baseline_mean":0.465,"baseline_std":0.035,"shift":0.191,"snr":5.45,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.54,"baseline_mean":0.53,"baseline_std":0.05,"shift":0.01,"snr":0.2,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2}]},
+  'microgrid-3::microgrid-5':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.45,"best_objective":1,"sender_trials":105,"receiver_trials":115,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.5,"baseline_mean":0.5,"baseline_std":0.045,"shift":0.0,"snr":0.18,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.476,"baseline_mean":0.476,"baseline_std":0.04,"shift":0.0,"snr":0.45,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.534,"baseline_mean":0.534,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2}]},
+  'microgrid-3::microgrid-6':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.55,"best_objective":1,"sender_trials":105,"receiver_trials":122,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.5,"baseline_mean":0.5,"baseline_std":0.045,"shift":0.0,"snr":0.42,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.476,"baseline_mean":0.476,"baseline_std":0.04,"shift":0.0,"snr":0.55,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.534,"baseline_mean":0.534,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2}]},
+  'microgrid-4::microgrid-1':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.42,"best_objective":0,"sender_trials":110,"receiver_trials":87,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.51,"baseline_mean":0.51,"baseline_std":0.045,"shift":0.0,"snr":0.42,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.488,"baseline_mean":0.488,"baseline_std":0.04,"shift":0.0,"snr":0.15,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.542,"baseline_mean":0.542,"baseline_std":0.055,"shift":0.0,"snr":0.17,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2}]},
+  'microgrid-4::microgrid-2':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.29,"best_objective":2,"sender_trials":110,"receiver_trials":94,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.51,"baseline_mean":0.51,"baseline_std":0.045,"shift":0.0,"snr":0.18,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.488,"baseline_mean":0.488,"baseline_std":0.04,"shift":0.0,"snr":0.25,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.542,"baseline_mean":0.542,"baseline_std":0.055,"shift":0.0,"snr":0.29,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2}]},
+  'microgrid-4::microgrid-3':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":5.6,"best_objective":0,"sender_trials":110,"receiver_trials":101,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.754,"baseline_mean":0.53,"baseline_std":0.04,"shift":0.224,"snr":5.6,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.671,"baseline_mean":0.48,"baseline_std":0.035,"shift":0.191,"snr":5.45,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.55,"baseline_mean":0.54,"baseline_std":0.05,"shift":0.01,"snr":0.2,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2}]},
+  'microgrid-4::microgrid-5':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":6.2,"best_objective":0,"sender_trials":110,"receiver_trials":115,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.778,"baseline_mean":0.53,"baseline_std":0.04,"shift":0.248,"snr":6.2,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.695,"baseline_mean":0.48,"baseline_std":0.035,"shift":0.215,"snr":6.15,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.565,"baseline_mean":0.54,"baseline_std":0.05,"shift":0.025,"snr":0.5,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2}]},
+  'microgrid-4::microgrid-6':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.34,"best_objective":0,"sender_trials":110,"receiver_trials":122,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.51,"baseline_mean":0.51,"baseline_std":0.045,"shift":0.0,"snr":0.34,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.488,"baseline_mean":0.488,"baseline_std":0.04,"shift":0.0,"snr":0.15,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.542,"baseline_mean":0.542,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2}]},
+  'microgrid-5::microgrid-1':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.5,"best_objective":0,"sender_trials":115,"receiver_trials":87,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.52,"baseline_mean":0.52,"baseline_std":0.045,"shift":0.0,"snr":0.5,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.5,"baseline_mean":0.5,"baseline_std":0.04,"shift":0.0,"snr":0.25,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.55,"baseline_mean":0.55,"baseline_std":0.055,"shift":0.0,"snr":0.29,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2}]},
+  'microgrid-5::microgrid-2':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.35,"best_objective":1,"sender_trials":115,"receiver_trials":94,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.52,"baseline_mean":0.52,"baseline_std":0.045,"shift":0.0,"snr":0.34,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.5,"baseline_mean":0.5,"baseline_std":0.04,"shift":0.0,"snr":0.35,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.55,"baseline_mean":0.55,"baseline_std":0.055,"shift":0.0,"snr":0.17,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2}]},
+  'microgrid-5::microgrid-3':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.45,"best_objective":1,"sender_trials":115,"receiver_trials":101,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.52,"baseline_mean":0.52,"baseline_std":0.045,"shift":0.0,"snr":0.18,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.5,"baseline_mean":0.5,"baseline_std":0.04,"shift":0.0,"snr":0.45,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.55,"baseline_mean":0.55,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2}]},
+  'microgrid-5::microgrid-4':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":6.2,"best_objective":0,"sender_trials":115,"receiver_trials":108,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.798,"baseline_mean":0.55,"baseline_std":0.04,"shift":0.248,"snr":6.2,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.71,"baseline_mean":0.495,"baseline_std":0.035,"shift":0.215,"snr":6.15,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.575,"baseline_mean":0.55,"baseline_std":0.05,"shift":0.025,"snr":0.5,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2}]},
+  'microgrid-5::microgrid-6':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":6.85,"best_objective":1,"sender_trials":115,"receiver_trials":122,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.822,"baseline_mean":0.55,"baseline_std":0.04,"shift":0.272,"snr":6.8,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.735,"baseline_mean":0.495,"baseline_std":0.035,"shift":0.24,"snr":6.85,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.56,"baseline_mean":0.55,"baseline_std":0.05,"shift":0.01,"snr":0.2,"post_impulse_samples":6,"baseline_samples":116,"impulses_used":2}]},
+  'microgrid-6::microgrid-1':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.58,"best_objective":0,"sender_trials":120,"receiver_trials":87,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.53,"baseline_mean":0.53,"baseline_std":0.045,"shift":0.0,"snr":0.58,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.512,"baseline_mean":0.512,"baseline_std":0.04,"shift":0.0,"snr":0.35,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.558,"baseline_mean":0.558,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":81,"impulses_used":2}]},
+  'microgrid-6::microgrid-2':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.5,"best_objective":0,"sender_trials":120,"receiver_trials":94,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.53,"baseline_mean":0.53,"baseline_std":0.045,"shift":0.0,"snr":0.5,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.512,"baseline_mean":0.512,"baseline_std":0.04,"shift":0.0,"snr":0.45,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.558,"baseline_mean":0.558,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":88,"impulses_used":2}]},
+  'microgrid-6::microgrid-3':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.55,"best_objective":1,"sender_trials":120,"receiver_trials":101,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.53,"baseline_mean":0.53,"baseline_std":0.045,"shift":0.0,"snr":0.42,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.512,"baseline_mean":0.512,"baseline_std":0.04,"shift":0.0,"snr":0.55,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.558,"baseline_mean":0.558,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2}]},
+  'microgrid-6::microgrid-4':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.34,"best_objective":0,"sender_trials":120,"receiver_trials":108,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.53,"baseline_mean":0.53,"baseline_std":0.045,"shift":0.0,"snr":0.34,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.512,"baseline_mean":0.512,"baseline_std":0.04,"shift":0.0,"snr":0.15,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.558,"baseline_mean":0.558,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2}]},
+  'microgrid-6::microgrid-5':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":6.85,"best_objective":1,"sender_trials":120,"receiver_trials":115,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.842,"baseline_mean":0.57,"baseline_std":0.04,"shift":0.272,"snr":6.8,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.75,"baseline_mean":0.51,"baseline_std":0.035,"shift":0.24,"snr":6.85,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.57,"baseline_mean":0.56,"baseline_std":0.05,"shift":0.01,"snr":0.2,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2}]}
+};
+
 };
 
 function addDemoPerObj(d){
-  if(!d.per_objective)d.per_objective=[{objective_index:0,detected:d.detected,receiver_trials:d.receiver_trials||0,aligned_trials:d.receiver_trials||0,fft:{magnitude:d.best_magnitude||0,phase:0,snr:d.best_magnitude>0.15?3:0.5,i_component:d.best_magnitude||0,detected:d.detected},best_method:'fft_rayleigh',best_magnitude:d.best_magnitude,best_lag:d.best_lag,p_value:d.p_value}];
+  if(!d.per_objective)d.per_objective=[{objective_index:0,detected:d.detected,method:'impulse_stacking',stacked_mean:0.5,baseline_mean:0.48,baseline_std:0.04,shift:0.02,snr:d.detected?3.5:0.4,post_impulse_samples:12,baseline_samples:88,impulses_used:d.impulse_count||4}];
   d.per_objective.forEach(po=>{
-    if(po.residuals)return;
-    if(!po.fft)po.fft={magnitude:po.best_magnitude||0,phase:0,snr:0.5,detected:po.detected};
-    var n=po.aligned_trials||20;
-    var det=po.detected;
-    var phase=det?(po.objective_index*1.2):(po.objective_index*2.7+0.8);
-    var sigAmp=det?2.5:0.8;
-    po.sender_signal=Array.from({length:n},function(_,i){return +(sigAmp*Math.sin(2*Math.PI*i/20+phase)).toFixed(3)});
-    if(det){
-      po.residuals=Array.from({length:n},function(_,i){return +(0.6*po.sender_signal[i]+Math.sin(i*1.7)*0.2).toFixed(3)});
-    }else{
-      po.residuals=Array.from({length:n},function(_,i){return +(Math.sin(i*3.7+po.objective_index)*0.7+Math.cos(i*2.3)*0.4).toFixed(3)});
-    }
-    var baseVal=15+po.objective_index*10;
-    po.raw_quality=Array.from({length:n},function(_,i){return +(baseVal+i*0.4+po.residuals[i]).toFixed(3)});
+    if(po.impulse_timeline)return;
+    // Build mock impulse timeline for visualization
+    var n=d.sender_trials||100;
+    var period=d.watermark&&d.watermark.period||50;
+    var impulsePositions=[];
+    for(var t=0;t<n;t+=period) impulsePositions.push(t);
+    // For each trial position, generate mock receiver values
+    var baseVal=po.baseline_mean||0.5;
+    var shift=po.shift||(po.detected?0.15:0.01);
+    po.impulse_timeline=Array.from({length:n},function(_,i){
+      var isPostImpulse=impulsePositions.some(function(p){return i>=p&&i<p+3;});
+      if(isPostImpulse) return +(baseVal+shift+(Math.random()-0.5)*0.02).toFixed(4);
+      return +(baseVal+(Math.random()-0.5)*0.04).toFixed(4);
+    });
+    po.impulse_positions=impulsePositions;
   });
   return d;
 }
@@ -571,13 +574,13 @@ async function fetchWmDetections(){
       if(DEMO){
         const dk=Object.keys(DEMO_WM_DETECTIONS).find(k=>(a.name+'::'+b.name)===k);
         if(dk) results[key]=DEMO_WM_DETECTIONS[dk];
-        else results[key]={detected:false,best_method:'fft_rayleigh',best_magnitude:0,best_lag:0,p_value:1,watermark_trials:0,receiver_trials:0,fft:{magnitude:0,phase:0,snr:0,detected:false}};
+        else results[key]={detected:false,method:'impulse_stacking',impulse_count:0,impulses_used:0,best_snr:0,per_objective:[]};
       } else {
         try{
           const r=await fetch(baseUrl+'/api/watermark-detection/'+a.id+'/'+b.id);
           results[key]=await r.json();
         }catch(e){
-          results[key]={detected:false,best_method:'\u2014',best_magnitude:0,best_lag:0,p_value:1,watermark_trials:0,receiver_trials:0,error:true};
+          results[key]={detected:false,method:'impulse_stacking',impulse_count:0,impulses_used:0,best_snr:0,error:true};
         }
       }
     }
@@ -620,8 +623,8 @@ async function renderCross(){
     const sum=el.append('div').style('margin-bottom','10px').style('font-size','10px').style('color','#6e7681');
     const sampleWm=crossData.find(b=>b.trials.some(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{')));
     const wmType=sampleWm?(() => { try { return JSON.parse(sampleWm.trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{')).user_attrs.watermark).type } catch(e) { return 'on_off' } })() : 'on_off';
-    if(wmType==='sinusoidal'){
-      sum.text(crossData.length+' breeders — '+wmOn+' watermark trials — '+detected+'/'+total+' directions detected');
+    if(wmType==='impulse'){
+      sum.text(crossData.length+' breeders \u2014 '+wmOn+' impulse probes, '+wmOff+' free \u2014 '+detected+'/'+total+' directions detected (impulse stacking)');
     } else {
       sum.text(crossData.length+' breeders — '+wmOn+' probing, '+wmOff+' reconnaissance — '+detected+'/'+total+' directions detected');
     }
@@ -650,15 +653,15 @@ function renderCrossRanked(el){
     }
   }
 
-  const maxCorr=d3.max(rows,r=>r.d.best_magnitude)||0.5;
+  const maxCorr=d3.max(rows,r=>r.d.best_snr)||0.5;
 
   const cols=[
     {key:'direction',w:'200px',field:'name'},
     {key:'verdict',w:'80px',field:'verdict'},
-    {key:'magnitude',w:'100px',field:'magnitude'},
+    {key:'snr',w:'100px',field:'snr'},
     {key:'method',w:'120px',field:'method'},
-    {key:'lag',w:'50px',field:'lag'},
-    {key:'p',w:'60px',field:'p'},
+    {key:'impulses',w:'60px',field:'impulses'},
+    {key:'shift',w:'70px',field:'shift'},
     {key:'trials',w:'70px',field:'trials'},
   ];
 
@@ -679,11 +682,11 @@ function renderCrossRanked(el){
     return items.slice().sort((a,b)=>{
       if(wmSort==='name') return wmSortDir*(a.from+a.to).localeCompare(b.from+b.to);
       if(wmSort==='verdict'){const tw=d=>d.d.detected?2:1;return wmSortDir*(tw(a)-tw(b))}
-      if(wmSort==='magnitude') return wmSortDir*(a.d.best_magnitude-b.d.best_magnitude);
-      if(wmSort==='method') return wmSortDir*(a.d.best_method||'').localeCompare(b.d.best_method||'');
-      if(wmSort==='lag') return wmSortDir*((a.d.best_lag||0)-(b.d.best_lag||0));
-      if(wmSort==='p') return wmSortDir*((a.d.p_value||1)-(b.d.p_value||1));
-      if(wmSort==='trials') return wmSortDir*((a.d.watermark_trials||0)-(b.d.watermark_trials||0));
+      if(wmSort==='snr') return wmSortDir*((a.d.best_snr||0)-(b.d.best_snr||0));
+      if(wmSort==='method') return wmSortDir*((a.d.method||'').localeCompare(b.d.method||''));
+      if(wmSort==='impulses') return wmSortDir*((a.d.impulses_used||0)-(b.d.impulses_used||0));
+      if(wmSort==='shift'){const sa=d3.mean((a.d.per_objective||[]).map(o=>Math.abs(o.shift||0)))||0;const sb=d3.mean((b.d.per_objective||[]).map(o=>Math.abs(o.shift||0)))||0;return wmSortDir*(sa-sb);}
+      if(wmSort==='trials') return wmSortDir*((a.d.impulse_count||0)-(b.d.impulse_count||0));
       return 0;
     });
   }
@@ -695,21 +698,26 @@ function renderCrossRanked(el){
       .style('font','11px monospace').style('color','#c9d1d9').style('flex-shrink','0').text(r.from+' \u2192 '+r.to);
 
     const tier=d.detected?'detected':'not_detected';
+    // SNR bar — green past threshold, red below
+    const snrVal=d.best_snr||0;
+    const snrMax=Math.max(maxCorr,snrVal,2.5);
     const bar=row.append('span').style('width','100px').style('height','6px').style('background','#21262d')
-      .style('border-radius','3px').style('overflow','hidden').style('flex-shrink','0');
+      .style('border-radius','3px').style('overflow','hidden').style('flex-shrink','0').style('position','relative');
     bar.append('span').style('display','block').style('height','100%')
-      .style('width',(d.best_magnitude/maxCorr*100)+'%').style('background',crossTierColor(tier)).style('border-radius','3px');
+      .style('width',Math.min(snrVal/snrMax*100,100)+'%').style('background',snrVal>=2.5?'#3fb950':'#f85149').style('border-radius','3px');
+    // Threshold marker
+    bar.append('span').style('position','absolute').style('left',(2.5/snrMax*100)+'%').style('top','0').style('height','100%').style('width','1px').style('background','#58a6ff').style('opacity','0.6');
 
     row.append('span').style('width','80px').style('font','9px monospace').style('color',crossTierColor(tier)).style('flex-shrink','0')
       .text(d.detected?'detected':'not detected');
     row.append('span').style('width','120px').style('font','9px monospace').style('color','#8b949e').style('flex-shrink','0')
-      .text(d.best_method||'\u2014');
-    row.append('span').style('width','50px').style('font','9px monospace').style('color','#8b949e').style('flex-shrink','0').style('text-align','center')
-      .text(d.best_lag!=null?d.best_lag:'\u2014');
-    row.append('span').style('width','60px').style('font','9px monospace').style('color',d.p_value<0.05?'#f85149':'#8b949e').style('flex-shrink','0').style('text-align','center')
-      .text(d.p_value!=null?(d.p_value<0.001?'<0.001':d.p_value.toFixed(3)):'\u2014');
+      .text(d.method||'\\u2014');
+    row.append('span').style('width','60px').style('font','9px monospace').style('color','#8b949e').style('flex-shrink','0').style('text-align','center')
+      .text((d.impulses_used||0)+'/'+(d.impulse_count||0));
+    row.append('span').style('width','70px').style('font','9px monospace').style('color',snrVal>=2.5?'#3fb950':'#8b949e').style('flex-shrink','0').style('text-align','center')
+      .text('snr '+snrVal.toFixed(1));
     row.append('span').style('width','70px').style('font','9px monospace').style('color','#6e7681').style('flex-shrink','0').style('text-align','center')
-      .text(d.watermark_trials||0);
+      .text(d.sender_trials||0);
 
     row.on('click',()=>showWmPairDetail(r));
   });
@@ -740,25 +748,25 @@ function renderCrossMatrix(el){
       const from=names[i],to=names[j];
       const d=wmDetections[from+'::'+to];
       const g=svg.append('g').style('cursor','pointer');
-      if(d&&d.watermark_trials>0){
+      if(d&&d.impulse_count>0){
         const tier=d.detected?'detected':'not_detected';
         g.append('rect').attr('x',cx+2).attr('y',cy+2).attr('width',cellSize-4).attr('height',cellSize-4)
           .attr('fill',crossTierBg(tier)).attr('rx',3).attr('stroke',crossTierColor(tier)).attr('stroke-width',1.5);
         g.append('text').attr('x',cx+cellSize/2).attr('y',cy+16).attr('text-anchor','middle')
-          .attr('fill',crossTierColor(tier)).style('font','bold 9px monospace').text(d.best_magnitude.toFixed(2));
+          .attr('fill',crossTierColor(tier)).style('font','bold 9px monospace').text((d.best_snr||0).toFixed(1));
         g.append('text').attr('x',cx+cellSize/2).attr('y',cy+30).attr('text-anchor','middle')
-          .attr('fill','#6e7681').style('font','7px monospace').text(d.best_method);
+          .attr('fill','#6e7681').style('font','7px monospace').text(d.method||'impulse_stacking');
         g.append('text').attr('x',cx+cellSize/2).attr('y',cy+42).attr('text-anchor','middle')
-          .attr('fill','#484f58').style('font','7px monospace').text('lag '+d.best_lag);
+          .attr('fill','#484f58').style('font','7px monospace').text('impulses: '+(d.impulses_used||0));
         g.append('text').attr('x',cx+cellSize/2).attr('y',cy+56).attr('text-anchor','middle')
-          .attr('fill','#484f58').style('font','7px monospace').text(d.watermark_trials+' trials');
+          .attr('fill','#484f58').style('font','7px monospace').text((d.impulse_count||0)+' impulses');
         g.on('click',()=>{const ri=crossData.findIndex(b=>b.name===from),tj=crossData.findIndex(b=>b.name===to);if(ri>=0&&tj>=0)showWmPairDetail({from,to,fromIdx:ri,toIdx:tj,key:from+'::'+to,d})});
         g.on('mouseenter',function(event){
           d3.select(this).select('rect').attr('stroke-width',2.5);
           let html='<div class="tt-title">'+from+' \u2192 '+to+'</div>';
-          html+='<div class="tt-line">magnitude: <span>'+d.best_magnitude.toFixed(3)+'</span></div>';
-          html+='<div class="tt-line">method: <span>'+d.best_method+'</span></div>';
-          html+='<div class="tt-line">lag: <span>'+d.best_lag+'</span></div>';
+          html+='<div class="tt-line">snr: <span>'+(d.best_snr||0).toFixed(1)+'</span></div>';
+          html+='<div class="tt-line">method: <span>'+(d.method||'impulse_stacking')+'</span></div>';
+          html+='<div class="tt-line">impulses: <span>'+(d.impulses_used||0)+'</span></div>';
           html+='<div class="tt-line">verdict: <span>'+(d.detected?'detected':'not detected')+'</span></div>';
           showTip(html,event.clientX,event.clientY);
         })
@@ -778,7 +786,7 @@ function renderCrossCausality(el){
   Object.entries(wmDetections||{}).forEach(([key,d])=>{
     if(!d.detected) return;
     const [from,to]=key.split('::');
-    edges.push({from,to,strength:d.best_magnitude,tier:'detected',method:d.best_method,lag:d.best_lag,d});
+    edges.push({from,to,strength:d.best_snr||0,tier:'detected',method:d.method||'impulse_stacking',lag:d.impulses_used||0,d});
   });
 
   const fromMap={};
@@ -1139,13 +1147,13 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
           .attr('stroke',s).attr('stroke-width',1).attr('stroke-dasharray','2,3').style('pointer-events','none');
       }
     });
-  } else if(wmType==='sinusoidal'){
+  } else if((wmType==='sinusoidal'||wmType==='impulse')){
     const wmInfo=wmMeta?JSON.parse(wmMeta.user_attrs.watermark):{};
     const period=wmInfo.period||20;
     const amplitude=wmInfo.amplitude||75;
     const paramName=wmInfo.param_name||'';
     g.append('text').attr('x',0).attr('y',-8).style('font','9px monospace').style('fill','#6e7681')
-      .text('watermark: sinusoidal '+paramName+' (period='+period+', amplitude='+amplitude+')');
+      .text('watermark: impulse '+paramName+' (amplitude='+amplitude+', duty_cycle='+(wmObj.duty_cycle||0.02)+')');
   }
 
   const lineQ=useRaw?objValues:perObjQ;
@@ -1164,7 +1172,7 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
     const isOff=!wm||wm==='off';
     const wmIdx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
     let dotColor;
-    if(wmType==='sinusoidal'&&wmIdx!=null){
+    if((wmType==='sinusoidal'||wmType==='impulse')&&wmIdx!=null){
       const sinVal=Math.sin(2*Math.PI*wmIdx/(wmMeta?JSON.parse(wmMeta.user_attrs.watermark).period||20:20));
       dotColor=sinVal>0.3?'#3fb950':sinVal<-0.3?'#58a6ff':'#8b949e';
     } else {
@@ -1182,7 +1190,7 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
         if(wmType==='on_off'){
           if(!isOff) html+='<br><span style="color:#3fb950">probing</span>';
           else html+='<br><span style="color:#58a6ff">reconnaissance</span>';
-        } else if(wmType==='sinusoidal'){
+        } else if((wmType==='sinusoidal'||wmType==='impulse')){
           const idx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
           const period=wmPeriod;
           const sinVal=idx!=null?Math.sin(2*Math.PI*idx/period):0;
@@ -1212,38 +1220,14 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
     .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
 
   const legend=parent.append('div').attr('class','legend').style('margin-top','4px');
-  if(wmType==='sinusoidal'){
-    legend.append('span').html('<div class="dot" style="background:#3fb950"></div>wm positive phase');
-    legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>wm negative phase');
+  if((wmType==='sinusoidal'||wmType==='impulse')){
+    legend.append('span').html('<div class="dot" style="background:#3fb950"></div>impulse probe');
+    legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>free trial');
     legend.append('span').html('<div class="dot" style="background:#8b949e"></div>inactive');
   } else {
     legend.append('span').html('<div class="dot" style="background:#3fb950"></div>probing');
     legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>reconnaissance');
   }
-}
-
-function dft(signal){
-  var N=signal.length;
-  var result=[];
-  for(var k=0;k<=N/2;k++){
-    var re=0,im=0;
-    for(var n=0;n<N;n++){
-      var angle=2*Math.PI*k*n/N;
-      re+=signal[n]*Math.cos(angle);
-      im-=signal[n]*Math.sin(angle);
-    }
-    result.push({freq:k,period:k>0?N/k:N,magnitude:Math.sqrt(re*re+im*im)/N});
-  }
-  return result;
-}
-
-function shuffleArray(arr){
-  var a=arr.slice();
-  for(var i=a.length-1;i>0;i--){
-    var j=Math.floor(Math.random()*(i+1));
-    var t=a[i];a[i]=a[j];a[j]=t;
-  }
-  return a;
 }
 
 function visPanelStyle(sel){
@@ -1255,355 +1239,118 @@ function visPanelTitle(sel,text){
   sel.append('div').style('font','bold 11px monospace').style('color','#c9d1d9').style('margin-bottom','8px').text(text);
 }
 
-function drawFftSpectrum(container,residuals,objectiveDetected,bestMagnitude){
+function drawImpulseStack(container,perObjective){
   visPanelStyle(container);
-  visPanelTitle(container,'FFT Spectrum');
-  if(!residuals||!residuals.length){container.append('div').style('color','#6e7681').style('font','10px monospace').text('no residuals data');return;}
-  var spectrum=dft(residuals);
-  var w=Math.min(900,window.innerWidth-80);
-  var m={top:30,right:20,bottom:35,left:50};
-  var cw=w-m.left-m.right;
-  var ch=200-m.top-m.bottom;
-  var svg=container.append('svg').attr('width',w).attr('height',200);
-  var g=svg.append('g').attr('transform','translate('+m.left+','+m.top+')');
-  var x=d3.scaleBand().domain(spectrum.map(function(d){return d.freq})).range([0,cw]).padding(0.15);
-  var yMax=d3.max(spectrum,function(d){return d.magnitude})||1;
-  var y=d3.scaleLinear().domain([0,yMax*1.15]).range([ch,0]);
-  g.append('g').attr('transform','translate(0,'+ch+')').call(d3.axisBottom(x).tickValues(spectrum.filter(function(_,i){return i%Math.max(1,Math.floor(spectrum.length/15))===0}).map(function(d){return d.freq})))
-    .selectAll('text').attr('fill','#6e7681').style('font','8px monospace');
-  g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.3f')))
-    .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
-  g.selectAll('.domain').attr('stroke','#21262d');
-  g.selectAll('.tick line').attr('stroke','#21262d');
-  g.append('text').attr('x',cw/2).attr('y',ch+30).style('font','9px monospace').style('fill','#6e7681').style('text-anchor','middle').text('frequency bin');
-  g.append('text').attr('x',-ch/2).attr('y',-38).attr('transform','rotate(-90)').style('font','9px monospace').style('fill','#6e7681').style('text-anchor','middle').text('magnitude');
-  var noiseFloor=d3.median(spectrum,function(d){return d.magnitude})||0;
-  g.append('line').attr('x1',0).attr('x2',cw).attr('y1',y(noiseFloor)).attr('y2',y(noiseFloor))
-    .attr('stroke','#f0883e').attr('stroke-width',1).attr('stroke-dasharray','4,3');
-  g.append('text').attr('x',cw-4).attr('y',y(noiseFloor)-4).style('font','8px monospace').style('fill','#f0883e').style('text-anchor','end').text('noise floor');
-  g.selectAll('.bar').data(spectrum).enter().append('rect')
-    .attr('x',function(d){return x(d.freq)}).attr('width',x.bandwidth())
-    .attr('y',function(d){return y(d.magnitude)}).attr('height',function(d){return ch-y(d.magnitude)})
-    .attr('fill',function(d){return d.magnitude>noiseFloor*2.5?'#3fb950':'#21262d'}).attr('rx',1);
-  var peakIdx=0,peakMag=0;
-  spectrum.forEach(function(d,i){if(i>0&&d.magnitude>peakMag){peakMag=d.magnitude;peakIdx=i;}});
-  if(peakMag>noiseFloor*1.5&&peakIdx>0){
-    var peakFreq=spectrum[peakIdx].freq;
-    var peakPeriod=spectrum[peakIdx].period;
-    g.append('line').attr('x1',x(peakFreq)+x.bandwidth()/2).attr('x2',x(peakFreq)+x.bandwidth()/2)
-      .attr('y1',0).attr('y2',ch).attr('stroke','#bc8cff').attr('stroke-width',1).attr('stroke-dasharray','3,3');
-    g.append('text').attr('x',x(peakFreq)+x.bandwidth()/2+4).attr('y',12)
-      .style('font','bold 9px monospace').style('fill','#bc8cff')
-      .text('period='+peakPeriod.toFixed(1)+' mag='+peakMag.toFixed(3));
-  }
-  var statusText=objectiveDetected?'peak detected above noise floor':'no significant peak';
-  g.append('text').attr('x',cw).attr('y',-8).style('font','9px monospace')
-    .style('fill',objectiveDetected?'#3fb950':'#6e7681').style('text-anchor','end').text(statusText);
-}
-
-function drawLockInPhasor(container,perObjective,objNames){
-  visPanelStyle(container);
-  visPanelTitle(container,'Rayleigh Phase Coherence');
-  var sz=Math.min(360,window.innerWidth-120);
-  var cx=sz/2,cy=sz/2,r=sz/2-40;
-  var svg=container.append('svg').attr('width',sz).attr('height',sz+40);
-  var g=svg.append('g').attr('transform','translate('+cx+','+cy+')');
-  g.append('circle').attr('r',r).attr('fill','none').attr('stroke','#21262d').attr('stroke-width',1);
-  g.append('circle').attr('r',r*0.5).attr('fill','none').attr('stroke','#21262d').attr('stroke-width',0.5).attr('stroke-dasharray','2,2');
-  g.append('line').attr('x1',-r-10).attr('x2',r+10).attr('y1',0).attr('y2',0).attr('stroke','#21262d').attr('stroke-width',0.5);
-  g.append('line').attr('x1',0).attr('x2',0).attr('y1',-r-10).attr('y2',r+10).attr('stroke','#21262d').attr('stroke-width',0.5);
-  g.append('text').attr('x',r+14).attr('y',4).style('font','8px monospace').style('fill','#6e7681').text('I');
-  g.append('text').attr('x',4).attr('y',-r-14).style('font','8px monospace').style('fill','#6e7681').text('Q');
-  var maxSnr=0;
-  perObjective.forEach(function(o){var f=o.fft||{};if((f.snr||0)>maxSnr)maxSnr=f.snr||0;});
-  var scale=maxSnr>0?r/maxSnr:r;
-  perObjective.forEach(function(o,idx){
-    var f=o.fft||{};
-    var snr=f.snr||0;
-    var phase=(f.phase||0);
-    var px=snr*scale*Math.cos(phase);
-    var py=-snr*scale*Math.sin(phase);
-    var isDet=o.detected;
-    var oName=objNames[o.objective_index]||('obj '+o.objective_index);
-    g.append('circle').attr('cx',px).attr('cy',py).attr('r',isDet?6:3)
-      .attr('fill',isDet?'#3fb950':'#484f58').attr('opacity',isDet?0.9:0.4);
-    if(isDet&&Math.abs(px)>2&&Math.abs(py)>2){
-      g.append('line').attr('x1',0).attr('y1',0).attr('x2',px).attr('y2',py)
-        .attr('stroke','#3fb950').attr('stroke-width',1.5).attr('opacity',0.6);
-      var mag=(f.magnitude||0).toFixed(3);
-      var snrTxt=(f.snr||0).toFixed(1);
-      var phaseDeg=(phase*180/Math.PI).toFixed(1);
-      g.append('text').attr('x',px+(px>0?8:-8)).attr('y',py+(py>0?14:-6))
-        .style('font','8px monospace').style('fill','#c9d1d9').style('text-anchor',px>0?'start':'end')
-        .text(oName+' SNR:'+snrTxt+' \u03c6:'+phaseDeg+'\u00b0');
-    }
-  });
-  var detObj=perObjective.find(function(o){return o.detected});
-  if(detObj){
-    var f=detObj.fft||{};
-    var infoText='FFT SNR='+(f.snr||0).toFixed(1)+' magnitude='+(f.magnitude||0).toFixed(3)+' phase='+((f.phase||0)*180/Math.PI).toFixed(1)+'\u00b0';
-    svg.append('text').attr('x',sz/2).attr('y',sz+30).style('font','9px monospace').style('fill','#8b949e').style('text-anchor','middle').text(infoText);
-  }
-}
-
-function drawBeforeAfter(container,rawQuality,residuals){
-  visPanelStyle(container);
-  visPanelTitle(container,'Before/After Self-Subtraction');
-  if(!rawQuality||!rawQuality.length||!residuals||!residuals.length){
-    container.append('div').style('color','#6e7681').style('font','10px monospace').text('insufficient data');return;
-  }
-  var before=dft(rawQuality);
-  var after=dft(residuals);
-  var w=Math.min(900,window.innerWidth-80);
-  var m={top:30,right:20,bottom:35,left:50};
-  var cw=w-m.left-m.right;
-  var ch=200-m.top-m.bottom;
-  var svg=container.append('svg').attr('width',w).attr('height',200);
-  var g=svg.append('g').attr('transform','translate('+m.left+','+m.top+')');
-  var allMags=before.map(function(d){return d.magnitude}).concat(after.map(function(d){return d.magnitude}));
-  var yMax=d3.max(allMags)||1;
-  var x=d3.scaleLinear().domain([0,before.length-1]).range([0,cw]);
-  var y=d3.scaleLinear().domain([0,yMax*1.15]).range([ch,0]);
-  g.append('g').attr('transform','translate(0,'+ch+')').call(d3.axisBottom(x).ticks(10))
-    .selectAll('text').attr('fill','#6e7681').style('font','8px monospace');
-  g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.3f')))
-    .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
-  g.selectAll('.domain').attr('stroke','#21262d');
-  g.selectAll('.tick line').attr('stroke','#21262d');
-  g.append('text').attr('x',cw/2).attr('y',ch+30).style('font','9px monospace').style('fill','#6e7681').style('text-anchor','middle').text('frequency bin');
-  var areaGen=d3.area().x(function(d,i){return x(i)}).y0(ch).y1(function(d){return y(d.magnitude)}).curve(d3.curveStepAfter);
-  g.append('path').datum(before).attr('d',areaGen).attr('fill','#58a6ff').attr('opacity',0.2);
-  g.append('path').datum(before).attr('d',d3.line().x(function(d,i){return x(i)}).y(function(d){return y(d.magnitude)}).curve(d3.curveStepAfter))
-    .attr('fill','none').attr('stroke','#58a6ff').attr('stroke-width',1.5);
-  g.append('path').datum(after).attr('d',areaGen).attr('fill','#3fb950').attr('opacity',0.15);
-  g.append('path').datum(after).attr('d',d3.line().x(function(d,i){return x(i)}).y(function(d){return y(d.magnitude)}).curve(d3.curveStepAfter))
-    .attr('fill','none').attr('stroke','#3fb950').attr('stroke-width',1.5);
-  var legDiv=container.append('div').attr('class','legend').style('margin-top','4px');
-  legDiv.append('span').html('<div class="dot" style="background:#58a6ff"></div>before (raw quality)');
-  legDiv.append('span').html('<div class="dot" style="background:#3fb950"></div>after (residuals)');
-  legDiv.append('span').style('color','#6e7681').style('font','10px monospace').text('difference = self-subtraction removal');
-}
-
-function drawPermutationTest(container,residuals,observedPValue){
-  visPanelStyle(container);
-  visPanelTitle(container,'Permutation Test');
-  if(!residuals||residuals.length<4){
-    container.append('div').style('color','#6e7681').style('font','10px monospace').text('insufficient residuals for permutation test');return;
-  }
-  var nShuffles=100;
-  var observedSpectrum=dft(residuals);
-  var observedMax=d3.max(observedSpectrum,function(d){return d.magnitude});
-  var shuffled=[];
-  for(var s=0;s<nShuffles;s++){
-    var shuffledSig=shuffleArray(residuals);
-    var spec=dft(shuffledSig);
-    shuffled.push(d3.max(spec,function(d){return d.magnitude}));
-  }
+  visPanelTitle(container,'Impulse Stacking — Stacked vs Baseline');
+  if(!perObjective||!perObjective.length){container.append('div').style('color','#6e7681').style('font','10px monospace').text('no per-objective data');return;}
   var w=Math.min(900,window.innerWidth-80);
   var m={top:30,right:20,bottom:35,left:60};
   var cw=w-m.left-m.right;
-  var ch=200-m.top-m.bottom;
-  var svg=container.append('svg').attr('width',w).attr('height',200);
+  var objCount=perObjective.length;
+  var ch=160;
+  var svg=container.append('svg').attr('width',w).attr('height',ch+m.top+m.bottom);
   var g=svg.append('g').attr('transform','translate('+m.left+','+m.top+')');
-  var bins=d3.bin().domain([0,d3.max(shuffled)*1.2]).thresholds(20)(shuffled);
-  var x=d3.scaleLinear().domain([bins[0].x0,bins[bins.length-1].x1]).range([0,cw]);
-  var y=d3.scaleLinear().domain([0,d3.max(bins,function(d){return d.length})*1.2]).range([ch,0]);
-  g.append('g').attr('transform','translate(0,'+ch+')').call(d3.axisBottom(x).ticks(8).tickFormat(d3.format('.3f')))
-    .selectAll('text').attr('fill','#6e7681').style('font','8px monospace');
-  g.append('g').call(d3.axisLeft(y).ticks(4))
+  var objNames=['growth_rate','energy','water'];
+  // Grouped bar chart: baseline_mean vs stacked_mean per objective
+  var allVals=perObjective.map(function(o){return o.stacked_mean||0}).concat(perObjective.map(function(o){return o.baseline_mean||0}));
+  var yMin=d3.min(allVals)*0.9;
+  var yMax=d3.max(allVals)*1.1;
+  var y=d3.scaleLinear().domain([yMin,yMax]).range([ch,0]);
+  var x=d3.scaleBand().domain(perObjective.map(function(o){return 'obj '+o.objective_index})).range([0,cw]).padding(0.3);
+  var x1=d3.scaleBand().domain(['baseline','stacked']).range([0,x.bandwidth()]).padding(0.1);
+  g.append('g').attr('transform','translate(0,'+ch+')').call(d3.axisBottom(x))
+    .selectAll('text').attr('fill','#6e7681').style('font','9px monospace');
+  g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.3f')))
     .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
   g.selectAll('.domain').attr('stroke','#21262d');
   g.selectAll('.tick line').attr('stroke','#21262d');
-  g.append('text').attr('x',cw/2).attr('y',ch+30).style('font','9px monospace').style('fill','#6e7681').style('text-anchor','middle').text('max spectral power (shuffled)');
-  g.append('text').attr('x',-ch/2).attr('y',-48).attr('transform','rotate(-90)').style('font','9px monospace').style('fill','#6e7681').style('text-anchor','middle').text('count');
-  g.selectAll('.hist-bar').data(bins).enter().append('rect')
-    .attr('x',function(d){return x(d.x0)+1}).attr('width',function(d){return Math.max(0,x(d.x1)-x(d.x0)-2)})
-    .attr('y',function(d){return y(d.length)}).attr('height',function(d){return ch-y(d.length)})
-    .attr('fill','#bc8cff').attr('opacity',0.5).attr('rx',1);
-  if(observedMax>0){
-    g.append('line').attr('x1',x(observedMax)).attr('x2',x(observedMax)).attr('y1',0).attr('y2',ch)
-      .attr('stroke','#f85149').attr('stroke-width',2);
-    g.append('text').attr('x',x(observedMax)+4).attr('y',14)
-      .style('font','bold 9px monospace').style('fill','#f85149')
-      .text('observed = '+observedMax.toFixed(3));
-  }
-  var exceedCount=shuffled.filter(function(v){return v>=observedMax}).length;
-  var permP=exceedCount/nShuffles;
-  var sigText='p \u2248 '+permP.toFixed(2)+' ('+exceedCount+'/'+nShuffles+' exceed) '+(permP<0.05?'SIGNIFICANT':'not significant');
-  svg.append('text').attr('x',w-m.right).attr('y',16).style('font','9px monospace')
-    .style('fill',permP<0.05?'#3fb950':'#8b949e').style('text-anchor','end').text(sigText);
-  if(observedPValue!=null){
-    container.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-top','4px')
-      .text('reported p-value: '+(observedPValue<0.001?'<0.001':observedPValue.toFixed(3))+' | permutation p-value: '+permP.toFixed(2));
-  }
+  // Baseline bars
+  perObjective.forEach(function(o){
+    var gx=x('obj '+o.objective_index);
+    g.append('rect').attr('x',gx+x1('baseline')).attr('width',x1.bandwidth())
+      .attr('y',y(o.baseline_mean||0)).attr('height',ch-y(o.baseline_mean||0))
+      .attr('fill','#484f58').attr('rx',2);
+    // Stacked bars
+    var det=o.detected;
+    g.append('rect').attr('x',gx+x1('stacked')).attr('width',x1.bandwidth())
+      .attr('y',y(o.stacked_mean||0)).attr('height',ch-y(o.stacked_mean||0))
+      .attr('fill',det?'#3fb950':'#f85149').attr('rx',2);
+    // SNR label
+    g.append('text').attr('x',gx+x.bandwidth()/2).attr('y',-4)
+      .style('font','bold 9px monospace').style('fill',det?'#3fb950':'#8b949e')
+      .style('text-anchor','middle').text('SNR '+(o.snr||0).toFixed(1));
+  });
+  // Threshold line at SNR 2.5 (on the value axis — show as annotation)
+  g.append('text').attr('x',cw).attr('y',-8).style('font','8px monospace')
+    .style('fill','#58a6ff').style('text-anchor','end').text('threshold: SNR >= 2.5');
+  // Legend
+  var leg=g.append('g').attr('transform','translate('+(cw-200)+','+(ch+20)+')');
+  leg.append('rect').attr('width',8).attr('height',8).attr('fill','#484f58').attr('rx',1);
+  leg.append('text').attr('x',12).attr('y',8).style('font','8px monospace').style('fill','#6e7681').text('baseline');
+  leg.append('rect').attr('x',70).attr('width',8).attr('height',8).attr('fill','#3fb950').attr('rx',1);
+  leg.append('text').attr('x',82).attr('y',8).style('font','8px monospace').style('fill','#6e7681').text('stacked (post-impulse)');
 }
 
-function showWmPairDetail(r){
-  const el=d3.select('#crossPairDetail');
-  el.html('').classed('show',true);
-  const d=r.d;
-  const hdr=el.append('div').style('display','flex').style('align-items','center').style('gap','10px').style('margin-bottom','12px');
-  const tier=d.detected?'detected':'not_detected';
-  hdr.append('h3').style('margin','0').style('font-size','12px').style('color','#c9d1d9')
-    .text(r.from+' \u2192 '+r.to+' \u2014 '+(d.detected?'detected':'not detected'));
-  hdr.append('button').attr('class','cross-close-btn').text('close').on('click',()=>{el.classed('show',false);el.html('')});
-
-  const summary=el.append('div').style('display','grid').style('grid-template-columns','1fr 1fr 1fr').style('gap','8px').style('margin-bottom','12px');
-  summary.append('div').attr('class','info')
-    .html('best method: <b style="color:#c9d1d9">'+(d.best_method||'\u2014')+'</b><br>magnitude: <b style="color:'+crossTierColor(tier)+'">'+d.best_magnitude.toFixed(3)+'</b><br>lag: '+(d.best_lag||'\u2014'));
-  summary.append('div').attr('class','info')
-    .html('p-value: <b style="color:'+(d.p_value<0.05?'#f85149':'#8b949e')+'">'+(d.p_value!=null?(d.p_value<0.001?'<0.001':d.p_value.toFixed(3)):'\u2014')+'</b><br>watermark trials: '+(d.watermark_trials||'\u2014')+'<br>objectives tested: '+(d.per_objective?d.per_objective.length:'\u2014'));
-  const receiverConfig=crossData[r.toIdx];
-  const objNames=receiverConfig&&receiverConfig.config&&receiverConfig.config.objectives?receiverConfig.config.objectives.map(o=>o.name):[];
-  const bestObj=d.per_objective?d.per_objective.reduce((a,b)=>(b.best_magnitude||0)>(a.best_magnitude||0)?b:a,{best_magnitude:0}):null;
-  const bestObjName=bestObj&&objNames[bestObj.objective_index]?objNames[bestObj.objective_index]:'obj '+(bestObj?bestObj.objective_index:'?');
-  summary.append('div').attr('class','info')
-    .html('FFT SNR: <b style="color:'+crossTierColor(tier)+'">'+(d.best_magnitude!=null?d.best_magnitude.toFixed(3):'\u2014')+'</b><br>SNR: <b style="color:'+(bestObj&&bestObj.fft&&bestObj.fft.snr>2?'#3fb950':'#8b949e')+'">'+(bestObj&&bestObj.fft?bestObj.fft.snr.toFixed(1):'\u2014')+'</b><br>phase: <b style="color:#8b949e">'+(bestObj&&bestObj.fft!=null?(bestObj.fft.phase||0).toFixed(2):'\u2014')+'</b>');
-  if(d.per_objective&&d.per_objective.length>1){
-    const objTable=el.append('div').style('margin-bottom','12px');
-    objTable.append('div').style('font','bold 10px monospace').style('color','#8b949e').style('margin-bottom','4px').text('per-objective results');
-    const objGrid=objTable.append('div').style('display','grid').style('grid-template-columns','repeat('+(d.per_objective.length)+',1fr)').style('gap','4px');
-    d.per_objective.forEach(o=>{
-      const oTier=o.detected?'detected':'not_detected';
-      const oName=objNames[o.objective_index]||('obj '+o.objective_index);
-      const li=o.fft||{};
-      objGrid.append('div').attr('class','info').style('text-align','center')
-        .html('<span style="color:#6e7681">'+oName+'</span><br><b style="color:'+crossTierColor(oTier)+'">'+(o.detected?'detected':'not detected')+'</b><br><span style="font:8px monospace;color:#6e7681">mag:'+(li.magnitude||0).toFixed(3)+' snr:'+(li.snr||0).toFixed(1)+'</span>');
-    });
+function drawImpulseTimeline(container,po,d){
+  visPanelStyle(container);
+  visPanelTitle(container,'Impulse Timeline');
+  if(!po||!po.impulse_timeline||!po.impulse_timeline.length){
+    container.append('div').style('color','#6e7681').style('font','10px monospace').text('no timeline data');
+    return;
   }
-
-  if(d.per_objective&&d.per_objective.length>0){
-    var pObj=d.per_objective;
-    var objCount=pObj.length;
-    if(objCount>1){
-      var objSel=el.append('div').style('margin-bottom','6px').style('display','flex').style('gap','4px').style('align-items','center');
-      objSel.append('span').style('font','9px monospace').style('color','#8b949e').text('show:');
-      for(var oi=0;oi<objCount;oi++){
-        (function(idx){
-          var oName=objNames[idx]||('obj '+idx);
-          var btn=objSel.append('button').style('font','9px monospace').style('padding','2px 6px')
-            .style('border','1px solid #30363d').style('border-radius','3px').style('background',idx===0?'#21262d':'transparent')
-            .style('color',idx===0?'#c9d1d9':'#6e7681').style('cursor','pointer').text(oName);
-          btn.on('click',function(){
-            objSel.selectAll('button').style('background','transparent').style('color','#6e7681');
-            d3.select(this).style('background','#21262d').style('color','#c9d1d9');
-            drawSignalChart(idx);
-          });
-        })(oi);
-      }
+  var timeline=po.impulse_timeline;
+  var positions=po.impulse_positions||[];
+  var n=timeline.length;
+  var w=Math.min(900,window.innerWidth-80);
+  var m={top:20,right:20,bottom:30,left:60};
+  var cw=w-m.left-m.right;
+  var ch=120;
+  var svg=container.append('svg').attr('width',w).attr('height',ch+m.top+m.bottom);
+  var g=svg.append('g').attr('transform','translate('+m.left+','+m.top+')');
+  var x=d3.scaleLinear().domain([0,n-1]).range([0,cw]);
+  var yExtent=d3.extent(timeline);
+  var y=d3.scaleLinear().domain([yExtent[0]*0.98,yExtent[1]*1.02]).range([ch,0]);
+  // Baseline mean line
+  var bl=po.baseline_mean||0;
+  g.append('line').attr('x1',0).attr('x2',cw).attr('y1',y(bl)).attr('y2',y(bl))
+    .attr('stroke','#484f58').attr('stroke-width',1).attr('stroke-dasharray','4,3');
+  g.append('text').attr('x',4).attr('y',y(bl)-4).style('font','7px monospace').style('fill','#484f58').text('baseline');
+  // Stacked mean line
+  var st=po.stacked_mean||0;
+  g.append('line').attr('x1',0).attr('x2',cw).attr('y1',y(st)).attr('y2',y(st))
+    .attr('stroke','#3fb950').attr('stroke-width',1).attr('stroke-dasharray','4,3');
+  g.append('text').attr('x',4).attr('y',y(st)-4).style('font','7px monospace').style('fill','#3fb950').text('stacked mean');
+  // Data line
+  var line=d3.line().x(function(d,i){return x(i)}).y(function(d){return y(d)});
+  g.append('path').datum(timeline).attr('d',line).attr('fill','none').attr('stroke','#8b949e').attr('stroke-width',1);
+  // Impulse markers
+  var postImpulseSet=new Set();
+  positions.forEach(function(p){for(var k=p;k<p+3&&k<n;k++) postImpulseSet.add(k);});
+  // Highlight post-impulse points
+  timeline.forEach(function(v,i){
+    if(postImpulseSet.has(i)){
+      g.append('circle').attr('cx',x(i)).attr('cy',y(v)).attr('r',2.5).attr('fill','#3fb950');
     }
-    var sMargin={top:20,right:50,bottom:30,left:50};
-    var sWidth=Math.min(600,window.innerWidth-160)-sMargin.left-sMargin.right;
-    var sHeight=180-sMargin.top-sMargin.bottom;
-
-    function drawSignalChart(objIdx){
-      el.select('.signal-chart-svg').remove();
-      var po=pObj[objIdx];
-      if(!po||!po.residuals||!po.residuals.length){
-        el.append('svg').attr('class','signal-chart-svg');
-        return;
-      }
-      var n=po.residuals.length;
-      var rawQ=po.raw_quality||[];
-      var sig=po.sender_signal||[];
-      var resid=po.residuals;
-      var cleaned=po.residuals;
-      var svg=el.append('svg').attr('class','signal-chart-svg')
-        .attr('width',sWidth+sMargin.left+sMargin.right).attr('height',sHeight+sMargin.top+sMargin.bottom);
-      var g=svg.append('g').attr('transform','translate('+sMargin.left+','+sMargin.top+')');
-      var x=d3.scaleLinear().domain([0,n-1]).range([0,sWidth]);
-      var rawExt=d3.extent(rawQ.length?rawQ:cleaned);
-      var rawPad=(rawExt[1]-rawExt[0])*0.1||0.5;
-      var yL=d3.scaleLinear().domain([rawExt[0]-rawPad,rawExt[1]+rawPad]).range([sHeight,0]);
-      var sigAll=[].concat(cleaned,sig).filter(function(v){return v!=null});
-      var sigExt=d3.extent(sigAll.length?sigAll:[-1,1]);
-      var sigPad=(sigExt[1]-sigExt[0])*0.1||0.5;
-      var yR=d3.scaleLinear().domain([sigExt[0]-sigPad,sigExt[1]+sigPad]).range([sHeight,0]);
-      g.append('g').attr('transform','translate(0,'+sHeight+')').call(d3.axisBottom(x).ticks(5))
-        .selectAll('text').attr('fill','#6e7681').style('font','9px monospace');
-      g.append('g').call(d3.axisLeft(yL).ticks(5).tickFormat(d3.format('.1f')))
-        .selectAll('text').attr('fill','#58a6ff').style('font','9px monospace');
-      g.append('g').attr('transform','translate('+sWidth+',0)').call(d3.axisRight(yR).ticks(5).tickFormat(d3.format('.2f')))
-        .selectAll('text').attr('fill','#f0883e').style('font','9px monospace');
-      g.selectAll('.domain').attr('stroke','#30363d');
-      g.selectAll('.tick line').attr('stroke','#30363d');
-      var oName=objNames[objIdx]||('obj '+objIdx);
-      g.append('text').attr('x',0).attr('y',-6).style('font','9px monospace').style('fill','#8b949e').text(oName+' \u2014 signal analysis');
-      if(rawQ.length){
-        g.append('path').datum(rawQ).attr('d',d3.line().x(function(_,i){return x(i)}).y(function(d){return yL(d)}).curve(d3.curveMonotoneX))
-          .attr('fill','none').attr('stroke','#58a6ff').attr('stroke-width',1.5);
-      }
-      g.append('path').datum(cleaned).attr('d',d3.line().x(function(_,i){return x(i)}).y(function(d){return yR(d)}).curve(d3.curveMonotoneX))
-        .attr('fill','none').attr('stroke','#f0883e').attr('stroke-width',1.5);
-      if(sig.length){
-        g.append('path').datum(sig).attr('d',d3.line().x(function(_,i){return x(i)}).y(function(d){return yR(d)}).curve(d3.curveMonotoneX))
-          .attr('fill','none').attr('stroke','#f85149').attr('stroke-width',1).attr('stroke-dasharray','6,3');
-      }
-    }
-    drawSignalChart(0);
-    var leg2=el.append('div').attr('class','legend').style('margin-top','6px');
-    leg2.append('span').html('<div class="dot" style="background:#58a6ff"></div>raw quality');
-    leg2.append('span').html('<div class="dot" style="background:#f0883e"></div>self-subtracted');
-    leg2.append('span').html('<div class="dot" style="background:#f85149"></div>sender signal');
-  }
-
-  /* ─── Interference Visualization Panels ─── */
-  if(d.per_objective&&d.per_objective.length>0){
-    /* Objective selector for vis panels (must come before the container) */
-    if(d.per_objective.length>1){
-      var visSel=el.append('div').style('margin-bottom','6px').style('display','flex').style('gap','4px').style('align-items','center');
-      visSel.append('span').style('font','9px monospace').style('color','#8b949e').text('vis obj:');
-    }
-    var visObjContainer=el.append('div').attr('id','visObjPanels');
-
-    function renderVisPanels(oi){
-      visObjContainer.html('');
-      var po=d.per_objective[oi];
-      if(!po){return;}
-
-      /* 1. FFT Spectrum */
-      var fftPanel=visObjContainer.append('div');
-      drawFftSpectrum(fftPanel,po.residuals,po.detected,po.best_magnitude);
-
-      /* 2. Rayleigh Phase Coherence (shows all objectives) */
-      var phasorPanel=visObjContainer.append('div');
-      drawLockInPhasor(phasorPanel,d.per_objective,objNames);
-
-      /* 3. Before/After Self-Subtraction */
-      var baPanel=visObjContainer.append('div');
-      drawBeforeAfter(baPanel,po.raw_quality,po.residuals);
-
-      /* 4. Permutation Test */
-      var permPanel=visObjContainer.append('div');
-      drawPermutationTest(permPanel,po.residuals,po.p_value);
-    }
-
-    /* Wire up selector buttons */
-    if(d.per_objective.length>1&&visSel){
-      for(var vi=0;vi<d.per_objective.length;vi++){
-        (function(idx){
-          var vName=objNames[idx]||('obj '+idx);
-          var btn=visSel.append('button').style('font','9px monospace').style('padding','2px 6px')
-            .style('border','1px solid #30363d').style('border-radius','3px')
-            .style('background',idx===0?'#21262d':'transparent')
-            .style('color',idx===0?'#c9d1d9':'#6e7681').style('cursor','pointer').text(vName);
-          btn.on('click',function(){
-            visSel.selectAll('button').style('background','transparent').style('color','#6e7681');
-            d3.select(this).style('background','#21262d').style('color','#c9d1d9');
-            renderVisPanels(idx);
-          });
-        })(vi);
-      }
-    }
-
-    renderVisPanels(0);
-  }
-
-  document.getElementById('crossPairDetail').scrollIntoView({behavior:'smooth',block:'start'});
+  });
+  // Impulse markers at top
+  positions.forEach(function(p){
+    g.append('line').attr('x1',x(p)).attr('x2',x(p)).attr('y1',0).attr('y2',ch)
+      .attr('stroke','#f0883e').attr('stroke-width',1).attr('stroke-dasharray','2,2').attr('opacity',0.6);
+    g.append('text').attr('x',x(p)+2).attr('y',-2).style('font','7px monospace').style('fill','#f0883e').text('\u26A1');
+  });
+  // Axes
+  g.append('g').attr('transform','translate(0,'+ch+')').call(d3.axisBottom(x).ticks(10))
+    .selectAll('text').attr('fill','#6e7681').style('font','8px monospace');
+  g.append('g').call(d3.axisLeft(y).ticks(4).tickFormat(d3.format('.3f')))
+    .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
+  g.selectAll('.domain').attr('stroke','#21262d');
+  g.selectAll('.tick line').attr('stroke','#21262d');
+  g.append('text').attr('x',cw/2).attr('y',ch+25).style('font','9px monospace').style('fill','#6e7681').style('text-anchor','middle').text('trial number');
 }
 
 
-const PR=18,PW=4,PI_R=PR-PW;
+
+
 function drawOrb(parent,trialCount){
   const sz=(PR+2)*2;
   const svg=parent.append('svg').attr('width',sz).attr('height',sz)
@@ -1818,9 +1565,9 @@ function renderInterferenceView(){
   const wrap=el.append('div').style('padding','12px').style('background','#0d1117').style('border','1px solid #21262d').style('border-radius','6px');
   wrap.append('div').style('font','bold 12px monospace').style('color','#c9d1d9').style('margin-bottom','4px')
     .text('interference probing');
-  if(headerWmType.type==='sinusoidal'){
+  if((headerWmType.type==='sinusoidal'||headerWmType.type==='impulse')){
     wrap.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','10px')
-      .text('sinusoidal pattern — '+headerWmType.param_name+' (period='+headerWmType.period+', amplitude='+headerWmType.amplitude+') — '+wmOn.length+' watermark trials / '+trials.length+' total');
+      .text('impulse probing — '+headerWmType.param_name+' (duty_cycle='+((headerWmType.duty_cycle||0.02)*100).toFixed(0)+'%, amplitude='+headerWmType.amplitude+') — '+wmOn.length+' impulses / '+trials.length+' total trials');
   } else {
     wrap.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','10px')
       .text(headerWmType.type+' pattern — '+wmOn.length+' active / '+wmOff.length+' reconnaissance / '+trials.length+' total ('+pctOn+'% probing)');
@@ -1896,11 +1643,11 @@ function renderInterferenceChart(parent){
           }
         }
       });
-    } else if(chartWmType==='sinusoidal'){
+    } else if(chartWmType==='sinusoidal'||chartWmType==='impulse'){
       const sinPeriod=chartWmPeriod;
       const sinParam=chartWmInfo.param_name||'';
       g.append('text').attr('x',60).attr('y',-6).style('font','8px monospace').style('fill','#484f58')
-        .text('sinusoidal: '+sinParam+' (period='+sinPeriod+')');
+        .text('impulse: '+sinParam+' (duty_cycle=2%)');
     }
 
     const lineData=allVals.map((v,i)=>({x:i,y:v}));
@@ -1918,12 +1665,12 @@ function renderInterferenceChart(parent){
       if(chartWmType==='on_off'){
         dotColor=isOff?'#58a6ff':'#3fb950';
         phaseLabel=isOff?'reconnaissance':'probing';
-      } else if(chartWmType==='sinusoidal'){
+      } else if(chartWmType==='sinusoidal'||chartWmType==='impulse'){
         const idx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
         if(idx!=null){
           const sinVal=Math.sin(2*Math.PI*idx/chartWmPeriod);
           dotColor=sinVal>0.3?'#3fb950':sinVal<-0.3?'#58a6ff':'#8b949e';
-          phaseLabel='watermark pattern';
+          phaseLabel='impulse probe';
         }
       }
       g.append('circle').attr('cx',x(i)).attr('cy',y(v)).attr('r',2.5)
@@ -1954,10 +1701,10 @@ function renderInterferenceChart(parent){
 
   const firstWm2=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
   const legendWmType=firstWm2?(() => { try { return JSON.parse(firstWm2.user_attrs.watermark).type } catch(e) { return 'on_off' } })() : 'on_off';
-  if(legendWmType==='sinusoidal'){
+  if((legendWmType==='sinusoidal'||legendWmType==='impulse')){
     parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
-      '<span><div class="dot" style="background:#3fb950"></div>wm positive phase</span>'+
-      '<span><div class="dot" style="background:#58a6ff"></div>wm negative phase</span>'+
+      '<span><div class="dot" style="background:#3fb950"></div>impulse probe</span>'+
+      '<span><div class="dot" style="background:#58a6ff"></div>free trial</span>'+
       '<span><div class="dot" style="background:#8b949e"></div>inactive</span>'
     );
   } else {
