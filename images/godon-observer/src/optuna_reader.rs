@@ -280,6 +280,24 @@ impl OptunaReader {
     /// 6. If SNR > threshold, coupling detected
     ///
     /// SNR improves as sqrt(N_impulses). With 4 impulses: 2x gain. With 20: 4.5x.
+    pub async fn get_active_breeders(&self) -> Result<Vec<serde_json::Value>, Error> {
+        let client = self.connect("yugabyte").await?;
+        let rows = client
+            .query(
+                "SELECT study_name FROM studies ORDER BY study_name",
+                &[],
+            )
+            .await?;
+        let mut result = Vec::new();
+        for row in &rows {
+            let study_name: String = row.get(0);
+            result.push(serde_json::json!({
+                "study_name": study_name,
+            }));
+        }
+        Ok(result)
+    }
+
     pub async fn detect_watermark_coupling(
         &self,
         sender_id: &str,

@@ -124,6 +124,15 @@ nav button:hover{color:#c9d1d9}
 <button data-view="interference">interference</button>
 </nav>
 <div class="summary" id="summary"></div>
+<div id="demo-cfg" style="display:none;background:#161b22;border:1px solid #30363d;border-radius:6px;padding:8px 12px;margin-bottom:8px;font:9px monospace;color:#8b949e" data-trials="100" data-period="20" data-spike="0.30" data-echo="0.15" data-noise="0.04">
+  <span style="color:#c9d1d9;font-weight:bold">impulse config</span>&nbsp;
+  trials <input id="cfg-trials" type="number" value="100" min="20" max="500" style="width:50px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:3px;padding:1px 4px;font:9px monospace">
+  period <input id="cfg-period" type="number" value="20" min="5" max="100" style="width:40px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:3px;padding:1px 4px;font:9px monospace">
+  spike <input id="cfg-spike" type="number" value="0.30" min="0.05" max="0.50" step="0.05" style="width:45px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:3px;padding:1px 4px;font:9px monospace">
+  echo <input id="cfg-echo" type="number" value="0.15" min="0.00" max="0.40" step="0.05" style="width:40px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:3px;padding:1px 4px;font:9px monospace">
+  noise <input id="cfg-noise" type="number" value="0.04" min="0.01" max="0.20" step="0.01" style="width:40px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:3px;padding:1px 4px;font:9px monospace">
+  <button id="cfg-apply" style="background:#21262d;border:1px solid #30363d;color:#58a6ff;border-radius:3px;padding:1px 8px;font:9px monospace;cursor:pointer">apply</button>
+</div>
 <div class="content" id="content"></div>
 <div class="tooltip" id="tooltip"></div>
 <div class="status"><span id="statusL">ready</span><span id="statusR"></span></div>
@@ -154,7 +163,7 @@ const DEMO_TRIALS=(function(){
     const max_humidity=+(0.78+Math.random()*0.2).toFixed(3);
     const max_co2=+(1000+Math.random()*700).toFixed(0);
     const attrs={};
-    const isImpulse=i%50===0;
+    const isImpulse=i%20===0&&i>0;
     if(isImpulse){
       attrs.watermark='{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"light_intensity","amplitude":75}]}';
       attrs.watermark_trial_idx=i;
@@ -440,23 +449,30 @@ async function loadCrossData(ids){
       return;
     }
     if(DEMO){
-      const n=100;
+      // Read config from controls (or defaults)
+      const cfgEl=document.getElementById('demo-cfg');
+      const cfgN=cfgEl?(+cfgEl.dataset.trials||100):100;
+      const cfgPeriod=cfgEl?(+cfgEl.dataset.period||20):20;
+      const cfgSpike=cfgEl?(+cfgEl.dataset.spike||0.30):0.30;
+      const cfgEcho=cfgEl?(+cfgEl.dataset.echo||0.15):0.15;
+      const cfgNoise=cfgEl?(+cfgEl.dataset.noise||0.04):0.04;
+      const n=cfgN;
       const baseTime=new Date('2026-04-20T08:00:00').getTime()/1000;
       // Only adjacent pairs are coupled (for quality generation)
       const adj=[[0,1],[1,0],[1,2],[2,1],[2,3],[3,2],[3,4],[4,3],[4,5],[5,4]];
       const allQ=breeders.map(()=>[]);
       const allT=breeders.map(()=>[]);
-      const impulsePeriod=20;
+      const impulsePeriod=cfgPeriod;
       const impulseTrials=[];
       for(let t=0;t<n;t++){if(t%impulsePeriod===0&&t>0) impulseTrials.push(t);}
       for(let t=0;t<n;t++){
         const time=baseTime+t*900+Math.random()*200;
         for(let b=0;b<breeders.length;b++){
           // Flat baseline with small noise
-          let q=0.45+(Math.random()-0.5)*0.04;
+          let q=0.45+(Math.random()-0.5)*cfgNoise;
           // Impulse sender: sharp spike on own impulse trials
           if(t%impulsePeriod===0&&t>0){
-            q+=0.30+Math.random()*0.03;
+            q+=cfgSpike+Math.random()*0.03;
           }
           // Coupled receiver only: echo in window after neighbor's impulse
           const neighbors=adj.filter(c=>c[1]===b).map(c=>c[0]);
@@ -464,7 +480,7 @@ async function loadCrossData(ids){
             impulseTrials.forEach(function(imp){
               const dist=t-imp;
               if(dist>=1&&dist<=3){
-                q+=0.15/dist;
+                q+=cfgEcho/dist;
               }
             });
           });
@@ -1604,8 +1620,9 @@ function renderInterferenceView(){
   wrap.append('div').style('font','bold 12px monospace').style('color','#c9d1d9').style('margin-bottom','4px')
     .text('interference probing');
   if((headerWmType.type==='sinusoidal'||headerWmType.type==='impulse')){
+    const pn=headerWmType.params&&headerWmType.params[0]?headerWmType.params[0].param_name:'';
     wrap.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','10px')
-      .text('impulse probing — '+headerWmType.param_name+' (duty_cycle='+((headerWmType.duty_cycle||0.02)*100).toFixed(0)+'%, amplitude='+headerWmType.amplitude+') — '+wmOn.length+' impulses / '+trials.length+' total trials');
+      .text('impulse probing — '+pn+' (duty_cycle='+((headerWmType.duty_cycle||0.02)*100).toFixed(0)+'%) — '+wmOn.length+' impulses / '+trials.length+' total trials');
   } else {
     wrap.append('div').style('font','9px monospace').style('color','#6e7681').style('margin-bottom','10px')
       .text(headerWmType.type+' pattern — '+wmOn.length+' active / '+wmOff.length+' reconnaissance / '+trials.length+' total ('+pctOn+'% probing)');
@@ -1682,10 +1699,18 @@ function renderInterferenceChart(parent){
         }
       });
     } else if(chartWmType==='sinusoidal'||chartWmType==='impulse'){
-      const sinPeriod=chartWmPeriod;
-      const sinParam=chartWmInfo.param_name||'';
+      // Shade impulse trial positions
+      const sinParam=chartWmInfo.params&&chartWmInfo.params[0]?chartWmInfo.params[0].param_name:'';
       g.append('text').attr('x',60).attr('y',-6).style('font','8px monospace').style('fill','#484f58')
-        .text('impulse: '+sinParam+' (duty_cycle=2%)');
+        .text('impulse: '+sinParam+' (duty_cycle='+((chartWmInfo.duty_cycle||0.02)*100).toFixed(0)+'%)');
+      trials.forEach((t,i)=>{
+        const wm=t.user_attrs&&t.user_attrs.watermark;
+        if(wm&&wm!=='off'&&typeof wm==='string'&&wm.includes('impulse')){
+          const tx=x(i);
+          g.append('rect').attr('x',tx-2).attr('y',0).attr('width',4).attr('height',height)
+            .attr('fill','rgba(240,136,62,0.2)').style('pointer-events','none');
+        }
+      });
     }
 
     const lineData=allVals.map((v,i)=>({x:i,y:v}));
@@ -1699,16 +1724,19 @@ function renderInterferenceChart(parent){
       const wm=t.user_attrs&&t.user_attrs.watermark;
       const isOff=!wm||wm==='off';
       let dotColor='#58a6ff';
-      let phaseLabel='watermark active';
+      let phaseLabel='free trial';
       if(chartWmType==='on_off'){
         dotColor=isOff?'#58a6ff':'#3fb950';
         phaseLabel=isOff?'reconnaissance':'probing';
-      } else if(chartWmType==='sinusoidal'||chartWmType==='impulse'){
+      } else if(chartWmType==='impulse'){
+        dotColor=isOff?'#58a6ff':'#f0883e';
+        phaseLabel=isOff?'free trial':'impulse probe';
+      } else if(chartWmType==='sinusoidal'){
         const idx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
         if(idx!=null){
           const sinVal=Math.sin(2*Math.PI*idx/chartWmPeriod);
           dotColor=sinVal>0.3?'#3fb950':sinVal<-0.3?'#58a6ff':'#8b949e';
-          phaseLabel='impulse probe';
+          phaseLabel='watermark pattern';
         }
       }
       g.append('circle').attr('cx',x(i)).attr('cy',y(v)).attr('r',2.5)
