@@ -154,18 +154,25 @@ const DEMO_TRIALS=(function(){
     const max_humidity=+(0.78+Math.random()*0.2).toFixed(3);
     const max_co2=+(1000+Math.random()*700).toFixed(0);
     const attrs={};
-    if(i%20<2){
+    const isImpulse=i%50===0;
+    if(isImpulse){
       attrs.watermark='{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"light_intensity","amplitude":75}]}';
       attrs.watermark_trial_idx=i;
+      attrs.watermark_active='true';
     } else {
       attrs.watermark='off';
     }
     attrs.guardrails=JSON.stringify({max_temp:{value:max_temp,hard_limit:40,violated:max_temp>40},max_humidity:{value:max_humidity,hard_limit:0.9,violated:max_humidity>0.9},max_co2:{value:+max_co2,hard_limit:1500,violated:+max_co2>1500}});
+    // Impulse effect: growth_rate shows a spike on impulse trials
+    const growthBase=0.3+Math.random()*0.2;
+    const growth=isImpulse?growthBase+0.2+Math.random()*0.1:growthBase;
+    const energy=+(Math.random()*50).toFixed(4);
+    const water=+(Math.random()*15).toFixed(4);
     out.push({
       number:i,state:'COMPLETE',
       datetime_start:'2026-04-17 '+(20+h).toString().padStart(2,'0')+':'+m+'0:00',
       params:p,
-      values:[+(0.1+Math.random()*0.5).toFixed(4),+(Math.random()*50).toFixed(4),+(Math.random()*15).toFixed(4)],
+      values:[+growth.toFixed(4),energy,water],
       user_attrs:attrs
     });
   }
@@ -433,25 +440,34 @@ async function loadCrossData(ids){
       return;
     }
     if(DEMO){
-      const n=50;
+      const n=100;
       const baseTime=new Date('2026-04-20T08:00:00').getTime()/1000;
-      const baseQ=breeders.map(()=>0.3+Math.random()*0.4);
-const couples=[[0,1],[0,2],[0,3],[0,4],[0,5],[1,0],[1,2],[1,3],[1,4],[1,5],[2,0],[2,1],[2,3],[2,4],[2,5],[3,0],[3,1],[3,2],[3,4],[3,5],[4,0],[4,1],[4,2],[4,3],[4,5],[5,0],[5,1],[5,2],[5,3],[5,4]];
+      // Only adjacent pairs are coupled (for quality generation)
+      const adj=[[0,1],[1,0],[1,2],[2,1],[2,3],[3,2],[3,4],[4,3],[4,5],[5,4]];
       const allQ=breeders.map(()=>[]);
       const allT=breeders.map(()=>[]);
+      const impulsePeriod=20;
+      const impulseTrials=[];
+      for(let t=0;t<n;t++){if(t%impulsePeriod===0&&t>0) impulseTrials.push(t);}
       for(let t=0;t<n;t++){
         const time=baseTime+t*900+Math.random()*200;
         for(let b=0;b<breeders.length;b++){
-          let q=allQ[b].length?allQ[b][allQ[b].length-1]:baseQ[b];
-          q+=(0.6-q)*0.1+0.08*(Math.random()-0.5);
-          const srcCouplers=couples.filter(c=>c[1]===b);
-          if(srcCouplers.length&&t>0){
-            srcCouplers.forEach(function(couple){
-              const prevQ=allQ[couple[0]][t-1];
-              const pprevQ=t>1?allQ[couple[0]][t-2]:prevQ;
-              q+=(prevQ-pprevQ)*0.25;
-            });
+          // Flat baseline with small noise
+          let q=0.45+(Math.random()-0.5)*0.04;
+          // Impulse sender: sharp spike on own impulse trials
+          if(t%impulsePeriod===0&&t>0){
+            q+=0.30+Math.random()*0.03;
           }
+          // Coupled receiver only: echo in window after neighbor's impulse
+          const neighbors=adj.filter(c=>c[1]===b).map(c=>c[0]);
+          neighbors.forEach(function(ni){
+            impulseTrials.forEach(function(imp){
+              const dist=t-imp;
+              if(dist>=1&&dist<=3){
+                q+=0.15/dist;
+              }
+            });
+          });
           q=Math.max(0,Math.min(1,q));
           allQ[b].push(q);
           allT[b].push(time);
@@ -464,16 +480,20 @@ const couples=[[0,1],[0,2],[0,3],[0,4],[0,5],[1,0],[1,2],[1,3],[1,4],[1,5],[2,0]
           const growth=q;
           const energy=200+q*400+Math.random()*30;
           const water=50+q*80+Math.random()*10;
-          const wmPeriod=20;
-          const isWmTrial=i%wmPeriod<2;
+          const isImpulse=i%20===0&&i>0;
           const attrs={};
-          if(isWmTrial){
+          if(isImpulse){
             attrs.watermark='{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]}';
             attrs.watermark_trial_idx=i;
+            attrs.watermark_active='true';
           } else {
             attrs.watermark='off';
           }
-          return{number:i,state:'COMPLETE',datetime_start:new Date(allT[idx][i]*1000).toISOString(),params:{},values:[growth,energy,water],user_attrs:attrs};
+          // Coupled neighbors show growth spike on impulse
+          const coupledNeighbors=adj.filter(c=>c[0]===idx||c[1]===idx).map(c=>c[0]===idx?c[1]:c[0]);
+          const isPostImpulse=breeders.some((ob,oi)=>oi!==idx&&coupledNeighbors.includes(oi)&&i>0&&((i-1)%20===0||(i-2)%20===0||(i-3)%20===0));
+          const impulseGrowth=isPostImpulse?growth+0.08:growth;
+          return{number:i,state:'COMPLETE',datetime_start:new Date(allT[idx][i]*1000).toISOString(),params:{},values:[impulseGrowth,energy,water],user_attrs:attrs};
         });
         b.trialCount=b.trials.length;
         b.perObjQualities=b.config.objectives.map((_,oi)=>b.trials.map(t=>t.values?t.values[oi]:null));
@@ -537,8 +557,6 @@ const DEMO_WM_DETECTIONS={
   'microgrid-6::microgrid-3':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.55,"best_objective":1,"sender_trials":120,"receiver_trials":101,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.53,"baseline_mean":0.53,"baseline_std":0.045,"shift":0.0,"snr":0.42,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.512,"baseline_mean":0.512,"baseline_std":0.04,"shift":0.0,"snr":0.55,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.558,"baseline_mean":0.558,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":95,"impulses_used":2}]},
   'microgrid-6::microgrid-4':{"detected":false,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":0.34,"best_objective":0,"sender_trials":120,"receiver_trials":108,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":false,"method":"impulse_stacking","stacked_mean":0.53,"baseline_mean":0.53,"baseline_std":0.045,"shift":0.0,"snr":0.34,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":1,"detected":false,"method":"impulse_stacking","stacked_mean":0.512,"baseline_mean":0.512,"baseline_std":0.04,"shift":0.0,"snr":0.15,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.558,"baseline_mean":0.558,"baseline_std":0.055,"shift":0.0,"snr":0.05,"post_impulse_samples":6,"baseline_samples":102,"impulses_used":2}]},
   'microgrid-6::microgrid-5':{"detected":true,"method":"impulse_stacking","impulse_count":2,"impulses_used":2,"window_size":3,"snr_threshold":2.5,"best_snr":6.85,"best_objective":1,"sender_trials":120,"receiver_trials":115,"watermark":{"type":"impulse","duty_cycle":0.02,"period":50,"direction":"random","params":[{"param_name":"power_draw","amplitude":75}]},"per_objective":[{"objective_index":0,"detected":true,"method":"impulse_stacking","stacked_mean":0.842,"baseline_mean":0.57,"baseline_std":0.04,"shift":0.272,"snr":6.8,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":1,"detected":true,"method":"impulse_stacking","stacked_mean":0.75,"baseline_mean":0.51,"baseline_std":0.035,"shift":0.24,"snr":6.85,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2},{"objective_index":2,"detected":false,"method":"impulse_stacking","stacked_mean":0.57,"baseline_mean":0.56,"baseline_std":0.05,"shift":0.01,"snr":0.2,"post_impulse_samples":6,"baseline_samples":109,"impulses_used":2}]}
-};
-
 };
 
 function addDemoPerObj(d){
@@ -704,7 +722,7 @@ function renderCrossRanked(el){
     const bar=row.append('span').style('width','100px').style('height','6px').style('background','#21262d')
       .style('border-radius','3px').style('overflow','hidden').style('flex-shrink','0').style('position','relative');
     bar.append('span').style('display','block').style('height','100%')
-      .style('width',Math.min(snrVal/snrMax*100,100)+'%').style('background',snrVal>=2.5?'#3fb950':'#f85149').style('border-radius','3px');
+      .style('width',Math.min(snrVal/snrMax*100,100)+'%').style('background',crossTierColor(tier)).style('border-radius','3px');
     // Threshold marker
     bar.append('span').style('position','absolute').style('left',(2.5/snrMax*100)+'%').style('top','0').style('height','100%').style('width','1px').style('background','#58a6ff').style('opacity','0.6');
 
@@ -714,7 +732,7 @@ function renderCrossRanked(el){
       .text(d.method||'\\u2014');
     row.append('span').style('width','60px').style('font','9px monospace').style('color','#8b949e').style('flex-shrink','0').style('text-align','center')
       .text((d.impulses_used||0)+'/'+(d.impulse_count||0));
-    row.append('span').style('width','70px').style('font','9px monospace').style('color',snrVal>=2.5?'#3fb950':'#8b949e').style('flex-shrink','0').style('text-align','center')
+    row.append('span').style('width','70px').style('font','9px monospace').style('color',crossTierColor(tier)).style('flex-shrink','0').style('text-align','center')
       .text('snr '+snrVal.toFixed(1));
     row.append('span').style('width','70px').style('font','9px monospace').style('color','#6e7681').style('flex-shrink','0').style('text-align','center')
       .text(d.sender_trials||0);
@@ -1149,11 +1167,20 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
     });
   } else if((wmType==='sinusoidal'||wmType==='impulse')){
     const wmInfo=wmMeta?JSON.parse(wmMeta.user_attrs.watermark):{};
-    const period=wmInfo.period||20;
-    const amplitude=wmInfo.amplitude||75;
-    const paramName=wmInfo.param_name||'';
+    const paramName=(wmInfo.params&&wmInfo.params[0]&&wmInfo.params[0].param_name)||'';
+    const dutyCycle=wmInfo.duty_cycle||0.02;
+    const amplitude=(wmInfo.params&&wmInfo.params[0]&&wmInfo.params[0].amplitude)||75;
     g.append('text').attr('x',0).attr('y',-8).style('font','9px monospace').style('fill','#6e7681')
-      .text('watermark: impulse '+paramName+' (amplitude='+amplitude+', duty_cycle='+(wmObj.duty_cycle||0.02)+')');
+      .text('impulse: '+paramName+' (amplitude='+amplitude+', duty_cycle='+(dutyCycle*100).toFixed(0)+'%)');
+    // Shade impulse trials
+    trials.forEach((t,i)=>{
+      const wm=t.user_attrs&&t.user_attrs.watermark;
+      if(wm&&wm!=='off'&&typeof wm==='string'&&wm.includes('impulse')){
+        const tx=x(allTimes[i]);
+        g.append('rect').attr('x',tx-2).attr('y',0).attr('width',4).attr('height',height)
+          .attr('fill','rgba(240,136,62,0.15)').style('pointer-events','none');
+      }
+    });
   }
 
   const lineQ=useRaw?objValues:perObjQ;
@@ -1173,8 +1200,13 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
     const wmIdx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
     let dotColor;
     if((wmType==='sinusoidal'||wmType==='impulse')&&wmIdx!=null){
-      const sinVal=Math.sin(2*Math.PI*wmIdx/(wmMeta?JSON.parse(wmMeta.user_attrs.watermark).period||20:20));
-      dotColor=sinVal>0.3?'#3fb950':sinVal<-0.3?'#58a6ff':'#8b949e';
+      if(wmType==='impulse'){
+        // Impulse: orange for active probes, blue for free
+        dotColor=isOff?'#58a6ff':'#f0883e';
+      } else {
+        const sinVal=Math.sin(2*Math.PI*wmIdx/(wmMeta?JSON.parse(wmMeta.user_attrs.watermark).period||20:20));
+        dotColor=sinVal>0.3?'#3fb950':sinVal<-0.3?'#58a6ff':'#8b949e';
+      }
     } else {
       dotColor=isOff?'#58a6ff':'#3fb950';
     }
@@ -1191,10 +1223,11 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
           if(!isOff) html+='<br><span style="color:#3fb950">probing</span>';
           else html+='<br><span style="color:#58a6ff">reconnaissance</span>';
         } else if((wmType==='sinusoidal'||wmType==='impulse')){
-          const idx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
-          const period=wmPeriod;
-          const sinVal=idx!=null?Math.sin(2*Math.PI*idx/period):0;
-          html+='<br><span style="color:#6e7681">watermark pattern</span>';
+          if(wmType==='impulse'){
+            html+='<br><span style="color:#f0883e">impulse probe</span>';
+          } else {
+            html+='<br><span style="color:#6e7681">watermark pattern</span>';
+          }
         }
         const tObjNames=breederConfig?breederConfig.objectives.map(o=>o.name):[];
         if(t.values) t.values.forEach((v,vi)=>{
@@ -1221,8 +1254,13 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
 
   const legend=parent.append('div').attr('class','legend').style('margin-top','4px');
   if((wmType==='sinusoidal'||wmType==='impulse')){
-    legend.append('span').html('<div class="dot" style="background:#3fb950"></div>impulse probe');
-    legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>free trial');
+    if(wmType==='impulse'){
+      legend.append('span').html('<div class="dot" style="background:#f0883e"></div>impulse probe');
+      legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>free trial');
+    } else {
+      legend.append('span').html('<div class="dot" style="background:#3fb950"></div>impulse probe');
+      legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>free trial');
+    }
     legend.append('span').html('<div class="dot" style="background:#8b949e"></div>inactive');
   } else {
     legend.append('span').html('<div class="dot" style="background:#3fb950"></div>probing');
