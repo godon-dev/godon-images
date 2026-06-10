@@ -691,8 +691,8 @@ async function renderCross(){
   tabs.append('button').classed('active',crossView==='interference').text('interference').on('click',()=>{crossView='interference';renderCross()});
 
   if(hasAnyWatermark){
-    const wmOn=crossData.reduce((n,b)=>n+b.trials.filter(t=>t.user_attrs&&t.user_attrs.watermark&&t.user_attrs.watermark!=='off').length,0);
-    const wmOff=crossData.reduce((n,b)=>n+b.trials.filter(t=>t.user_attrs&&t.user_attrs.watermark==='off').length,0);
+    const wmOn=crossData.reduce((n,b)=>n+b.trials.filter(t=>isActiveImpulse(t)).length,0);
+    const wmOff=crossData.reduce((n,b)=>n+b.trials.filter(t=>!isActiveImpulse(t)).length,0);
     const detected=Object.values(wmDetections).filter(d=>d.detected).length;
     const total=Object.keys(wmDetections).length;
     const sum=el.append('div').style('margin-bottom','10px').style('font-size','10px').style('color','#6e7681');
@@ -1605,8 +1605,8 @@ function renderView(){
   const bestI=bestTrialIdx();
   const violations=trials.filter(t=>Object.keys(checkGuardrails(t)).length).length;
 
-  const _wmOn=trials.filter(t=>t.user_attrs&&t.user_attrs.watermark&&t.user_attrs.watermark!=='off');
-  const _wmOff=trials.filter(t=>t.user_attrs&&t.user_attrs.watermark==='off');
+  const _wmOn=trials.filter(t=>isActiveImpulse(t));
+  const _wmOff=trials.filter(t=>!isActiveImpulse(t));
   wmProbesCount=_wmOn.length;
   wmReconCount=_wmOff.length;
   const lastTrial=trials[trials.length-1];
