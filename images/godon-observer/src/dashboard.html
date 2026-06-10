@@ -607,6 +607,8 @@ function crossQ(t){
 // have {active: true}. Free trials have the config without active, or watermark="off".
 function isActiveImpulse(t) {
   if (!t || !t.user_attrs) return false;
+  // Detection mode impulse takes priority
+  if (t.user_attrs.detection_mode === 'impulse') return true;
   const wm = t.user_attrs.watermark;
   if (!wm || wm === 'off') return false;
   let parsed = wm;
@@ -621,8 +623,13 @@ function parseWmMeta(trials) {
   try { return JSON.parse(t.user_attrs.watermark); } catch(e) { return null; }
 }
 
-// Get trial styling: {color, label} based on watermark type and active status.
+// Get trial styling: {color, label} based on watermark type, active status, or detection mode.
 function trialStyle(t, wmType) {
+  // Detection mode overrides watermark-based classification
+  var dm = t.user_attrs && t.user_attrs.detection_mode;
+  if (dm === 'impulse') return { color: '#f0883e', label: 'detection impulse' };
+  if (dm === 'hold') return { color: '#8b949e', label: 'detection hold' };
+  
   if (wmType === 'impulse') {
     return isActiveImpulse(t)
       ? { color: '#f0883e', label: 'impulse probe' }
