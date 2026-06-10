@@ -614,6 +614,28 @@ function isActiveImpulse(t) {
   return parsed && parsed.active === true;
 }
 
+// Parse watermark metadata from any trial in a set. Returns {type, period, duty_cycle, params, ...} or null.
+function parseWmMeta(trials) {
+  const t = trials.find(t => t.user_attrs && t.user_attrs.watermark && typeof t.user_attrs.watermark === 'string' && t.user_attrs.watermark.includes('{'));
+  if (!t) return null;
+  try { return JSON.parse(t.user_attrs.watermark); } catch(e) { return null; }
+}
+
+// Get trial styling: {color, label} based on watermark type and active status.
+function trialStyle(t, wmType) {
+  if (wmType === 'impulse') {
+    return isActiveImpulse(t)
+      ? { color: '#f0883e', label: 'impulse probe' }
+      : { color: '#58a6ff', label: 'free trial' };
+  }
+  // fallback for old types
+  const wm = t.user_attrs && t.user_attrs.watermark;
+  const isOff = !wm || wm === 'off';
+  return isOff
+    ? { color: '#58a6ff', label: 'free trial' }
+    : { color: '#3fb950', label: 'impulse probe' };
+}
+
 
 
 function addDemoPerObj(d){
@@ -696,8 +718,8 @@ async function renderCross(){
     const detected=Object.values(wmDetections).filter(d=>d.detected).length;
     const total=Object.keys(wmDetections).length;
     const sum=el.append('div').style('margin-bottom','10px').style('font-size','10px').style('color','#6e7681');
-    const sampleWm=crossData.find(b=>b.trials.some(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{')));
-    const wmType=sampleWm?(() => { try { return JSON.parse(sampleWm.trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{')).user_attrs.watermark).type } catch(e) { return 'on_off' } })() : 'on_off';
+    const allTrials=crossData.flatMap(b=>b.trials);
+    const wmType=(parseWmMeta(allTrials)||{}).type||'on_off';
     if(wmType==='impulse'){
       sum.text(crossData.length+' breeders \u2014 '+wmOn+' impulse probes, '+wmOff+' free \u2014 '+detected+'/'+total+' directions detected (impulse stacking)');
     } else {
@@ -1191,8 +1213,8 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
   const qPad=(qMax-qMin)*0.1||0.05;
   const y=d3.scaleLinear().domain([qMin-qPad,qMax+qPad]).range([height,0]);
 
-  const wmMeta=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
-  const wmType=wmMeta?(() => { try { return JSON.parse(wmMeta.user_attrs.watermark).type } catch(e) { return 'unknown' } })() : 'unknown';
+  const wmMeta=parseWmMeta(trials);
+  const wmType=wmMeta?wmMeta.type:'unknown';
 
   if(wmType==='on_off'){
     const wmRanges=[];
@@ -1223,12 +1245,11 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
       }
     });
   } else if((wmType==='sinusoidal'||wmType==='impulse')){
-    const wmInfo=wmMeta?JSON.parse(wmMeta.user_attrs.watermark):{};
+    const wmInfo=wmMeta||{};
     const paramName=(wmInfo.params&&wmInfo.params[0]&&wmInfo.params[0].param_name)||'';
     const dutyCycle=wmInfo.duty_cycle||0.02;
-    const amplitude=(wmInfo.params&&wmInfo.params[0]&&wmInfo.params[0].amplitude)||75;
     g.append('text').attr('x',0).attr('y',-8).style('font','9px monospace').style('fill','#6e7681')
-      .text('impulse: '+paramName+' (amplitude='+amplitude+', duty_cycle='+(dutyCycle*100).toFixed(0)+'%)');
+      .text('impulse: '+paramName+' (duty_cycle='+(dutyCycle*100).toFixed(0)+'%)');
     // Shade impulse trials
     trials.forEach((t,i)=>{
       const wm=t.user_attrs&&t.user_attrs.watermark;
@@ -1251,20 +1272,9 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
     const q=lineQ[i];
     if(q==null||!isFinite(q)||allTimes[i]==null) return;
     const wm=t.user_attrs&&t.user_attrs.watermark;
-    const wmInfo=wmMeta?JSON.parse(wmMeta.user_attrs.watermark):{};
-    const wmPeriod=wmInfo.period||20;
-    const isOff=!wm||wm==='off';
-    const wmIdx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
-    const isImpulseProbe=isActiveImpulse(t);
-    let dotColor;
-    if(wmType==='impulse'){
-      dotColor=isImpulseProbe?'#f0883e':'#58a6ff';
-    } else if(wmType==='sinusoidal'){
-      const sinVal=Math.sin(2*Math.PI*wmIdx/(wmMeta?JSON.parse(wmMeta.user_attrs.watermark).period||20:20));
-      dotColor=sinVal>0.3?'#3fb950':sinVal<-0.3?'#58a6ff':'#8b949e';
-    } else {
-      dotColor=isOff?'#58a6ff':'#3fb950';
-    }
+    const wmPeriod=wmMeta?wmMeta.period||20:20;
+    const style=trialStyle(t,wmType);
+    const dotColor=style.color;
     g.append('circle').attr('cx',x(allTimes[i])).attr('cy',y(q))
       .attr('r',2.5).attr('fill',dotColor).attr('opacity',0.6)
       .style('cursor','pointer')
@@ -1274,12 +1284,7 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
         if(t.datetime_start) html+=' ('+t.datetime_start.substring(11,19)+')';
         const curObjName=tObjNames[objIdx]||'quality';
         html+='<br>'+curObjName+': '+(useRaw?q.toFixed(3):(q*100).toFixed(1)+'%');
-        if(wmType==='impulse'){
-          if(isImpulseProbe) html+='<br><span style="color:#f0883e">impulse probe</span>';
-          else html+='<br><span style="color:#58a6ff">free trial</span>';
-        } else if(wmType==='sinusoidal'){
-          html+='<br><span style="color:#6e7681">watermark pattern</span>';
-        }
+        html+='<br><span style="color:'+style.color+'">'+style.label+'</span>';
         if(t.values) t.values.forEach((v,vi)=>{
           html+='<br>'+(tObjNames[vi]||('obj'+vi))+': '+(v!=null?v.toFixed(3):'\u2014');
         });
@@ -1646,8 +1651,8 @@ function renderInterferenceView(){
   const wmOn=trials.filter(t=>isActiveImpulse(t));
   const wmOff=trials.filter(t=>!isActiveImpulse(t));
   const pctOn=trials.length?Math.round(wmOn.length/trials.length*100):0;
-  const firstWmTrial=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
-  const headerWmType=firstWmTrial?(() => { try { return JSON.parse(firstWmTrial.user_attrs.watermark) } catch(e) { return {type:'on_off'} } })() : {type:'on_off'};
+  const headerWmMeta=parseWmMeta(trials);
+  const headerWmType=headerWmMeta||{type:'on_off'};
 
   const wrap=el.append('div').style('padding','12px').style('background','#0d1117').style('border','1px solid #21262d').style('border-radius','6px');
   wrap.append('div').style('font','bold 12px monospace').style('color','#c9d1d9').style('margin-bottom','4px')
@@ -1694,9 +1699,8 @@ function renderInterferenceChart(parent){
     g.append('text').attr('x',0).attr('y',-6).attr('fill','#8b949e').style('font','9px monospace')
       .text(obj.name);
 
-    const firstWm=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
-    const chartWmType=firstWm?(() => { try { return JSON.parse(firstWm.user_attrs.watermark).type } catch(e) { return 'unknown' } })() : 'unknown';
-    const chartWmInfo=firstWm?(() => { try { return JSON.parse(firstWm.user_attrs.watermark) } catch(e) { return {} } })() : {};
+    const chartWmInfo=parseWmMeta(trials)||{};
+    const chartWmType=chartWmInfo.type||'unknown';
     const chartWmPeriod=chartWmInfo.period||20;
 
     if(chartWmType==='on_off'){
@@ -1740,8 +1744,8 @@ function renderInterferenceChart(parent){
         const wm=t.user_attrs&&t.user_attrs.watermark;
         if(isActiveImpulse(t)){
           const tx=x(i);
-          g.append('rect').attr('x',tx-2).attr('y',0).attr('width',4).attr('height',height)
-            .attr('fill','rgba(240,136,62,0.2)').style('pointer-events','none');
+          g.append('rect').attr('x',tx-6).attr('y',0).attr('width',12).attr('height',height)
+            .attr('fill','rgba(240,136,62,0.25)').style('pointer-events','none');
         }
       });
     }
@@ -1754,24 +1758,9 @@ function renderInterferenceChart(parent){
     trials.forEach((t,i)=>{
       const v=t.values?t.values[oi]:null;
       if(v===null||v===undefined||!isFinite(v)) return;
-      const wm=t.user_attrs&&t.user_attrs.watermark;
-      const isOff=!wm||wm==='off';
-      let dotColor='#58a6ff';
-      let phaseLabel='free trial';
-      if(chartWmType==='on_off'){
-        dotColor=isOff?'#58a6ff':'#3fb950';
-        phaseLabel=isOff?'free trial':'impulse probe';
-      } else if(chartWmType==='impulse'){
-        dotColor=isOff?'#58a6ff':'#f0883e';
-        phaseLabel=isOff?'free trial':'impulse probe';
-      } else if(chartWmType==='sinusoidal'){
-        const idx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
-        if(idx!=null){
-          const sinVal=Math.sin(2*Math.PI*idx/chartWmPeriod);
-          dotColor=sinVal>0.3?'#3fb950':sinVal<-0.3?'#58a6ff':'#8b949e';
-          phaseLabel='watermark pattern';
-        }
-      }
+      const style=trialStyle(t,chartWmType);
+      const dotColor=style.color;
+      const phaseLabel=style.label;
       g.append('circle').attr('cx',x(i)).attr('cy',y(v)).attr('r',2.5)
         .attr('fill',dotColor).attr('opacity',0.6)
         .style('cursor','pointer')
@@ -1798,13 +1787,17 @@ function renderInterferenceChart(parent){
       .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
   });
 
-  const firstWm2=trials.find(t=>t.user_attrs&&t.user_attrs.watermark&&typeof t.user_attrs.watermark==='string'&&t.user_attrs.watermark.includes('{'));
-  const legendWmType=firstWm2?(() => { try { return JSON.parse(firstWm2.user_attrs.watermark).type } catch(e) { return 'on_off' } })() : 'on_off';
-  if((legendWmType==='sinusoidal'||legendWmType==='impulse')){
+  const legendWmType=(parseWmMeta(trials)||{}).type||'on_off';
+  if(legendWmType==='impulse'){
     parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
-      '<span><div class="dot" style="background:#3fb950"></div>impulse probe</span>'+
-      '<span><div class="dot" style="background:#58a6ff"></div>free trial</span>'+
-      '<span><div class="dot" style="background:#8b949e"></div>inactive</span>'
+      '<span><div class="dot" style="background:#f0883e"></div>impulse probe</span>'+
+      '<span><div class="dot" style="background:#58a6ff"></div>free trial</span>'
+    );
+  } else if(legendWmType==='sinusoidal'){
+    parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
+      '<span><div class="dot" style="background:#3fb950"></div>watermark high</span>'+
+      '<span><div class="dot" style="background:#58a6ff"></div>watermark low</span>'+
+      '<span><div class="dot" style="background:#8b949e"></div>neutral</span>'
     );
   } else {
     parent.append('div').attr('class','legend').style('margin-bottom','8px').html(
