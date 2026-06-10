@@ -1234,8 +1234,8 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
       const wm=t.user_attrs&&t.user_attrs.watermark;
       if(isActiveImpulse(t)){
         const tx=x(allTimes[i]);
-        g.append('rect').attr('x',tx-2).attr('y',0).attr('width',4).attr('height',height)
-          .attr('fill','rgba(240,136,62,0.15)').style('pointer-events','none');
+        g.append('rect').attr('x',tx-6).attr('y',0).attr('width',12).attr('height',height)
+          .attr('fill','rgba(240,136,62,0.25)').style('pointer-events','none');
       }
     });
   }
@@ -1255,15 +1255,13 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
     const wmPeriod=wmInfo.period||20;
     const isOff=!wm||wm==='off';
     const wmIdx=t.user_attrs&&t.user_attrs.watermark_trial_idx;
+    const isImpulseProbe=isActiveImpulse(t);
     let dotColor;
-    if((wmType==='sinusoidal'||wmType==='impulse')&&wmIdx!=null){
-      if(wmType==='impulse'){
-        // Impulse: orange for active probes, blue for free
-        dotColor=isOff?'#58a6ff':'#f0883e';
-      } else {
-        const sinVal=Math.sin(2*Math.PI*wmIdx/(wmMeta?JSON.parse(wmMeta.user_attrs.watermark).period||20:20));
-        dotColor=sinVal>0.3?'#3fb950':sinVal<-0.3?'#58a6ff':'#8b949e';
-      }
+    if(wmType==='impulse'){
+      dotColor=isImpulseProbe?'#f0883e':'#58a6ff';
+    } else if(wmType==='sinusoidal'){
+      const sinVal=Math.sin(2*Math.PI*wmIdx/(wmMeta?JSON.parse(wmMeta.user_attrs.watermark).period||20:20));
+      dotColor=sinVal>0.3?'#3fb950':sinVal<-0.3?'#58a6ff':'#8b949e';
     } else {
       dotColor=isOff?'#58a6ff':'#3fb950';
     }
@@ -1276,17 +1274,12 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
         if(t.datetime_start) html+=' ('+t.datetime_start.substring(11,19)+')';
         const curObjName=tObjNames[objIdx]||'quality';
         html+='<br>'+curObjName+': '+(useRaw?q.toFixed(3):(q*100).toFixed(1)+'%');
-        if(wmType==='on_off'){
-          if(!isOff) html+='<br><span style="color:#f0883e">impulse probe</span>';
+        if(wmType==='impulse'){
+          if(isImpulseProbe) html+='<br><span style="color:#f0883e">impulse probe</span>';
           else html+='<br><span style="color:#58a6ff">free trial</span>';
-        } else if((wmType==='sinusoidal'||wmType==='impulse')){
-          if(wmType==='impulse'){
-            html+='<br><span style="color:#f0883e">impulse probe</span>';
-          } else {
-            html+='<br><span style="color:#6e7681">watermark pattern</span>';
-          }
+        } else if(wmType==='sinusoidal'){
+          html+='<br><span style="color:#6e7681">watermark pattern</span>';
         }
-        const tObjNames=breederConfig?breederConfig.objectives.map(o=>o.name):[];
         if(t.values) t.values.forEach((v,vi)=>{
           html+='<br>'+(tObjNames[vi]||('obj'+vi))+': '+(v!=null?v.toFixed(3):'\u2014');
         });
