@@ -309,17 +309,26 @@ impl OptunaReader {
         let sender_trials = self.get_trials(sender_id, &sender_study, 0, 10000).await?;
         let receiver_trials = self.get_trials(receiver_id, &receiver_study, 0, 10000).await?;
 
-        // Find impulse trials from sender — trials where watermark metadata has active=true
+        // Find impulse trials from sender — either coordinated detection_mode=impulse
+        // or legacy watermark active=true
         let impulse_indices: Vec<usize> = sender_trials.iter()
             .filter(|t| t.state == "COMPLETE")
             .filter_map(|t| {
+                // Check coordinated detection mode first
+                let dm = t.user_attrs.get("detection_mode");
+                if let Some(dm_val) = dm {
+                    let mode = if dm_val.is_string() { dm_val.as_str().unwrap_or("") } else { "" };
+                    if mode == "impulse" {
+                        return Some(t.number as usize);
+                    }
+                }
+                // Fallback: legacy watermark active=true
                 let wm_raw = t.user_attrs.get("watermark")?;
                 let wm_meta: serde_json::Value = if wm_raw.is_string() {
                     serde_json::from_str(wm_raw.as_str().unwrap_or("{}")).ok()?
                 } else {
                     wm_raw.clone()
                 };
-                // Impulse trial if active==true (impulse watermark)
                 if wm_meta.get("active").and_then(|v| v.as_bool()).unwrap_or(false) {
                     Some(t.number as usize)
                 } else {
