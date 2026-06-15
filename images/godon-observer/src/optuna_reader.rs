@@ -677,8 +677,8 @@ impl OptunaReader {
         });
 
         info!(
-            "Impulse detection: sender={} receiver={} impulses={} used={} detected={} best_snr={:.2}",
-            sender_id, receiver_id, n_impulses, window_count, any_detected, best_snr
+            "Impulse detection: sender={} receiver={} impulses={} matched_pairs={} detected={} best_snr={:.2}",
+            sender_id, receiver_id, n_impulses, matched_pairs, any_detected, best_snr
         );
 
         Ok(result)
