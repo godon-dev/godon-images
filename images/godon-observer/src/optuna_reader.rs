@@ -414,15 +414,23 @@ impl OptunaReader {
             .map(|(num, vals)| (*num, vals))
             .collect();
 
-        // Separate sender impulses into ping (even index) and listen (odd index) phases
-        // The sender alternates: trial 0 = ping (extreme), trial 1 = listen (baseline), etc.
-        let ping_indices: Vec<usize> = impulse_indices.iter().enumerate()
-            .filter(|(i, _)| i % 2 == 0)
-            .map(|(_, &idx)| idx)
+        // Separate sender impulses into ping and listen phases using impulse_phase attr
+        // The breeder tags each impulse trial with impulse_phase: "ping" or "listen"
+        let ping_indices: Vec<usize> = sender_trials.iter()
+            .filter(|t| t.state == "COMPLETE")
+            .filter_map(|t| {
+                let phase = t.user_attrs.get("impulse_phase")?;
+                let phase_str = if phase.is_string() { phase.as_str().unwrap_or("") } else { "" };
+                if phase_str == "ping" { Some(t.number as usize) } else { None }
+            })
             .collect();
-        let listen_indices: Vec<usize> = impulse_indices.iter().enumerate()
-            .filter(|(i, _)| i % 2 == 1)
-            .map(|(_, &idx)| idx)
+        let listen_indices: Vec<usize> = sender_trials.iter()
+            .filter(|t| t.state == "COMPLETE")
+            .filter_map(|t| {
+                let phase = t.user_attrs.get("impulse_phase")?;
+                let phase_str = if phase.is_string() { phase.as_str().unwrap_or("") } else { "" };
+                if phase_str == "listen" { Some(t.number as usize) } else { None }
+            })
             .collect();
 
         // For matched filter: collect receiver values during ping windows and listen windows
