@@ -319,42 +319,56 @@ impl OptunaReader {
         let receiver_trials = self.get_trials(receiver_id, &receiver_study, 0, 10000).await?;
 
         // Find impulse trials from sender — either coordinated detection_mode=impulse
-        // or legacy watermark active=true
-        let impulse_indices: Vec<usize> = sender_trials.iter()
-            .filter(|t| t.state == "COMPLETE")
-            .filter_map(|t| {
-                // Check coordinated detection mode first
+        // or legacy watermark active=true. Track both COMPLETE and FAIL to count
+        // attempted impulses for accurate SNR normalization.
+        let mut impulse_indices: Vec<usize> = Vec::new();
+        let mut attempted_impulses = 0usize;
+
+        for t in sender_trials.iter() {
+            let is_impulse = {
                 let dm = t.user_attrs.get("detection_mode");
                 if let Some(dm_val) = dm {
                     let mode = if dm_val.is_string() { dm_val.as_str().unwrap_or("") } else { "" };
                     if mode == "impulse" {
-                        return Some(t.number as usize);
+                        true
+                    } else {
+                        // Fallback: legacy watermark active=true
+                        let wm_raw = t.user_attrs.get("watermark");
+                        if let Some(raw) = wm_raw {
+                            let wm_meta: serde_json::Value = if raw.is_string() {
+                                serde_json::from_str(raw.as_str().unwrap_or("{}")).unwrap_or_default()
+                            } else {
+                                raw.clone()
+                            };
+                            wm_meta.get("active").and_then(|v| v.as_bool()).unwrap_or(false)
+                        } else {
+                            false
+                        }
                     }
-                }
-                // Fallback: legacy watermark active=true
-                let wm_raw = t.user_attrs.get("watermark")?;
-                let wm_meta: serde_json::Value = if wm_raw.is_string() {
-                    serde_json::from_str(wm_raw.as_str().unwrap_or("{}")).ok()?
                 } else {
-                    wm_raw.clone()
-                };
-                if wm_meta.get("active").and_then(|v| v.as_bool()).unwrap_or(false) {
-                    Some(t.number as usize)
-                } else {
-                    None
+                    false
                 }
-            })
-            .collect();
+            };
+
+            if is_impulse {
+                attempted_impulses += 1;
+                if t.state == "COMPLETE" {
+                    impulse_indices.push(t.number as usize);
+                }
+            }
+        }
 
         let n_impulses = impulse_indices.len();
+        let n_attempted = attempted_impulses;
 
         if n_impulses == 0 {
             return Ok(serde_json::json!({
                 "detected": false,
-                "reason": "no impulse trials found",
-                "method": "impulse_stacking",
+                "reason": "no complete impulse trials found",
+                "method": "matched_filter_cfar",
                 "sender_id": sender_id,
                 "receiver_id": receiver_id,
+                "attempted_impulses": n_attempted,
             }));
         }
 
@@ -386,14 +400,34 @@ impl OptunaReader {
         // Phase 3: CFAR threshold — compute local noise floor from nearby non-impulse
         //   receiver trials, set adaptive threshold.
 
-        // Get receiver complete trials sorted by number, with their values
-        let receiver_complete: Vec<(usize, Vec<f64>)> = receiver_trials.iter()
+        // Get receiver complete trials sorted by number, with their values and timestamps
+        // Timestamps are used for cross-breeder alignment (sender trial N doesn't
+        // correspond to receiver trial N — breeders run at different speeds).
+        #[derive(Clone)]
+        struct ReceiverTrial {
+            number: usize,
+            timestamp_secs: f64,
+            values: Vec<f64>,
+        }
+
+        let receiver_complete: Vec<ReceiverTrial> = receiver_trials.iter()
             .filter(|t| t.state == "COMPLETE")
             .filter_map(|t| {
                 let vals: Vec<f64> = t.values.iter()
                     .filter_map(|v| *v)
                     .collect();
-                if vals.is_empty() { None } else { Some((t.number as usize, vals)) }
+                if vals.is_empty() {
+                    return None;
+                }
+                // Parse datetime_start to epoch seconds for alignment
+                let ts = t.datetime_start.as_ref()
+                    .and_then(|s| parse_timestamp_secs(s))
+                    .unwrap_or(0.0);
+                Some(ReceiverTrial {
+                    number: t.number as usize,
+                    timestamp_secs: ts,
+                    values: vals,
+                })
             })
             .collect();
 
@@ -407,35 +441,69 @@ impl OptunaReader {
             }));
         }
 
-        let n_obj = receiver_complete[0].1.len();
+        let n_obj = receiver_complete[0].values.len();
 
-        // Build a lookup: trial_number -> values for receiver
-        let receiver_map: HashMap<usize, &Vec<f64>> = receiver_complete.iter()
-            .map(|(num, vals)| (*num, vals))
+        // Find the receiver trial closest in time to a given sender trial timestamp.
+        // Returns None if timestamps are unavailable (falls back to trial-number alignment).
+        let find_receiver_by_timestamp = |sender_ts: f64, lag_secs: f64| -> Option<&ReceiverTrial> {
+            if sender_ts <= 0.0 || receiver_complete.iter().all(|r| r.timestamp_secs <= 0.0) {
+                return None;
+            }
+            let target = sender_ts + lag_secs;
+            receiver_complete.iter()
+                .min_by(|a, b| {
+                    let da = (a.timestamp_secs - target).abs();
+                    let db = (b.timestamp_secs - target).abs();
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .filter(|r| (r.timestamp_secs - target).abs() < 120.0) // Max 2-min drift
+        };
+
+        // Fallback: trial-number-based lookup (for when timestamps aren't available)
+        let receiver_by_number: HashMap<usize, &Vec<f64>> = receiver_complete.iter()
+            .map(|r| (r.number, &r.values))
             .collect();
 
         // Separate sender impulses into ping and listen phases using impulse_phase attr
         // The breeder tags each impulse trial with impulse_phase: "ping" or "listen"
-        let ping_indices: Vec<usize> = sender_trials.iter()
+        // Each entry: (trial_number, timestamp_secs)
+        let ping_indices: Vec<(usize, f64)> = sender_trials.iter()
             .filter(|t| t.state == "COMPLETE")
             .filter_map(|t| {
                 let phase = t.user_attrs.get("impulse_phase")?;
                 let phase_str = if phase.is_string() { phase.as_str().unwrap_or("") } else { "" };
-                if phase_str == "ping" { Some(t.number as usize) } else { None }
+                if phase_str == "ping" {
+                    let ts = t.datetime_start.as_ref()
+                        .and_then(|s| parse_timestamp_secs(s))
+                        .unwrap_or(0.0);
+                    Some((t.number as usize, ts))
+                } else {
+                    None
+                }
             })
             .collect();
-        let listen_indices: Vec<usize> = sender_trials.iter()
+        let listen_indices: Vec<(usize, f64)> = sender_trials.iter()
             .filter(|t| t.state == "COMPLETE")
             .filter_map(|t| {
                 let phase = t.user_attrs.get("impulse_phase")?;
                 let phase_str = if phase.is_string() { phase.as_str().unwrap_or("") } else { "" };
-                if phase_str == "listen" { Some(t.number as usize) } else { None }
+                if phase_str == "listen" {
+                    let ts = t.datetime_start.as_ref()
+                        .and_then(|s| parse_timestamp_secs(s))
+                        .unwrap_or(0.0);
+                    Some((t.number as usize, ts))
+                } else {
+                    None
+                }
             })
             .collect();
 
-        // For matched filter: collect receiver values during ping windows and listen windows
-        // Account for 1-trial propagation lag: receiver at trial T+1 sees sender's trial T state
-        let window_size = 1usize; // Tight window — coupling shows at T+1
+        // For matched filter: collect receiver values during ping windows and listen windows.
+        // Uses timestamp-based alignment: for each sender ping/listen trial, find the
+        // receiver trial whose datetime_start is closest to sender_time + propagation_lag.
+        // Falls back to trial-number alignment if timestamps aren't available.
+        let propagation_lag_secs = 15.0_f64; // Expected coupling delay (~1 trial cycle)
+        let window_size = 1usize; // Tight window
         let lag = 1usize;
 
         let mut ping_values: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
@@ -443,15 +511,27 @@ impl OptunaReader {
         let mut matched_pairs = 0usize;
 
         for i in 0..ping_indices.len().min(listen_indices.len()) {
-            let ping_trial = ping_indices[i];
-            let listen_trial = listen_indices[i];
+            let (ping_trial, ping_ts) = ping_indices[i];
+            let (listen_trial, listen_ts) = listen_indices[i];
 
             let mut ping_found = false;
             let mut listen_found = false;
 
+            // Collect receiver values for this ping/listen pair.
+            // Try timestamp alignment first, then fall back to trial-number alignment.
             for offset in 0..=window_size {
-                // Receiver values during ping (with lag)
-                if let Some(vals) = receiver_map.get(&(ping_trial + lag + offset)) {
+                // --- PING ---
+                let ping_vals: Option<&Vec<f64>> = {
+                    // Try timestamp first
+                    if let Some(rt) = find_receiver_by_timestamp(ping_ts, propagation_lag_secs + (offset as f64) * 10.0) {
+                        Some(&rt.values)
+                    } else {
+                        // Fallback: trial-number alignment
+                        receiver_by_number.get(&(ping_trial + lag + offset))
+                            .copied()
+                    }
+                };
+                if let Some(vals) = ping_vals {
                     for (obj_idx, v) in vals.iter().enumerate() {
                         if obj_idx < n_obj {
                             ping_values[obj_idx].push(*v);
@@ -459,8 +539,17 @@ impl OptunaReader {
                     }
                     ping_found = true;
                 }
-                // Receiver values during listen (with lag)
-                if let Some(vals) = receiver_map.get(&(listen_trial + lag + offset)) {
+
+                // --- LISTEN ---
+                let listen_vals: Option<&Vec<f64>> = {
+                    if let Some(rt) = find_receiver_by_timestamp(listen_ts, propagation_lag_secs + (offset as f64) * 10.0) {
+                        Some(&rt.values)
+                    } else {
+                        receiver_by_number.get(&(listen_trial + lag + offset))
+                            .copied()
+                    }
+                };
+                if let Some(vals) = listen_vals {
                     for (obj_idx, v) in vals.iter().enumerate() {
                         if obj_idx < n_obj {
                             listen_values[obj_idx].push(*v);
@@ -484,7 +573,7 @@ impl OptunaReader {
             for impulse_num in &impulse_indices {
                 let mut found_in_window = false;
                 for offset in 0..3 {
-                    if let Some(vals) = receiver_map.get(&(impulse_num + offset)) {
+                    if let Some(vals) = receiver_by_number.get(&(impulse_num + offset)) {
                         for (obj_idx, v) in vals.iter().enumerate() {
                             if obj_idx < n_obj {
                                 post_impulse_windows[obj_idx].push(*v);
@@ -615,14 +704,14 @@ impl OptunaReader {
                     let before = impulse_num.saturating_sub(offset);
                     let after = impulse_num + offset + lag;
                     if !impulse_window_set.contains(&before) {
-                        if let Some(vals) = receiver_map.get(&before) {
+                        if let Some(vals) = receiver_by_number.get(&before) {
                             if obj_idx < vals.len() {
                                 local_noise.push(vals[obj_idx]);
                             }
                         }
                     }
                     if !impulse_window_set.contains(&after) {
-                        if let Some(vals) = receiver_map.get(&after) {
+                        if let Some(vals) = receiver_by_number.get(&after) {
                             if obj_idx < vals.len() {
                                 local_noise.push(vals[obj_idx]);
                             }
@@ -672,6 +761,7 @@ impl OptunaReader {
             "sender_id": sender_id,
             "receiver_id": receiver_id,
             "impulse_count": n_impulses,
+            "attempted_impulses": n_attempted,
             "impulses_used": matched_pairs * 2, // ping + listen pairs
             "matched_pairs": matched_pairs,
             "window_size": window_size,
@@ -695,6 +785,85 @@ impl OptunaReader {
 
 fn round4(v: f64) -> f64 {
     (v * 10000.0).round() / 10000.0
+}
+
+/// Parse an ISO 8601 / RFC 3339 timestamp string to epoch seconds.
+/// Returns None if parsing fails. Used for cross-breeder trial alignment.
+fn parse_timestamp_secs(ts: &str) -> Option<f64> {
+    // Optuna timestamps from YugaByte look like "2026-06-14 10:23:45.123456+00"
+    // or "2026-06-14T10:23:45.123456+00:00"
+    // Strategy: normalize to ISO 8601, then parse.
+    let normalized = ts.trim().replace(' ', "T");
+
+    // Try parsing with a simple manual parser (no chrono dependency).
+    // Format: YYYY-MM-DDTHH:MM:SS[.ffffff][+ZZ:ZZ]
+    let parts: Vec<&str> = normalized.split('T').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let date_parts: Vec<&str> = parts[0].split('-').collect();
+    if date_parts.len() != 3 {
+        return None;
+    }
+    let year: f64 = date_parts[0].parse().ok()?;
+    let month: f64 = date_parts[1].parse().ok()?;
+    let day: f64 = date_parts[2].parse().ok()?;
+
+    // Split time from timezone offset
+    let time_part = parts[1];
+    let (time_str, tz_offset_secs) = if let Some(pos) = time_part.find(|c| c == '+' || c == '-') {
+        // Don't split on the '-' in the date or the '.' in seconds
+        // Check that this + or - is after position 2 (HH:MM:SS minimum)
+        if pos >= 8 {
+            (&time_part[..pos], parse_tz_offset(&time_part[pos..]))
+        } else {
+            (time_part, Some(0.0))
+        }
+    } else {
+        (time_part, Some(0.0))
+    };
+
+    let time_clean = time_str.split('.').next().unwrap_or(time_str);
+    let time_parts: Vec<&str> = time_clean.split(':').collect();
+    if time_parts.len() < 3 {
+        return None;
+    }
+    let hour: f64 = time_parts[0].parse().ok()?;
+    let minute: f64 = time_parts[1].parse().ok()?;
+    let second: f64 = time_parts[2].parse().ok()?;
+
+    // Convert to epoch seconds (simplified — assumes UTC, ignores leap years beyond standard)
+    // Days from year 2000 to given year
+    let days_from_2000 = (year - 2000.0) * 365.25;
+    // Month to day-of-year (approximate)
+    let month_days = [0.0, 31.0, 59.0, 90.0, 120.0, 151.0, 181.0, 212.0, 243.0, 273.0, 304.0, 334.0];
+    let day_of_year = month_days.get((month as usize).saturating_sub(1).min(11)).copied().unwrap_or(0.0) + day;
+    let epoch = (days_from_2000 + day_of_year) * 86400.0
+        + hour * 3600.0 + minute * 60.0 + second
+        + tz_offset_secs.unwrap_or(0.0);
+    Some(epoch)
+}
+
+fn parse_tz_offset(s: &str) -> Option<f64> {
+    // Parse "+HH:MM" or "-HH:MM" or "+HHMM"
+    if s.is_empty() {
+        return Some(0.0);
+    }
+    let sign = if s.starts_with('-') { -1.0 } else { 1.0 };
+    let cleaned = s.trim_start_matches(|c| c == '+' || c == '-');
+    let parts: Vec<&str> = cleaned.split(':').collect();
+    if parts.len() == 2 {
+        let h: f64 = parts[0].parse().ok()?;
+        let m: f64 = parts[1].parse().ok()?;
+        Some(sign * (h * 3600.0 + m * 60.0))
+    } else if cleaned.len() >= 4 {
+        let h: f64 = cleaned[..2].parse().ok()?;
+        let m: f64 = cleaned[2..4].parse().ok()?;
+        Some(sign * (h * 3600.0 + m * 60.0))
+    } else {
+        Some(0.0)
+    }
 }
 
 #[cfg(test)]
@@ -798,5 +967,28 @@ mod tests {
 
         assert!((stacked_mean - baseline_mean).abs() < 0.01,
             "No coupling: stacked and baseline should be equal");
+    }
+
+    #[test]
+    fn test_parse_timestamp_basic() {
+        // Basic ISO format
+        let ts = parse_timestamp_secs("2026-06-14 10:23:45.123456+00").unwrap();
+        assert!(ts > 0.0, "Timestamp should be positive epoch, got {}", ts);
+
+        // T separator
+        let ts2 = parse_timestamp_secs("2026-06-14T10:23:45+00:00").unwrap();
+        assert!(ts2 > 0.0);
+
+        // Two timestamps from same day, different times — should differ by ~3600s
+        let ts3 = parse_timestamp_secs("2026-06-14 10:00:00+00").unwrap();
+        let ts4 = parse_timestamp_secs("2026-06-14 11:00:00+00").unwrap();
+        let diff = (ts4 - ts3).abs();
+        assert!((diff - 3600.0).abs() < 1.0, "Hour difference should be ~3600s, got {}", diff);
+    }
+
+    #[test]
+    fn test_parse_timestamp_invalid() {
+        assert!(parse_timestamp_secs("garbage").is_none());
+        assert!(parse_timestamp_secs("").is_none());
     }
 }
