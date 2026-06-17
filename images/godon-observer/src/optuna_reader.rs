@@ -269,17 +269,15 @@ impl OptunaReader {
         }
     }
 
-    /// Detect coupling between sender and receiver using impulse stacking.
+    /// Detect coupling between sender and receiver using matched filter + CFAR.
     ///
-    /// Method: seismological stack-and-threshold.
-    /// 1. Find sender's impulse trials (watermark active=true)
-    /// 2. For each impulse, extract receiver's objective values in a post-impulse window
-    /// 3. Stack (average) all post-impulse windows — coherent signal sums, noise cancels
-    /// 4. Compare stacked signal against baseline (non-impulse trials)
-    /// 5. SNR = |stacked_mean - baseline_mean| / baseline_std
-    /// 6. If SNR > threshold, coupling detected
-    ///
-    /// SNR improves as sqrt(N_impulses). With 4 impulses: 2x gain. With 20: 4.5x.
+    /// Method:
+    /// 1. Find sender's impulse trials (detection_mode=impulse or watermark active=true)
+    ///    including FAIL trials — the effectuation still happened, coupling still propagated.
+    /// 2. Match each ping/listen trial to receiver trials by WALL-CLOCK timestamp proximity,
+    ///    not trial number. Trial numbers are independent sequences per breeder.
+    /// 3. Matched filter: stack receiver values during pings vs during listens.
+    /// 4. CFAR: adaptive local noise floor from nearby non-impulse receiver trials.
     pub async fn get_active_breeders(&self) -> Result<Vec<serde_json::Value>, Error> {
         let client = self.connect("yugabyte").await?;
         let rows = client
@@ -352,9 +350,11 @@ impl OptunaReader {
 
             if is_impulse {
                 attempted_impulses += 1;
-                if t.state == "COMPLETE" {
-                    impulse_indices.push(t.number as usize);
-                }
+                // Include FAIL trials — the effectuation (parameter push) still
+                // happened. The greenhouse received the extreme params, coupling
+                // propagated, and the receiver's objectives shifted. Excluding
+                // FAILs would lose real coupling signal and create false negatives.
+                impulse_indices.push(t.number as usize);
             }
         }
 
@@ -468,7 +468,7 @@ impl OptunaReader {
         // The breeder tags each impulse trial with impulse_phase: "ping" or "listen"
         // Each entry: (trial_number, timestamp_secs)
         let ping_indices: Vec<(usize, f64)> = sender_trials.iter()
-            .filter(|t| t.state == "COMPLETE")
+            .filter(|t| t.state == "COMPLETE" || t.state == "FAIL")
             .filter_map(|t| {
                 let phase = t.user_attrs.get("impulse_phase")?;
                 let phase_str = if phase.is_string() { phase.as_str().unwrap_or("") } else { "" };
@@ -483,7 +483,7 @@ impl OptunaReader {
             })
             .collect();
         let listen_indices: Vec<(usize, f64)> = sender_trials.iter()
-            .filter(|t| t.state == "COMPLETE")
+            .filter(|t| t.state == "COMPLETE" || t.state == "FAIL")
             .filter_map(|t| {
                 let phase = t.user_attrs.get("impulse_phase")?;
                 let phase_str = if phase.is_string() { phase.as_str().unwrap_or("") } else { "" };
