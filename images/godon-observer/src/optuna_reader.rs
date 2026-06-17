@@ -509,6 +509,7 @@ impl OptunaReader {
         let mut ping_values: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
         let mut listen_values: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
         let mut matched_pairs = 0usize;
+        let mut degenerate_pairs = 0usize; // ping and listen alias to same receiver trial
 
         for i in 0..ping_indices.len().min(listen_indices.len()) {
             let (ping_trial, ping_ts) = ping_indices[i];
@@ -516,65 +517,135 @@ impl OptunaReader {
 
             let mut ping_found = false;
             let mut listen_found = false;
+            let mut ping_rx_number: Option<usize> = None;
+            let mut listen_rx_number: Option<usize> = None;
 
             // Collect receiver values for this ping/listen pair.
             // Try timestamp alignment first, then fall back to trial-number alignment.
             for offset in 0..=window_size {
                 // --- PING ---
-                let ping_vals: Option<&Vec<f64>> = {
+                let ping_vals: Option<(&Vec<f64>, usize)> = {
                     // Try timestamp first
                     if let Some(rt) = find_receiver_by_timestamp(ping_ts, propagation_lag_secs + (offset as f64) * 10.0) {
-                        Some(&rt.values)
+                        Some((&rt.values, rt.number))
                     } else {
                         // Fallback: trial-number alignment
-                        receiver_by_number.get(&(ping_trial + lag + offset))
-                            .copied()
+                        receiver_complete.iter()
+                            .find(|r| r.number == ping_trial + lag + offset)
+                            .map(|r| (&r.values, r.number))
                     }
                 };
-                if let Some(vals) = ping_vals {
+                if let Some((vals, rx_num)) = ping_vals {
                     for (obj_idx, v) in vals.iter().enumerate() {
                         if obj_idx < n_obj {
                             ping_values[obj_idx].push(*v);
                         }
                     }
                     ping_found = true;
+                    if ping_rx_number.is_none() {
+                        ping_rx_number = Some(rx_num);
+                    }
                 }
 
                 // --- LISTEN ---
-                let listen_vals: Option<&Vec<f64>> = {
+                let listen_vals: Option<(&Vec<f64>, usize)> = {
                     if let Some(rt) = find_receiver_by_timestamp(listen_ts, propagation_lag_secs + (offset as f64) * 10.0) {
-                        Some(&rt.values)
+                        Some((&rt.values, rt.number))
                     } else {
-                        receiver_by_number.get(&(listen_trial + lag + offset))
-                            .copied()
+                        receiver_complete.iter()
+                            .find(|r| r.number == listen_trial + lag + offset)
+                            .map(|r| (&r.values, r.number))
                     }
                 };
-                if let Some(vals) = listen_vals {
+                if let Some((vals, rx_num)) = listen_vals {
                     for (obj_idx, v) in vals.iter().enumerate() {
                         if obj_idx < n_obj {
                             listen_values[obj_idx].push(*v);
                         }
                     }
                     listen_found = true;
+                    if listen_rx_number.is_none() {
+                        listen_rx_number = Some(rx_num);
+                    }
                 }
             }
 
             if ping_found && listen_found {
-                matched_pairs += 1;
+                // Check for aliasing: if ping and listen resolved to the same
+                // receiver trial, the matched filter can't resolve any contrast.
+                // This happens when the receiver samples slower than the
+                // sender's ping/listen cycle.
+                if let (Some(prx), Some(lrx)) = (ping_rx_number, listen_rx_number) {
+                    if prx == lrx {
+                        degenerate_pairs += 1;
+                    } else {
+                        matched_pairs += 1;
+                    }
+                } else {
+                    matched_pairs += 1;
+                }
             }
         }
 
+        // If most pairs are degenerate (aliased), the ping/listen frequency
+        // exceeds the receiver's sampling rate (Nyquist). Fall through to
+        // round-level stacking which compares impulse-round receiver values
+        // against pre-round baseline — this resolves sustained coupling shifts.
+        if matched_pairs == 0 || (degenerate_pairs > 0 && degenerate_pairs >= matched_pairs) {
+            // Fall through to legacy round-level stacking below
+            matched_pairs = 0;
+        }
+
         if matched_pairs == 0 {
-            // Fallback: no ping/listen pairs found — use legacy stacking
-            // Collect post-impulse windows for all impulses
+            // Fallback: no matched ping/listen pairs (or all degenerate/aliased).
+            // Use round-level stacking: find receiver values during the sender's
+            // impulse round (by timestamp) and compare against pre-round baseline.
             let mut post_impulse_windows: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
             let mut window_count = 0usize;
 
-            for impulse_num in &impulse_indices {
+            // Collect sender impulse timestamps for round-aware alignment
+            let impulse_timestamps: Vec<f64> = sender_trials.iter()
+                .filter(|t| t.state == "COMPLETE" || t.state == "FAIL")
+                .filter_map(|t| {
+                    // Check if this trial is an impulse (detection_mode or watermark)
+                    let is_imp = t.user_attrs.get("detection_mode")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == "impulse")
+                        .unwrap_or(false);
+                    let is_wm_active = t.user_attrs.get("watermark")
+                        .and_then(|w| {
+                            if w.is_string() {
+                                serde_json::from_str(w.as_str().unwrap_or("{}")).ok()
+                            } else {
+                                Some(w.clone())
+                            }
+                        })
+                        .and_then(|v: serde_json::Value| v.get("active").and_then(|a| a.as_bool()))
+                        .unwrap_or(false);
+                    if is_imp || is_wm_active {
+                        t.datetime_start.as_ref()
+                            .and_then(|s| parse_timestamp_secs(s))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            for imp_ts in &impulse_timestamps {
                 let mut found_in_window = false;
+                // Find receiver trials within +/- 45 seconds of this impulse
                 for offset in 0..3 {
-                    if let Some(vals) = receiver_by_number.get(&(impulse_num + offset)) {
-                        for (obj_idx, v) in vals.iter().enumerate() {
+                    let target = imp_ts + propagation_lag_secs + (offset as f64) * 15.0;
+                    // Find closest receiver trial to this target time
+                    if let Some(rt) = receiver_complete.iter()
+                        .min_by(|a, b| {
+                            let da = (a.timestamp_secs - target).abs();
+                            let db = (b.timestamp_secs - target).abs();
+                            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .filter(|r| (r.timestamp_secs - target).abs() < 60.0)
+                    {
+                        for (obj_idx, v) in rt.values.iter().enumerate() {
                             if obj_idx < n_obj {
                                 post_impulse_windows[obj_idx].push(*v);
                             }
@@ -596,14 +667,17 @@ impl OptunaReader {
                 }));
             }
 
-            // Legacy baseline: all receiver trials NOT in impulse windows
-            let impulse_window_set: HashSet<usize> = impulse_indices.iter()
-                .flat_map(|&imp| (imp..imp + 3).collect::<Vec<usize>>())
-                .collect();
+            // Baseline: receiver trials BEFORE the impulse round started.
+            // Using the first impulse timestamp as the boundary — anything
+            // the receiver measured before the sender started impulsing
+            // represents the uncoupled baseline.
+            let first_impulse_ts = impulse_timestamps.first().copied().unwrap_or(f64::MAX);
 
             let mut baseline_values: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
             for rt in &receiver_complete {
-                if !impulse_window_set.contains(&rt.number) {
+                // Include trials that started before the impulse round
+                // (with small buffer for propagation delay)
+                if rt.timestamp_secs > 0.0 && rt.timestamp_secs < first_impulse_ts - 10.0 {
                     for (obj_idx, v) in rt.values.iter().enumerate() {
                         if obj_idx < n_obj {
                             baseline_values[obj_idx].push(*v);
