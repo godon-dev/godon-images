@@ -602,9 +602,9 @@ impl OptunaReader {
                 .collect();
 
             let mut baseline_values: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
-            for (num, vals) in &receiver_complete {
-                if !impulse_window_set.contains(num) {
-                    for (obj_idx, v) in vals.iter().enumerate() {
+            for rt in &receiver_complete {
+                if !impulse_window_set.contains(&rt.number) {
+                    for (obj_idx, v) in rt.values.iter().enumerate() {
                         if obj_idx < n_obj {
                             baseline_values[obj_idx].push(*v);
                         }
