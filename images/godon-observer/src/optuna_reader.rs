@@ -596,142 +596,129 @@ impl OptunaReader {
             matched_pairs = 0;
         }
 
-        if matched_pairs == 0 {
-            // Fallback: no matched ping/listen pairs (or all degenerate/aliased).
-            // Use round-level stacking: find receiver values during the sender's
-            // impulse round (by timestamp) and compare against pre-round baseline.
-            let mut post_impulse_windows: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
-            let mut window_count = 0usize;
-
-            // Collect sender impulse timestamps for round-aware alignment
-            let impulse_timestamps: Vec<f64> = sender_trials.iter()
-                .filter(|t| t.state == "COMPLETE" || t.state == "FAIL")
-                .filter_map(|t| {
-                    // Check if this trial is an impulse (detection_mode or watermark)
-                    let is_imp = t.user_attrs.get("detection_mode")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s == "impulse")
-                        .unwrap_or(false);
-                    let is_wm_active = t.user_attrs.get("watermark")
-                        .and_then(|w| {
-                            if w.is_string() {
-                                serde_json::from_str(w.as_str().unwrap_or("{}")).ok()
-                            } else {
-                                Some(w.clone())
-                            }
-                        })
-                        .and_then(|v: serde_json::Value| v.get("active").and_then(|a| a.as_bool()))
-                        .unwrap_or(false);
-                    if is_imp || is_wm_active {
-                        t.datetime_start.as_ref()
-                            .and_then(|s| parse_timestamp_secs(s))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            for imp_ts in &impulse_timestamps {
-                let mut found_in_window = false;
-                // Find receiver trials within +/- 45 seconds of this impulse
-                for offset in 0..3 {
-                    let target = imp_ts + propagation_lag_secs + (offset as f64) * 15.0;
-                    // Find closest receiver trial to this target time
-                    if let Some(rt) = receiver_complete.iter()
-                        .min_by(|a, b| {
-                            let da = (a.timestamp_secs - target).abs();
-                            let db = (b.timestamp_secs - target).abs();
-                            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .filter(|r| (r.timestamp_secs - target).abs() < 60.0)
-                    {
-                        for (obj_idx, v) in rt.values.iter().enumerate() {
-                            if obj_idx < n_obj {
-                                post_impulse_windows[obj_idx].push(*v);
-                            }
+        // === ROUND-LEVEL STACKING (primary detection method) ===
+        // Compare receiver values during sender's impulse rounds against
+        // receiver values during sender's non-impulse phases (optimize/recover).
+        // This captures sustained coupling shifts (step functions) that the
+        // ping/listen matched filter cannot resolve.
+        let mut impulse_timestamps: Vec<f64> = sender_trials.iter()
+            .filter(|t| t.state == "COMPLETE" || t.state == "FAIL")
+            .filter_map(|t| {
+                let is_imp = t.user_attrs.get("detection_mode")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s == "impulse")
+                    .unwrap_or(false);
+                let is_wm_active = t.user_attrs.get("watermark")
+                    .and_then(|w| {
+                        if w.is_string() {
+                            serde_json::from_str(w.as_str().unwrap_or("{}")).ok()
+                        } else {
+                            Some(w.clone())
                         }
-                        found_in_window = true;
-                    }
+                    })
+                    .and_then(|v: serde_json::Value| v.get("active").and_then(|a| a.as_bool()))
+                    .unwrap_or(false);
+                if is_imp || is_wm_active {
+                    t.datetime_start.as_ref()
+                        .and_then(|s| parse_timestamp_secs(s))
+                } else {
+                    None
                 }
-                if found_in_window { window_count += 1; }
-            }
+            })
+            .collect();
 
-            if window_count == 0 {
-                return Ok(serde_json::json!({
-                    "detected": false,
-                    "reason": "no receiver trials found in post-impulse windows",
-                    "method": "matched_filter_cfar",
-                    "sender_id": sender_id,
-                    "receiver_id": receiver_id,
-                    "impulse_count": n_impulses,
-                }));
-            }
+        // Sort impulse timestamps to find round boundaries
+        impulse_timestamps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
-            // Baseline: receiver trials BEFORE the impulse round started.
-            // Using the first impulse timestamp as the boundary — anything
-            // the receiver measured before the sender started impulsing
-            // represents the uncoupled baseline.
-            let first_impulse_ts = impulse_timestamps.first().copied().unwrap_or(f64::MAX);
+        let mut round_stacked: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
+        let mut round_baseline: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
 
-            let mut baseline_values: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
+        if !impulse_timestamps.is_empty() {
+            let first_imp = impulse_timestamps.first().unwrap();
+            let last_imp = impulse_timestamps.last().unwrap();
+
+            // Round baseline: receiver trials BEFORE first impulse (pre-round state)
             for rt in &receiver_complete {
-                // Include trials that started before the impulse round
-                // (with small buffer for propagation delay)
-                if rt.timestamp_secs > 0.0 && rt.timestamp_secs < first_impulse_ts - 10.0 {
+                if rt.timestamp_secs > 0.0 && rt.timestamp_secs < first_imp - 10.0 {
                     for (obj_idx, v) in rt.values.iter().enumerate() {
                         if obj_idx < n_obj {
-                            baseline_values[obj_idx].push(*v);
+                            round_baseline[obj_idx].push(*v);
                         }
                     }
                 }
             }
 
-            // Legacy detection (simple mean comparison)
-            let snr_threshold = 2.5_f64;
-            let mut per_objective: Vec<serde_json::Value> = Vec::new();
-            let mut any_detected = false;
-            let mut best_snr = 0.0_f64;
-            let mut best_obj = 0usize;
-
-            for obj_idx in 0..n_obj {
-                let stacked = &post_impulse_windows[obj_idx];
-                let baseline = &baseline_values[obj_idx];
-                if stacked.is_empty() || baseline.len() < 3 { continue; }
-
-                let stacked_mean = stacked.iter().sum::<f64>() / stacked.len() as f64;
-                let baseline_mean = baseline.iter().sum::<f64>() / baseline.len() as f64;
-                let baseline_std = {
-                    let n = baseline.len() as f64;
-                    (baseline.iter().map(|v| (v - baseline_mean).powi(2)).sum::<f64>() / n).sqrt()
-                };
-                if baseline_std < 1e-12 { continue; }
-
-                let shift = stacked_mean - baseline_mean;
-                let snr = shift.abs() / baseline_std;
-                let detected = snr >= snr_threshold;
-
-                per_objective.push(serde_json::json!({
-                    "objective_index": obj_idx, "detected": detected,
-                    "method": "impulse_stacking_fallback",
-                    "stacked_mean": round4(stacked_mean), "baseline_mean": round4(baseline_mean),
-                    "baseline_std": round4(baseline_std), "shift": round4(shift),
-                    "snr": round4(snr),
-                    "post_impulse_samples": stacked.len(), "baseline_samples": baseline.len(),
-                    "impulses_used": window_count,
-                }));
-                if detected { any_detected = true; }
-                if snr > best_snr { best_snr = snr; best_obj = obj_idx; }
+            // Round stacked: receiver trials DURING impulse window (first to last impulse + buffer)
+            for rt in &receiver_complete {
+                if rt.timestamp_secs > first_imp - 30.0 && rt.timestamp_secs < last_imp + 120.0 {
+                    for (obj_idx, v) in rt.values.iter().enumerate() {
+                        if obj_idx < n_obj {
+                            round_stacked[obj_idx].push(*v);
+                        }
+                    }
+                }
             }
+        }
 
-            return Ok(serde_json::json!({
-                "detected": any_detected, "method": "impulse_stacking_fallback",
-                "sender_id": sender_id, "receiver_id": receiver_id,
-                "impulse_count": n_impulses, "impulses_used": window_count,
-                "snr_threshold": snr_threshold, "best_snr": round4(best_snr),
-                "best_objective": best_obj, "per_objective": per_objective,
-                "sender_trials": sender_trials.len(), "receiver_trials": receiver_trials.len(),
+        // Compute round-level SNR per objective
+        let mut round_snr_best = 0.0_f64;
+        let mut round_detected = false;
+        let mut round_per_obj: Vec<serde_json::Value> = Vec::new();
+        for obj_idx in 0..n_obj {
+            let stacked = &round_stacked[obj_idx];
+            let baseline = &round_baseline[obj_idx];
+            if stacked.is_empty() || baseline.len() < 3 {
+                round_per_obj.push(serde_json::json!({
+                    "objective_index": obj_idx, "detected": false,
+                    "reason": "insufficient data",
+                    "round_stacked_samples": stacked.len(),
+                    "round_baseline_samples": baseline.len(),
+                }));
+                continue;
+            }
+            let stacked_mean = stacked.iter().sum::<f64>() / stacked.len() as f64;
+            let baseline_mean = baseline.iter().sum::<f64>() / baseline.len() as f64;
+            let baseline_std = {
+                let n = baseline.len() as f64;
+                (baseline.iter().map(|v| (v - baseline_mean).powi(2)).sum::<f64>() / n).sqrt()
+            }.max(1e-6);
+            let shift = stacked_mean - baseline_mean;
+            let snr = shift.abs() / baseline_std;
+            let detected = snr >= 2.5;
+            if detected { round_detected = true; }
+            if snr > round_snr_best { round_snr_best = snr; }
+            round_per_obj.push(serde_json::json!({
+                "objective_index": obj_idx, "detected": detected,
+                "method": "round_level_stacking",
+                "round_stacked_mean": round4(stacked_mean),
+                "round_baseline_mean": round4(baseline_mean),
+                "round_baseline_std": round4(baseline_std),
+                "round_shift": round4(shift),
+                "round_snr": round4(snr),
+                "round_stacked_samples": stacked.len(),
+                "round_baseline_samples": baseline.len(),
             }));
         }
+
+        // === COMPARE: return whichever method has higher SNR ===
+        // If round-level detected coupling (step function), prefer it.
+        // Otherwise fall through to matched filter for oscillating signals.
+        if round_detected || round_snr_best > best_snr {
+            return Ok(serde_json::json!({
+                "detected": round_detected,
+                "method": "round_level_stacking",
+                "sender_id": sender_id, "receiver_id": receiver_id,
+                "impulse_count": n_impulses,
+                "matched_pairs": matched_pairs,
+                "best_snr": round4(round_snr_best),
+                "matched_filter_snr": round4(best_snr),
+                "per_objective": round_per_obj,
+                "sender_trials": sender_trials.len(),
+                "receiver_trials": receiver_trials.len(),
+            }));
+        }
+
+        // Matched filter result (for oscillating signals where round-level doesn't fire)
 
         // === CFAR: Compute local noise floor ===
         // For each objective, compute the local noise from receiver hold trials
