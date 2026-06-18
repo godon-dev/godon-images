@@ -700,25 +700,14 @@ impl OptunaReader {
             }));
         }
 
-        // === COMPARE: return whichever method has higher SNR ===
-        // If round-level detected coupling (step function), prefer it.
-        // Otherwise fall through to matched filter for oscillating signals.
-        if round_detected || round_snr_best > best_snr {
-            return Ok(serde_json::json!({
-                "detected": round_detected,
-                "method": "round_level_stacking",
-                "sender_id": sender_id, "receiver_id": receiver_id,
-                "impulse_count": n_impulses,
-                "matched_pairs": matched_pairs,
-                "best_snr": round4(round_snr_best),
-                "matched_filter_snr": round4(best_snr),
-                "per_objective": round_per_obj,
-                "sender_trials": sender_trials.len(),
-                "receiver_trials": receiver_trials.len(),
-            }));
-        }
-
-        // Matched filter result (for oscillating signals where round-level doesn't fire)
+        // === COMPARE: return round-level if it detected coupling ===
+        // Matched filter (below) computes best_snr for oscillating signals.
+        // If round-level already found coupling (step function), return it.
+        // The matched filter runs first below and sets best_snr, then we
+        // compare at the end.
+        let _round_snr_best = round_snr_best;
+        let _round_detected = round_detected;
+        let _round_per_obj = round_per_obj;
 
         // === CFAR: Compute local noise floor ===
         // For each objective, compute the local noise from receiver hold trials
@@ -815,7 +804,22 @@ impl OptunaReader {
             if matched_snr > best_snr { best_snr = matched_snr; best_obj = obj_idx; }
         }
 
-        // Overall result
+        // Compare round-level vs matched filter — return whichever is stronger
+        if round_detected && round_snr_best > best_snr {
+            return Ok(serde_json::json!({
+                "detected": round_detected,
+                "method": "round_level_stacking",
+                "sender_id": sender_id, "receiver_id": receiver_id,
+                "impulse_count": n_impulses, "matched_pairs": matched_pairs,
+                "best_snr": round4(round_snr_best),
+                "matched_filter_snr": round4(best_snr),
+                "per_objective": round_per_obj,
+                "sender_trials": sender_trials.len(),
+                "receiver_trials": receiver_trials.len(),
+            }));
+        }
+
+        // Overall result (matched filter)
         let result = serde_json::json!({
             "detected": any_detected,
             "method": "matched_filter_cfar",
@@ -823,7 +827,7 @@ impl OptunaReader {
             "receiver_id": receiver_id,
             "impulse_count": n_impulses,
             "attempted_impulses": n_attempted,
-            "impulses_used": matched_pairs * 2, // ping + listen pairs
+            "impulses_used": matched_pairs * 2,
             "matched_pairs": matched_pairs,
             "window_size": window_size,
             "lag": lag,
