@@ -705,9 +705,7 @@ impl OptunaReader {
         // If round-level already found coupling (step function), return it.
         // The matched filter runs first below and sets best_snr, then we
         // compare at the end.
-        let _round_snr_best = round_snr_best;
-        let _round_detected = round_detected;
-        let _round_per_obj = round_per_obj;
+        let _ = round_snr_best;
 
         // === CFAR: Compute local noise floor ===
         // For each objective, compute the local noise from receiver hold trials
