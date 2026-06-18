@@ -373,7 +373,7 @@ impl OptunaReader {
         }
 
         // Extract watermark metadata for context
-        let wm_meta: serde_json::Value = sender_trials.iter()
+        let _wm_meta: serde_json::Value = sender_trials.iter()
             .filter(|t| t.user_attrs.contains_key("watermark"))
             .filter_map(|t| {
                 let raw = &t.user_attrs["watermark"];
@@ -813,7 +813,7 @@ impl OptunaReader {
                 "impulse_count": n_impulses, "matched_pairs": matched_pairs,
                 "best_snr": round4(round_snr_best),
                 "matched_filter_snr": round4(best_snr),
-                "per_objective": round_per_obj,
+                "per_objective": round_per_obj.clone(),
                 "sender_trials": sender_trials.len(),
                 "receiver_trials": receiver_trials.len(),
             }));
