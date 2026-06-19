@@ -511,7 +511,7 @@ impl OptunaReader {
             let push = &push_vals[obj_idx];
             let pause = &pause_vals[obj_idx];
 
-            if baseline.len() < 5 || push.len() < 5 || pause.len() < 3 {
+            if baseline.len() < 3 || push.len() < 3 || pause.len() < 3 {
                 per_objective.push(serde_json::json!({
                     "objective_index": obj_idx, "detected": false,
                     "reason": "insufficient samples",
