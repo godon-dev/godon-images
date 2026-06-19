@@ -469,10 +469,11 @@ impl OptunaReader {
         // Propagation lag: receiver sees sender's effect ~1 trial later (~15-30s)
         let propagation_lag = 20.0_f64;
 
-        // Collect receiver values in three windows:
-        //   baseline: before push_start (with buffer)
-        //   push: during push block (push_start to push_end + lag)
-        //   pause: during pause block (pause_start to pause_end + lag)
+        // Collect receiver values in three non-overlapping windows.
+        // Windows use sender block timestamps to partition receiver trials:
+        //   baseline: everything before push_start
+        //   push: from push_start to pause_start (exclusive)
+        //   pause: from pause_start onward
         let mut baseline_vals: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
         let mut push_vals: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
         let mut pause_vals: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
@@ -481,20 +482,20 @@ impl OptunaReader {
             if rt.timestamp_secs <= 0.0 { continue; }
             let t = rt.timestamp_secs;
 
-            if t < push_start - 30.0 {
+            if t < push_start {
                 // Baseline: before push started
                 for (i, v) in rt.values.iter().enumerate() {
                     if i < n_obj { baseline_vals[i].push(*v); }
                 }
-            } else if t >= push_start - 10.0 && t <= push_end + propagation_lag + 30.0 {
-                // During push block
-                for (i, v) in rt.values.iter().enumerate() {
-                    if i < n_obj { push_vals[i].push(*v); }
-                }
-            } else if t >= pause_start - 10.0 && t <= pause_end + propagation_lag + 30.0 {
-                // During pause block
+            } else if !pause_timestamps.is_empty() && t >= pause_start {
+                // During pause block (after sender switched to baseline params)
                 for (i, v) in rt.values.iter().enumerate() {
                     if i < n_obj { pause_vals[i].push(*v); }
+                }
+            } else {
+                // During push block (between push_start and pause_start)
+                for (i, v) in rt.values.iter().enumerate() {
+                    if i < n_obj { push_vals[i].push(*v); }
                 }
             }
         }
@@ -510,7 +511,7 @@ impl OptunaReader {
             let push = &push_vals[obj_idx];
             let pause = &pause_vals[obj_idx];
 
-            if baseline.len() < 3 || push.len() < 3 {
+            if baseline.len() < 5 || push.len() < 5 || pause.len() < 3 {
                 per_objective.push(serde_json::json!({
                     "objective_index": obj_idx, "detected": false,
                     "reason": "insufficient samples",
@@ -530,8 +531,9 @@ impl OptunaReader {
             // Falling edge: pause values lower than push (recovery)
             let falling_edge = push_median - pause_median;
 
-            // Noise estimate: MAD (median absolute deviation) of baseline
-            let baseline_mad = mad(baseline).max(1e-6);
+            // Noise estimate: MAD (median absolute deviation) of baseline.
+            // Floor at 0.01 to prevent SNR explosions when baseline values are nearly identical.
+            let baseline_mad = mad(baseline).max(0.01);
             // Normalize shift by noise
             let rising_snr = rising_edge.abs() / baseline_mad;
             let falling_snr = falling_edge.abs() / baseline_mad;
