@@ -768,14 +768,23 @@ impl OptunaReader {
                 }
             }
 
-            let noise_std = if local_noise.len() >= 3 {
-                let noise_mean = local_noise.iter().sum::<f64>() / local_noise.len() as f64;
-                let n = local_noise.len() as f64;
-                ((local_noise.iter().map(|v| (v - noise_mean).powi(2)).sum::<f64>() / n).sqrt()).max(1e-12)
-            } else {
-                // Fallback: use listen-phase variance as noise estimate
+            // CFAR noise estimate: use listen-phase variance as the noise floor.
+            // The local CFAR window (nearby trials) can have artificially low
+            // variance when only a few samples are available, producing SNR
+            // in the billions. Instead, use ALL listen-phase values as the
+            // noise estimate — these represent the receiver's natural measurement
+            // variance during the impulse round.
+            let noise_std = {
                 let n = listens.len() as f64;
-                ((listens.iter().map(|v| (v - listen_mean).powi(2)).sum::<f64>() / n).sqrt()).max(1e-12)
+                if n >= 5.0 {
+                    ((listens.iter().map(|v| (v - listen_mean).powi(2)).sum::<f64>() / n).sqrt()).max(1e-6)
+                } else if local_noise.len() >= 10 {
+                    let nm = local_noise.iter().sum::<f64>() / local_noise.len() as f64;
+                    let ln = local_noise.len() as f64;
+                    ((local_noise.iter().map(|v| (v - nm).powi(2)).sum::<f64>() / ln).sqrt()).max(1e-6)
+                } else {
+                    1e-6 // Absolute minimum — prevents div-by-zero
+                }
             };
 
             let matched_snr = matched_shift.abs() / noise_std;
