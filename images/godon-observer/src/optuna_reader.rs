@@ -538,9 +538,11 @@ impl OptunaReader {
 
             // Detection: both edges must be present and significant
             // Rising: push shifted from baseline (>1.5 MAD for robustness)
-            // Falling: push shifted back toward baseline during pause (>0.5 MAD)
-            let rising_detected = rising_snr >= 1.5 && rising_edge.abs() > 0.0;
-            let falling_detected = falling_snr >= 0.5;
+            // Rising: push shifted away from baseline (significant change)
+            // Falling: pause shifted back toward baseline (recovery — must be in
+            // OPPOSITE direction from rising edge, proving reversibility)
+            let rising_detected = rising_snr >= 1.5;
+            let falling_detected = falling_snr >= 0.5 && falling_edge > 0.0;
             let detected = rising_detected && falling_detected;
 
             if detected { any_detected = true; }
