@@ -551,16 +551,6 @@ impl OptunaReader {
             per_objective.push(serde_json::json!({
                 "objective_index": obj_idx, "detected": detected,
                 "method": "block_step_detection",
-
-            // Detection: signal shifted significantly from baseline
-            let detected = snr >= 2.5;
-
-            if detected { any_detected = true; }
-            if shift.abs() > best_shift { best_shift = shift.abs(); best_obj = obj_idx; }
-
-            per_objective.push(serde_json::json!({
-                "objective_index": obj_idx, "detected": detected,
-                "method": "block_step_detection",
                 "baseline_median": round4(baseline_median),
                 "signal_median": round4(signal_median),
                 "shift": round4(shift),
