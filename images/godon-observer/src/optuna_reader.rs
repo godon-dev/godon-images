@@ -469,17 +469,53 @@ impl OptunaReader {
         // Propagation lag: receiver sees sender's effect ~1 trial later (~15-30s)
         let propagation_lag = 20.0_f64;
 
-        // Collect receiver values grouped by hold_phase when available,
-        // falling back to timestamp-based windows otherwise.
+        // Collect receiver values in three windows:
+        //   baseline: before push_start (with buffer)
+        //   push: during push block (push_start to push_end + lag)
+        //   pause: during pause block (pause_start to pause_end + lag)
+        let mut baseline_vals: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
+        let mut push_vals: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
+        let mut pause_vals: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
+
+        // Check if receiver trials have hold_phase tags (precise alignment)
         let has_hold_phase = receiver_trials.iter().any(|t| {
             t.user_attrs.get("hold_phase").is_some()
         });
 
-        let mut signal_vals: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
-        let mut baseline_vals: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
+        // Build sender push/pause trial number sets for hold_phase alignment
+        let sender_push_numbers: std::collections::HashSet<i64> = if has_hold_phase {
+            sender_trials.iter()
+                .filter(|t| {
+                    t.user_attrs.get("impulse_phase")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == "push")
+                        .unwrap_or(false)
+                })
+                .map(|t| t.number)
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+
+        let sender_pause_numbers: std::collections::HashSet<i64> = if has_hold_phase {
+            sender_trials.iter()
+                .filter(|t| {
+                    t.user_attrs.get("impulse_phase")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == "pause")
+                        .unwrap_or(false)
+                })
+                .map(|t| t.number)
+                .collect()
+        } else {
+            std::collections::HashSet::new()
+        };
 
         if has_hold_phase {
-            // Use hold_phase tags - precise, no timestamp alignment issues
+            // Use hold_phase tags for precise alignment.
+            // Receiver: baseline/post → baseline_vals
+            //           signal during sender push → push_vals
+            //           signal during sender pause → pause_vals
             for t in receiver_trials.iter() {
                 if t.state != "COMPLETE" { continue; }
                 let vals: Vec<f64> = t.values.iter().filter_map(|v| *v).collect();
@@ -487,38 +523,50 @@ impl OptunaReader {
                 let phase = t.user_attrs.get("hold_phase")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                if phase == "signal" {
-                    for (i, v) in vals.iter().enumerate() {
-                        if i < n_obj { signal_vals[i].push(*v); }
+
+                let target = if phase == "baseline" || phase == "post" {
+                    &mut baseline_vals
+                } else if phase == "signal" {
+                    if sender_push_numbers.contains(&t.number) {
+                        &mut push_vals
+                    } else if sender_pause_numbers.contains(&t.number) {
+                        &mut pause_vals
+                    } else {
+                        continue;
                     }
-                } else if phase == "baseline" || phase == "post" {
-                    for (i, v) in vals.iter().enumerate() {
-                        if i < n_obj { baseline_vals[i].push(*v); }
-                    }
+                } else {
+                    continue;
+                };
+
+                for (i, v) in vals.iter().enumerate() {
+                    if i < n_obj { target[i].push(*v); }
                 }
             }
         } else {
-            // Fallback: non-overlapping timestamp windows
-            for rt in &receiver_complete {
-                if rt.timestamp_secs <= 0.0 { continue; }
-                let t = rt.timestamp_secs;
-                if t < push_start {
-                    for (i, v) in rt.values.iter().enumerate() {
-                        if i < n_obj { baseline_vals[i].push(*v); }
-                    }
-                } else if !pause_timestamps.is_empty() && t >= pause_start {
-                    for (i, v) in rt.values.iter().enumerate() {
-                        if i < n_obj { baseline_vals[i].push(*v); }
-                    }
-                } else {
-                    for (i, v) in rt.values.iter().enumerate() {
-                        if i < n_obj { signal_vals[i].push(*v); }
-                    }
+
+        for rt in &receiver_complete {
+            if rt.timestamp_secs <= 0.0 { continue; }
+            let t = rt.timestamp_secs;
+
+            if t < push_start - 30.0 {
+                // Baseline: before push started
+                for (i, v) in rt.values.iter().enumerate() {
+                    if i < n_obj { baseline_vals[i].push(*v); }
+                }
+            } else if t >= push_start - 10.0 && t <= push_end + propagation_lag + 30.0 {
+                // During push block
+                for (i, v) in rt.values.iter().enumerate() {
+                    if i < n_obj { push_vals[i].push(*v); }
+                }
+            } else if t >= pause_start - 10.0 && t <= pause_end + propagation_lag + 30.0 {
+                // During pause block
+                for (i, v) in rt.values.iter().enumerate() {
+                    if i < n_obj { pause_vals[i].push(*v); }
                 }
             }
-        }
+        } // end if has_hold_phase / else
 
-        // Detect coupling: compare signal vs baseline
+        // Detect edges per objective using median comparison
         let mut per_objective: Vec<serde_json::Value> = Vec::new();
         let mut any_detected = false;
         let mut best_shift = 0.0_f64;
@@ -526,39 +574,59 @@ impl OptunaReader {
 
         for obj_idx in 0..n_obj {
             let baseline = &baseline_vals[obj_idx];
-            let signal = &signal_vals[obj_idx];
+            let push = &push_vals[obj_idx];
+            let pause = &pause_vals[obj_idx];
 
-            if baseline.len() < 2 || signal.len() < 1 {
+            if baseline.len() < 3 || push.len() < 3 {
                 per_objective.push(serde_json::json!({
                     "objective_index": obj_idx, "detected": false,
                     "reason": "insufficient samples",
                     "baseline_samples": baseline.len(),
-                    "signal_samples": signal.len(),
+                    "push_samples": push.len(),
+                    "pause_samples": pause.len(),
                 }));
                 continue;
             }
 
             let baseline_median = median(baseline);
-            let signal_median = median(signal);
-            let shift = signal_median - baseline_median;
-            let baseline_mad = mad(baseline).max(0.01);
-            let snr = shift.abs() / baseline_mad;
-            let detected = snr >= 2.5;
+            let push_median = median(push);
+            let pause_median = if pause.len() >= 3 { median(pause) } else { baseline_median };
+
+            // Rising edge: push values higher than baseline
+            let rising_edge = push_median - baseline_median;
+            // Falling edge: pause values lower than push (recovery)
+            let falling_edge = push_median - pause_median;
+
+            // Noise estimate: MAD (median absolute deviation) of baseline
+            let baseline_mad = mad(baseline).max(1e-6);
+            // Normalize shift by noise
+            let rising_snr = rising_edge.abs() / baseline_mad;
+            let falling_snr = falling_edge.abs() / baseline_mad;
+
+            // Detection: both edges must be present and significant
+            // Rising: push shifted from baseline (>1.5 MAD for robustness)
+            // Falling: push shifted back toward baseline during pause (>0.5 MAD)
+            let rising_detected = rising_snr >= 1.5 && rising_edge.abs() > 0.0;
+            let falling_detected = falling_snr >= 0.5;
+            let detected = rising_detected && falling_detected;
 
             if detected { any_detected = true; }
-            if shift.abs() > best_shift { best_shift = shift.abs(); best_obj = obj_idx; }
+            if rising_edge.abs() > best_shift { best_shift = rising_edge.abs(); best_obj = obj_idx; }
 
             per_objective.push(serde_json::json!({
                 "objective_index": obj_idx, "detected": detected,
                 "method": "block_step_detection",
                 "baseline_median": round4(baseline_median),
-                "signal_median": round4(signal_median),
-                "shift": round4(shift),
+                "push_median": round4(push_median),
+                "pause_median": round4(pause_median),
+                "rising_edge": round4(rising_edge),
+                "falling_edge": round4(falling_edge),
                 "baseline_mad": round4(baseline_mad),
-                "snr": round4(snr),
+                "rising_snr": round4(rising_snr),
+                "falling_snr": round4(falling_snr),
                 "baseline_samples": baseline.len(),
-                "signal_samples": signal.len(),
-                "hold_phase_mode": has_hold_phase,
+                "push_samples": push.len(),
+                "pause_samples": pause.len(),
             }));
         }
 
