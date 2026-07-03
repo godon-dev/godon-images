@@ -483,7 +483,7 @@ impl OptunaReader {
         });
 
         // Build sender push/pause trial number sets for hold_phase alignment
-        let sender_push_numbers: std::collections::HashSet<i64> = if has_hold_phase {
+        let sender_push_numbers: std::collections::HashSet<i32> = if has_hold_phase {
             sender_trials.iter()
                 .filter(|t| {
                     t.user_attrs.get("impulse_phase")
@@ -491,13 +491,13 @@ impl OptunaReader {
                         .map(|s| s == "push")
                         .unwrap_or(false)
                 })
-                .map(|t| t.number)
+                .map(|t| t.number as i32)
                 .collect()
         } else {
             std::collections::HashSet::new()
         };
 
-        let sender_pause_numbers: std::collections::HashSet<i64> = if has_hold_phase {
+        let sender_pause_numbers: std::collections::HashSet<i32> = if has_hold_phase {
             sender_trials.iter()
                 .filter(|t| {
                     t.user_attrs.get("impulse_phase")
@@ -505,7 +505,7 @@ impl OptunaReader {
                         .map(|s| s == "pause")
                         .unwrap_or(false)
                 })
-                .map(|t| t.number)
+                .map(|t| t.number as i32)
                 .collect()
         } else {
             std::collections::HashSet::new()
