@@ -564,7 +564,8 @@ impl OptunaReader {
                     if i < n_obj { pause_vals[i].push(*v); }
                 }
             }
-        } // end if has_hold_phase / else
+        } // end for rt in receiver_complete
+        } // end else (timestamp fallback)
 
         // Detect edges per objective using median comparison
         let mut per_objective: Vec<serde_json::Value> = Vec::new();
