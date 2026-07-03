@@ -524,22 +524,20 @@ impl OptunaReader {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
-                let target = if phase == "baseline" || phase == "post" {
-                    &mut baseline_vals
+                if phase == "baseline" || phase == "post" {
+                    for (i, v) in vals.iter().enumerate() {
+                        if i < n_obj { baseline_vals[i].push(*v); }
+                    }
                 } else if phase == "signal" {
                     if sender_push_numbers.contains(&t.number) {
-                        &mut push_vals
+                        for (i, v) in vals.iter().enumerate() {
+                            if i < n_obj { push_vals[i].push(*v); }
+                        }
                     } else if sender_pause_numbers.contains(&t.number) {
-                        &mut pause_vals
-                    } else {
-                        continue;
+                        for (i, v) in vals.iter().enumerate() {
+                            if i < n_obj { pause_vals[i].push(*v); }
+                        }
                     }
-                } else {
-                    continue;
-                };
-
-                for (i, v) in vals.iter().enumerate() {
-                    if i < n_obj { target[i].push(*v); }
                 }
             }
         } else {
