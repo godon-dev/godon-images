@@ -269,15 +269,17 @@ impl OptunaReader {
         }
     }
 
-    /// Detect coupling between sender and receiver using matched filter + CFAR.
+    /// Detect coupling between sender and receiver using impulse stacking.
     ///
-    /// Method:
-    /// 1. Find sender's impulse trials (detection_mode=impulse or watermark active=true)
-    ///    including FAIL trials — the effectuation still happened, coupling still propagated.
-    /// 2. Match each ping/listen trial to receiver trials by WALL-CLOCK timestamp proximity,
-    ///    not trial number. Trial numbers are independent sequences per breeder.
-    /// 3. Matched filter: stack receiver values during pings vs during listens.
-    /// 4. CFAR: adaptive local noise floor from nearby non-impulse receiver trials.
+    /// Method: seismological stack-and-threshold.
+    /// 1. Find sender's impulse trials (watermark active=true)
+    /// 2. For each impulse, extract receiver's objective values in a post-impulse window
+    /// 3. Stack (average) all post-impulse windows — coherent signal sums, noise cancels
+    /// 4. Compare stacked signal against baseline (non-impulse trials)
+    /// 5. SNR = |stacked_mean - baseline_mean| / baseline_std
+    /// 6. If SNR > threshold, coupling detected
+    ///
+    /// SNR improves as sqrt(N_impulses). With 4 impulses: 2x gain. With 20: 4.5x.
     pub async fn get_active_breeders(&self) -> Result<Vec<serde_json::Value>, Error> {
         let client = self.connect("yugabyte").await?;
         let rows = client
@@ -350,11 +352,9 @@ impl OptunaReader {
 
             if is_impulse {
                 attempted_impulses += 1;
-                // Include FAIL trials — the effectuation (parameter push) still
-                // happened. The greenhouse received the extreme params, coupling
-                // propagated, and the receiver's objectives shifted. Excluding
-                // FAILs would lose real coupling signal and create false negatives.
-                impulse_indices.push(t.number as usize);
+                if t.state == "COMPLETE" {
+                    impulse_indices.push(t.number as usize);
+                }
             }
         }
 
@@ -373,7 +373,7 @@ impl OptunaReader {
         }
 
         // Extract watermark metadata for context
-        let _wm_meta: serde_json::Value = sender_trials.iter()
+        let wm_meta: serde_json::Value = sender_trials.iter()
             .filter(|t| t.user_attrs.contains_key("watermark"))
             .filter_map(|t| {
                 let raw = &t.user_attrs["watermark"];
@@ -386,17 +386,23 @@ impl OptunaReader {
             .next()
             .unwrap_or(serde_json::json!({}));
 
-        // === BLOCK DESIGN DETECTION ===
+        // === MATCHED FILTER + CFAR DETECTION PIPELINE ===
         //
-        // The sender does sustained push (extreme params) then sustained pause
-        // (baseline params). We look for a step in the receiver's values:
-        //   1. Receiver values during push block (rising edge)
-        //   2. Receiver values during pause block (falling edge)
-        //   3. Receiver values before push started (baseline reference)
+        // Phase 1: Identify ping/listen phases from sender trials
+        //   - Ping trials: sender detection_mode=impulse AND the trial is even-positioned
+        //     in the impulse sequence (first impulse = ping, second = listen, etc.)
+        //   - We don't have the ping/listen flag directly, so we approximate:
+        //     alternate sender impulse trials as ping/listen based on their order
         //
-        // Detection = rising edge AND falling edge, temporally aligned with sender blocks.
+        // Phase 2: Matched filter — stack receiver values at ping times and listen times
+        //   separately, compute the difference. Coherent stacking boosts SNR by sqrt(N).
+        //
+        // Phase 3: CFAR threshold — compute local noise floor from nearby non-impulse
+        //   receiver trials, set adaptive threshold.
 
-        // Build receiver trial lookup with timestamps
+        // Get receiver complete trials sorted by number, with their values and timestamps
+        // Timestamps are used for cross-breeder alignment (sender trial N doesn't
+        // correspond to receiver trial N — breeders run at different speeds).
         #[derive(Clone)]
         struct ReceiverTrial {
             number: usize,
@@ -407,8 +413,13 @@ impl OptunaReader {
         let receiver_complete: Vec<ReceiverTrial> = receiver_trials.iter()
             .filter(|t| t.state == "COMPLETE")
             .filter_map(|t| {
-                let vals: Vec<f64> = t.values.iter().filter_map(|v| *v).collect();
-                if vals.is_empty() { return None; }
+                let vals: Vec<f64> = t.values.iter()
+                    .filter_map(|v| *v)
+                    .collect();
+                if vals.is_empty() {
+                    return None;
+                }
+                // Parse datetime_start to epoch seconds for alignment
                 let ts = t.datetime_start.as_ref()
                     .and_then(|s| parse_timestamp_secs(s))
                     .unwrap_or(0.0);
@@ -422,222 +433,341 @@ impl OptunaReader {
 
         if receiver_complete.is_empty() {
             return Ok(serde_json::json!({
-                "detected": false, "reason": "no complete receiver trials",
-                "method": "block_step_detection",
-                "sender_id": sender_id, "receiver_id": receiver_id,
+                "detected": false,
+                "reason": "no complete receiver trials",
+                "method": "matched_filter_cfar",
+                "sender_id": sender_id,
+                "receiver_id": receiver_id,
             }));
         }
 
         let n_obj = receiver_complete[0].values.len();
 
-        // Find sender push and pause timestamps by impulse_phase attribute
-        let mut push_timestamps: Vec<f64> = Vec::new();
-        let mut pause_timestamps: Vec<f64> = Vec::new();
+        // Find the receiver trial closest in time to a given sender trial timestamp.
+        // Returns None if timestamps are unavailable (falls back to trial-number alignment).
+        let find_receiver_by_timestamp = |sender_ts: f64, lag_secs: f64| -> Option<&ReceiverTrial> {
+            if sender_ts <= 0.0 || receiver_complete.iter().all(|r| r.timestamp_secs <= 0.0) {
+                return None;
+            }
+            let target = sender_ts + lag_secs;
+            receiver_complete.iter()
+                .min_by(|a, b| {
+                    let da = (a.timestamp_secs - target).abs();
+                    let db = (b.timestamp_secs - target).abs();
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .filter(|r| (r.timestamp_secs - target).abs() < 120.0) // Max 2-min drift
+        };
 
-        for t in sender_trials.iter() {
-            let phase = t.user_attrs.get("impulse_phase")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if phase == "push" {
-                if let Some(ts) = t.datetime_start.as_ref().and_then(|s| parse_timestamp_secs(s)) {
-                    push_timestamps.push(ts);
+        // Fallback: trial-number-based lookup (for when timestamps aren't available)
+        let receiver_by_number: HashMap<usize, &Vec<f64>> = receiver_complete.iter()
+            .map(|r| (r.number, &r.values))
+            .collect();
+
+        // Separate sender impulses into ping and listen phases using impulse_phase attr
+        // The breeder tags each impulse trial with impulse_phase: "ping" or "listen"
+        // Each entry: (trial_number, timestamp_secs)
+        let ping_indices: Vec<(usize, f64)> = sender_trials.iter()
+            .filter(|t| t.state == "COMPLETE")
+            .filter_map(|t| {
+                let phase = t.user_attrs.get("impulse_phase")?;
+                let phase_str = if phase.is_string() { phase.as_str().unwrap_or("") } else { "" };
+                if phase_str == "ping" {
+                    let ts = t.datetime_start.as_ref()
+                        .and_then(|s| parse_timestamp_secs(s))
+                        .unwrap_or(0.0);
+                    Some((t.number as usize, ts))
+                } else {
+                    None
                 }
-            } else if phase == "pause" {
-                if let Some(ts) = t.datetime_start.as_ref().and_then(|s| parse_timestamp_secs(s)) {
-                    pause_timestamps.push(ts);
+            })
+            .collect();
+        let listen_indices: Vec<(usize, f64)> = sender_trials.iter()
+            .filter(|t| t.state == "COMPLETE")
+            .filter_map(|t| {
+                let phase = t.user_attrs.get("impulse_phase")?;
+                let phase_str = if phase.is_string() { phase.as_str().unwrap_or("") } else { "" };
+                if phase_str == "listen" {
+                    let ts = t.datetime_start.as_ref()
+                        .and_then(|s| parse_timestamp_secs(s))
+                        .unwrap_or(0.0);
+                    Some((t.number as usize, ts))
+                } else {
+                    None
                 }
+            })
+            .collect();
+
+        // For matched filter: collect receiver values during ping windows and listen windows.
+        // Uses timestamp-based alignment: for each sender ping/listen trial, find the
+        // receiver trial whose datetime_start is closest to sender_time + propagation_lag.
+        // Falls back to trial-number alignment if timestamps aren't available.
+        let propagation_lag_secs = 15.0_f64; // Expected coupling delay (~1 trial cycle)
+        let window_size = 1usize; // Tight window
+        let lag = 1usize;
+
+        let mut ping_values: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
+        let mut listen_values: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
+        let mut matched_pairs = 0usize;
+
+        for i in 0..ping_indices.len().min(listen_indices.len()) {
+            let (ping_trial, ping_ts) = ping_indices[i];
+            let (listen_trial, listen_ts) = listen_indices[i];
+
+            let mut ping_found = false;
+            let mut listen_found = false;
+
+            // Collect receiver values for this ping/listen pair.
+            // Try timestamp alignment first, then fall back to trial-number alignment.
+            for offset in 0..=window_size {
+                // --- PING ---
+                let ping_vals: Option<&Vec<f64>> = {
+                    // Try timestamp first
+                    if let Some(rt) = find_receiver_by_timestamp(ping_ts, propagation_lag_secs + (offset as f64) * 10.0) {
+                        Some(&rt.values)
+                    } else {
+                        // Fallback: trial-number alignment
+                        receiver_by_number.get(&(ping_trial + lag + offset))
+                            .copied()
+                    }
+                };
+                if let Some(vals) = ping_vals {
+                    for (obj_idx, v) in vals.iter().enumerate() {
+                        if obj_idx < n_obj {
+                            ping_values[obj_idx].push(*v);
+                        }
+                    }
+                    ping_found = true;
+                }
+
+                // --- LISTEN ---
+                let listen_vals: Option<&Vec<f64>> = {
+                    if let Some(rt) = find_receiver_by_timestamp(listen_ts, propagation_lag_secs + (offset as f64) * 10.0) {
+                        Some(&rt.values)
+                    } else {
+                        receiver_by_number.get(&(listen_trial + lag + offset))
+                            .copied()
+                    }
+                };
+                if let Some(vals) = listen_vals {
+                    for (obj_idx, v) in vals.iter().enumerate() {
+                        if obj_idx < n_obj {
+                            listen_values[obj_idx].push(*v);
+                        }
+                    }
+                    listen_found = true;
+                }
+            }
+
+            if ping_found && listen_found {
+                matched_pairs += 1;
             }
         }
 
-        push_timestamps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        pause_timestamps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        if matched_pairs == 0 {
+            // Fallback: no ping/listen pairs found — use legacy stacking
+            // Collect post-impulse windows for all impulses
+            let mut post_impulse_windows: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
+            let mut window_count = 0usize;
 
-        if push_timestamps.is_empty() {
+            for impulse_num in &impulse_indices {
+                let mut found_in_window = false;
+                for offset in 0..3 {
+                    if let Some(vals) = receiver_by_number.get(&(impulse_num + offset)) {
+                        for (obj_idx, v) in vals.iter().enumerate() {
+                            if obj_idx < n_obj {
+                                post_impulse_windows[obj_idx].push(*v);
+                            }
+                        }
+                        found_in_window = true;
+                    }
+                }
+                if found_in_window { window_count += 1; }
+            }
+
+            if window_count == 0 {
+                return Ok(serde_json::json!({
+                    "detected": false,
+                    "reason": "no receiver trials found in post-impulse windows",
+                    "method": "matched_filter_cfar",
+                    "sender_id": sender_id,
+                    "receiver_id": receiver_id,
+                    "impulse_count": n_impulses,
+                }));
+            }
+
+            // Legacy baseline: all receiver trials NOT in impulse windows
+            let impulse_window_set: HashSet<usize> = impulse_indices.iter()
+                .flat_map(|&imp| (imp..imp + 3).collect::<Vec<usize>>())
+                .collect();
+
+            let mut baseline_values: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
+            for (num, vals) in &receiver_complete {
+                if !impulse_window_set.contains(num) {
+                    for (obj_idx, v) in vals.iter().enumerate() {
+                        if obj_idx < n_obj {
+                            baseline_values[obj_idx].push(*v);
+                        }
+                    }
+                }
+            }
+
+            // Legacy detection (simple mean comparison)
+            let snr_threshold = 2.5_f64;
+            let mut per_objective: Vec<serde_json::Value> = Vec::new();
+            let mut any_detected = false;
+            let mut best_snr = 0.0_f64;
+            let mut best_obj = 0usize;
+
+            for obj_idx in 0..n_obj {
+                let stacked = &post_impulse_windows[obj_idx];
+                let baseline = &baseline_values[obj_idx];
+                if stacked.is_empty() || baseline.len() < 3 { continue; }
+
+                let stacked_mean = stacked.iter().sum::<f64>() / stacked.len() as f64;
+                let baseline_mean = baseline.iter().sum::<f64>() / baseline.len() as f64;
+                let baseline_std = {
+                    let n = baseline.len() as f64;
+                    (baseline.iter().map(|v| (v - baseline_mean).powi(2)).sum::<f64>() / n).sqrt()
+                };
+                if baseline_std < 1e-12 { continue; }
+
+                let shift = stacked_mean - baseline_mean;
+                let snr = shift.abs() / baseline_std;
+                let detected = snr >= snr_threshold;
+
+                per_objective.push(serde_json::json!({
+                    "objective_index": obj_idx, "detected": detected,
+                    "method": "impulse_stacking_fallback",
+                    "stacked_mean": round4(stacked_mean), "baseline_mean": round4(baseline_mean),
+                    "baseline_std": round4(baseline_std), "shift": round4(shift),
+                    "snr": round4(snr),
+                    "post_impulse_samples": stacked.len(), "baseline_samples": baseline.len(),
+                    "impulses_used": window_count,
+                }));
+                if detected { any_detected = true; }
+                if snr > best_snr { best_snr = snr; best_obj = obj_idx; }
+            }
+
             return Ok(serde_json::json!({
-                "detected": false, "reason": "no push trials found (sender may not have sent yet)",
-                "method": "block_step_detection",
+                "detected": any_detected, "method": "impulse_stacking_fallback",
                 "sender_id": sender_id, "receiver_id": receiver_id,
-                "impulse_count": n_impulses,
+                "impulse_count": n_impulses, "impulses_used": window_count,
+                "snr_threshold": snr_threshold, "best_snr": round4(best_snr),
+                "best_objective": best_obj, "per_objective": per_objective,
+                "sender_trials": sender_trials.len(), "receiver_trials": receiver_trials.len(),
             }));
         }
 
-        let push_start = push_timestamps.first().copied().unwrap_or(0.0);
-        let push_end = push_timestamps.last().copied().unwrap_or(0.0);
-        let pause_start = pause_timestamps.first().copied().unwrap_or(push_end);
-        let pause_end = pause_timestamps.last().copied().unwrap_or(pause_start);
+        // === CFAR: Compute local noise floor ===
+        // For each objective, compute the local noise from receiver hold trials
+        // that are NEAR each impulse (within +/- 5 trials) but NOT during impulse windows.
+        // This gives a nonstationary-aware noise estimate.
+        let cfar_window = 5usize;
+        let cfar_alpha = 3.0_f64; // Threshold = noise_mean + alpha * noise_std
 
-        // Propagation lag: receiver sees sender's effect ~1 trial later (~15-30s)
-        let propagation_lag = 20.0_f64;
+        // Collect all impulse-adjacent trial numbers for exclusion
+        let impulse_window_set: HashSet<usize> = impulse_indices.iter()
+            .flat_map(|&imp| ((imp.saturating_sub(1))..=imp + 2).collect::<Vec<usize>>())
+            .collect();
 
-        // Collect receiver values in three windows:
-        //   baseline: before push_start (with buffer)
-        //   push: during push block (push_start to push_end + lag)
-        //   pause: during pause block (pause_start to pause_end + lag)
-        let mut baseline_vals: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
-        let mut push_vals: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
-        let mut pause_vals: Vec<Vec<f64>> = vec![Vec::new(); n_obj];
-
-        // Check if receiver trials have hold_phase tags (precise alignment)
-        let has_hold_phase = receiver_trials.iter().any(|t| {
-            t.user_attrs.get("hold_phase").is_some()
-        });
-
-        // Build sender push/pause trial number sets for hold_phase alignment
-        let sender_push_numbers: std::collections::HashSet<i32> = if has_hold_phase {
-            sender_trials.iter()
-                .filter(|t| {
-                    t.user_attrs.get("impulse_phase")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s == "push")
-                        .unwrap_or(false)
-                })
-                .map(|t| t.number as i32)
-                .collect()
-        } else {
-            std::collections::HashSet::new()
-        };
-
-        let sender_pause_numbers: std::collections::HashSet<i32> = if has_hold_phase {
-            sender_trials.iter()
-                .filter(|t| {
-                    t.user_attrs.get("impulse_phase")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s == "pause")
-                        .unwrap_or(false)
-                })
-                .map(|t| t.number as i32)
-                .collect()
-        } else {
-            std::collections::HashSet::new()
-        };
-
-        if has_hold_phase {
-            // Use hold_phase tags for precise alignment.
-            // Receiver: baseline/post → baseline_vals
-            //           signal during sender push → push_vals
-            //           signal during sender pause → pause_vals
-            for t in receiver_trials.iter() {
-                if t.state != "COMPLETE" { continue; }
-                let vals: Vec<f64> = t.values.iter().filter_map(|v| *v).collect();
-                if vals.is_empty() { continue; }
-                let phase = t.user_attrs.get("hold_phase")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-
-                if phase == "baseline" || phase == "post" {
-                    for (i, v) in vals.iter().enumerate() {
-                        if i < n_obj { baseline_vals[i].push(*v); }
-                    }
-                } else if phase == "signal" {
-                    if sender_push_numbers.contains(&t.number) {
-                        for (i, v) in vals.iter().enumerate() {
-                            if i < n_obj { push_vals[i].push(*v); }
-                        }
-                    } else if sender_pause_numbers.contains(&t.number) {
-                        for (i, v) in vals.iter().enumerate() {
-                            if i < n_obj { pause_vals[i].push(*v); }
-                        }
-                    }
-                }
-            }
-        } else {
-
-        for rt in &receiver_complete {
-            if rt.timestamp_secs <= 0.0 { continue; }
-            let t = rt.timestamp_secs;
-
-            if t < push_start - 30.0 {
-                // Baseline: before push started
-                for (i, v) in rt.values.iter().enumerate() {
-                    if i < n_obj { baseline_vals[i].push(*v); }
-                }
-            } else if t >= push_start - 10.0 && t <= push_end + propagation_lag + 30.0 {
-                // During push block
-                for (i, v) in rt.values.iter().enumerate() {
-                    if i < n_obj { push_vals[i].push(*v); }
-                }
-            } else if t >= pause_start - 10.0 && t <= pause_end + propagation_lag + 30.0 {
-                // During pause block
-                for (i, v) in rt.values.iter().enumerate() {
-                    if i < n_obj { pause_vals[i].push(*v); }
-                }
-            }
-        } // end for rt in receiver_complete
-        } // end else (timestamp fallback)
-
-        // Detect edges per objective using median comparison
+        let snr_threshold = 2.5_f64;
         let mut per_objective: Vec<serde_json::Value> = Vec::new();
         let mut any_detected = false;
-        let mut best_shift = 0.0_f64;
+        let mut best_snr = 0.0_f64;
         let mut best_obj = 0usize;
 
         for obj_idx in 0..n_obj {
-            let baseline = &baseline_vals[obj_idx];
-            let push = &push_vals[obj_idx];
-            let pause = &pause_vals[obj_idx];
+            let pings = &ping_values[obj_idx];
+            let listens = &listen_values[obj_idx];
 
-            if baseline.len() < 3 || push.len() < 3 {
+            if pings.is_empty() || listens.is_empty() {
                 per_objective.push(serde_json::json!({
                     "objective_index": obj_idx, "detected": false,
-                    "reason": "insufficient samples",
-                    "baseline_samples": baseline.len(),
-                    "push_samples": push.len(),
-                    "pause_samples": pause.len(),
+                    "reason": "insufficient matched pairs",
+                    "ping_samples": pings.len(), "listen_samples": listens.len(),
+                    "matched_pairs": matched_pairs,
                 }));
                 continue;
             }
 
-            let baseline_median = median(baseline);
-            let push_median = median(push);
-            let pause_median = if pause.len() >= 3 { median(pause) } else { baseline_median };
+            // Matched filter: difference between ping-phase and listen-phase receiver values
+            let ping_mean = pings.iter().sum::<f64>() / pings.len() as f64;
+            let listen_mean = listens.iter().sum::<f64>() / listens.len() as f64;
+            let matched_shift = ping_mean - listen_mean;
 
-            // Rising edge: push values higher than baseline
-            let rising_edge = push_median - baseline_median;
-            // Falling edge: pause values lower than push (recovery)
-            let falling_edge = push_median - pause_median;
+            // CFAR: local noise floor from receiver trials near impulse windows
+            // but not during them
+            let mut local_noise: Vec<f64> = Vec::new();
+            for impulse_num in &impulse_indices {
+                for offset in 1..=cfar_window {
+                    let before = impulse_num.saturating_sub(offset);
+                    let after = impulse_num + offset + lag;
+                    if !impulse_window_set.contains(&before) {
+                        if let Some(vals) = receiver_by_number.get(&before) {
+                            if obj_idx < vals.len() {
+                                local_noise.push(vals[obj_idx]);
+                            }
+                        }
+                    }
+                    if !impulse_window_set.contains(&after) {
+                        if let Some(vals) = receiver_by_number.get(&after) {
+                            if obj_idx < vals.len() {
+                                local_noise.push(vals[obj_idx]);
+                            }
+                        }
+                    }
+                }
+            }
 
-            // Noise estimate: MAD (median absolute deviation) of baseline
-            let baseline_mad = mad(baseline).max(1e-6);
-            // Normalize shift by noise
-            let rising_snr = rising_edge.abs() / baseline_mad;
-            let falling_snr = falling_edge.abs() / baseline_mad;
+            let noise_std = if local_noise.len() >= 3 {
+                let noise_mean = local_noise.iter().sum::<f64>() / local_noise.len() as f64;
+                let n = local_noise.len() as f64;
+                ((local_noise.iter().map(|v| (v - noise_mean).powi(2)).sum::<f64>() / n).sqrt()).max(1e-12)
+            } else {
+                // Fallback: use listen-phase variance as noise estimate
+                let n = listens.len() as f64;
+                ((listens.iter().map(|v| (v - listen_mean).powi(2)).sum::<f64>() / n).sqrt()).max(1e-12)
+            };
 
-            // Detection: both edges must be present and significant
-            // Rising: push shifted from baseline (>1.5 MAD for robustness)
-            // Falling: push shifted back toward baseline during pause (>0.5 MAD)
-            let rising_detected = rising_snr >= 1.5 && rising_edge.abs() > 0.0;
-            let falling_detected = falling_snr >= 0.5;
-            let detected = rising_detected && falling_detected;
+            let matched_snr = matched_shift.abs() / noise_std;
 
-            if detected { any_detected = true; }
-            if rising_edge.abs() > best_shift { best_shift = rising_edge.abs(); best_obj = obj_idx; }
+            // CFAR threshold: adaptive based on local noise
+            // Higher local noise → higher threshold to maintain constant false alarm rate
+            let adaptive_threshold = cfar_alpha / (matched_pairs as f64).sqrt();
+            let detected = matched_snr >= adaptive_threshold.max(snr_threshold);
 
             per_objective.push(serde_json::json!({
                 "objective_index": obj_idx, "detected": detected,
-                "method": "block_step_detection",
-                "baseline_median": round4(baseline_median),
-                "push_median": round4(push_median),
-                "pause_median": round4(pause_median),
-                "rising_edge": round4(rising_edge),
-                "falling_edge": round4(falling_edge),
-                "baseline_mad": round4(baseline_mad),
-                "rising_snr": round4(rising_snr),
-                "falling_snr": round4(falling_snr),
-                "baseline_samples": baseline.len(),
-                "push_samples": push.len(),
-                "pause_samples": pause.len(),
+                "method": "matched_filter_cfar",
+                "ping_mean": round4(ping_mean), "listen_mean": round4(listen_mean),
+                "matched_shift": round4(matched_shift),
+                "noise_std": round4(noise_std),
+                "snr": round4(matched_snr),
+                "adaptive_threshold": round4(adaptive_threshold.max(snr_threshold)),
+                "noise_samples": local_noise.len(),
+                "ping_samples": pings.len(), "listen_samples": listens.len(),
+                "matched_pairs": matched_pairs,
             }));
+
+            if detected { any_detected = true; }
+            if matched_snr > best_snr { best_snr = matched_snr; best_obj = obj_idx; }
         }
 
+        // Overall result
         let result = serde_json::json!({
             "detected": any_detected,
-            "method": "block_step_detection",
+            "method": "matched_filter_cfar",
             "sender_id": sender_id,
             "receiver_id": receiver_id,
             "impulse_count": n_impulses,
-            "push_trials": push_timestamps.len(),
-            "pause_trials": pause_timestamps.len(),
-            "best_shift": round4(best_shift),
+            "attempted_impulses": n_attempted,
+            "impulses_used": matched_pairs * 2, // ping + listen pairs
+            "matched_pairs": matched_pairs,
+            "window_size": window_size,
+            "lag": lag,
+            "snr_threshold": snr_threshold,
+            "best_snr": round4(best_snr),
             "best_objective": best_obj,
             "per_objective": per_objective,
             "sender_trials": sender_trials.len(),
@@ -645,9 +775,8 @@ impl OptunaReader {
         });
 
         info!(
-            "Block detection: sender={} receiver={} push={} pause={} detected={} best_shift={:.4}",
-            sender_id, receiver_id, push_timestamps.len(), pause_timestamps.len(),
-            any_detected, best_shift
+            "Impulse detection: sender={} receiver={} impulses={} matched_pairs={} detected={} best_snr={:.2}",
+            sender_id, receiver_id, n_impulses, matched_pairs, any_detected, best_snr
         );
 
         Ok(result)
@@ -656,25 +785,6 @@ impl OptunaReader {
 
 fn round4(v: f64) -> f64 {
     (v * 10000.0).round() / 10000.0
-}
-
-fn median(v: &[f64]) -> f64 {
-    if v.is_empty() { return 0.0; }
-    let mut sorted = v.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
-        (sorted[mid - 1] + sorted[mid]) / 2.0
-    } else {
-        sorted[mid]
-    }
-}
-
-fn mad(v: &[f64]) -> f64 {
-    if v.is_empty() { return 0.0; }
-    let m = median(v);
-    let deviations: Vec<f64> = v.iter().map(|x| (x - m).abs()).collect();
-    median(&deviations) * 1.4826 // Scale factor for normal distribution consistency
 }
 
 /// Parse an ISO 8601 / RFC 3339 timestamp string to epoch seconds.
