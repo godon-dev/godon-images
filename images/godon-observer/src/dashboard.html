@@ -463,21 +463,17 @@ function crossQ(t){
   return 0;
 }
 
-// Determine if a trial is an active impulse probe (push phase).
-// Block design: detection_mode=impulse with impulse_phase=push.
+// Determine if a trial is an active impulse probe (push or impulse_calib).
+// Block design: detection_mode=impulse with impulse_phase=push or impulse_calib.
 function isActiveImpulse(t) {
   if (!t || !t.user_attrs) return false;
   if (t.user_attrs.detection_mode === 'impulse') {
-    // Block design: only push phase is an active probe
     const phase = t.user_attrs.impulse_phase;
-    if (phase === 'push') return true;
-    // Legacy: ping was active, listen was not
-    if (phase === 'ping') return true;
-    // No phase attr = treat all impulse as active (backward compat)
-    if (!phase) return true;
+    if (phase === 'push' || phase === 'impulse_calib') return true;
+    if (phase === 'ping') return true; // legacy
+    if (!phase) return true; // backward compat
     return false;
   }
-  // Old watermark system (disabled in breeder, but keep for backward compat)
   const wm = t.user_attrs.watermark;
   if (!wm || wm === 'off') return false;
   let parsed = wm;
@@ -505,13 +501,14 @@ function trialStyle(t, wmType) {
   var dm = t.user_attrs && t.user_attrs.detection_mode;
   var phase = t.user_attrs && t.user_attrs.impulse_phase;
   
-  // Block design: push = red, pause = orange, hold = gray, optimize = blue
-  if (dm === 'impulse' && phase === 'push') return { color: '#da3633', label: 'push (extreme params)' };
-  if (dm === 'impulse' && phase === 'pause') return { color: '#f0883e', label: 'pause (baseline params)' };
-  if (dm === 'impulse') return { color: '#f0883e', label: 'impulse' }; // legacy without phase
+  // Block design phases
+  if (dm === 'impulse' && phase === 'push') return { color: '#f0883e', label: 'push (extreme params)' };
+  if (dm === 'impulse' && phase === 'impulse_calib') return { color: '#d29922', label: 'impulse calibration' };
+  if (dm === 'impulse' && phase === 'pause') return { color: '#58a6ff', label: 'pause (neutral params)' };
+  if (dm === 'impulse') return { color: '#f0883e', label: 'impulse' };
   if (dm === 'hold') return { color: '#8b949e', label: 'detection hold' };
   
-  // Legacy watermark support (disabled but kept for old data)
+  // Legacy watermark support
   if (wmType === 'impulse' || (wmType && wmType.type === 'block')) {
     return { color: '#58a6ff', label: 'free trial' };
   }
@@ -525,7 +522,11 @@ function trialStyle(t, wmType) {
 
 
 function addDemoPerObj(d){
-  if(!d.per_objective)d.per_objective=[{objective_index:0,detected:d.detected,method:'impulse_stacking',stacked_mean:0.5,baseline_mean:0.48,baseline_std:0.04,shift:0.02,snr:d.detected?3.5:0.4,post_impulse_samples:12,baseline_samples:88,impulses_used:d.impulse_count||4}];
+  if(!d.per_objective)d.per_objective=[{objective_index:0,detected:d.detected,method:d.method||'per_round_block_step',
+    baseline_median:0.45,push_median:d.detected?0.52:0.46,pause_median:0.44,
+    stacked_rising_edge:d.detected?0.07:0.01,stacked_falling_edge:d.detected?0.06:0.01,
+    baseline_mad:0.03,rounds_detected:d.detected?2:0,rounds_total:3,
+    snr:d.detected?3.5:0.4,rising_snr:d.detected?2.3:0.3,falling_snr:d.detected?2.0:0.3}];
   d.per_objective.forEach(po=>{
     if(po.impulse_timeline)return;
     // Build mock impulse timeline for visualization
@@ -557,13 +558,13 @@ async function fetchWmDetections(){
       if(DEMO){
         const dk=Object.keys(DEMO_DATA.detections).find(k=>(a.name+'::'+b.name)===k);
         if(dk) results[key]=DEMO_DATA.detections[dk];
-        else{console.log('DEMO_WM miss:',key,'a.name=',a.name,'b.name=',b.name); results[key]={detected:false,method:'impulse_stacking',impulse_count:0,impulses_used:0,best_snr:0,per_objective:[]};}
+        else{console.log('DEMO_WM miss:',key,'a.name=',a.name,'b.name=',b.name); results[key]={detected:false,method:'per_round_block_step',rounds:0,best_shift:0,per_objective:[]};}
       } else {
         try{
           const r=await fetch(baseUrl+'/api/watermark-detection/'+a.id+'/'+b.id);
           results[key]=await r.json();
         }catch(e){
-          results[key]={detected:false,method:'impulse_stacking',impulse_count:0,impulses_used:0,best_snr:0,error:true};
+          results[key]={detected:false,method:'per_round_block_step',rounds:0,best_shift:0,error:true};
         }
       }
     }
@@ -607,7 +608,7 @@ async function renderCross(){
     const allTrials=crossData.flatMap(b=>b.trials);
     const wmType=(parseWmMeta(allTrials)||{}).type||'on_off';
     if(wmType==='impulse'){
-      sum.text(crossData.length+' breeders \u2014 '+wmOn+' impulse probes, '+wmOff+' free \u2014 '+detected+'/'+total+' directions detected (impulse stacking)');
+      sum.text(crossData.length+' breeders \u2014 '+wmOn+' impulse probes, '+wmOff+' free \u2014 '+detected+'/'+total+' directions detected (per-round block-step)');
     } else {
       sum.text(crossData.length+' breeders — '+wmOn+' impulse probes, '+wmOff+' free trials — '+detected+'/'+total+' directions detected');
     }
@@ -665,11 +666,11 @@ function renderCrossRanked(el){
     return items.slice().sort((a,b)=>{
       if(wmSort==='name') return wmSortDir*(a.from+a.to).localeCompare(b.from+b.to);
       if(wmSort==='verdict'){const tw=d=>d.d.detected?2:1;return wmSortDir*(tw(a)-tw(b))}
-      if(wmSort==='snr') return wmSortDir*((a.d.best_snr||0)-(b.d.best_snr||0));
+      if(wmSort==='snr') return wmSortDir*((a.d.best_snr||a.d.best_shift||0)-(b.d.best_snr||b.d.best_shift||0));
       if(wmSort==='method') return wmSortDir*((a.d.method||'').localeCompare(b.d.method||''));
-      if(wmSort==='impulses') return wmSortDir*((a.d.impulses_used||0)-(b.d.impulses_used||0));
-      if(wmSort==='shift'){const sa=d3.mean((a.d.per_objective||[]).map(o=>Math.abs(o.shift||0)))||0;const sb=d3.mean((b.d.per_objective||[]).map(o=>Math.abs(o.shift||0)))||0;return wmSortDir*(sa-sb);}
-      if(wmSort==='trials') return wmSortDir*((a.d.impulse_count||0)-(b.d.impulse_count||0));
+      if(wmSort==='impulses') return wmSortDir*((a.d.impulses_used||a.d.rounds||0)-(b.d.impulses_used||b.d.rounds||0));
+      if(wmSort==='shift'){const sa=d3.mean((a.d.per_objective||[]).map(o=>Math.abs(o.stacked_rising_edge||o.shift||0)))||0;const sb=d3.mean((b.d.per_objective||[]).map(o=>Math.abs(o.stacked_rising_edge||o.shift||0)))||0;return wmSortDir*(sa-sb);}
+      if(wmSort==='trials') return wmSortDir*((a.d.impulse_count||a.d.rounds||0)-(b.d.impulse_count||b.d.rounds||0));
       return 0;
     });
   }
@@ -681,8 +682,8 @@ function renderCrossRanked(el){
       .style('font','11px monospace').style('color','#c9d1d9').style('flex-shrink','0').text(r.from+' \u2192 '+r.to);
 
     const tier=d.detected?'detected':'not_detected';
-    // SNR bar — green past threshold, red below
-    const snrVal=d.best_snr||0;
+    // SNR/shift bar — green past threshold, red below
+    const snrVal=d.best_snr||d.best_shift||0;
     const snrMax=Math.max(maxCorr,snrVal,2.5);
     const bar=row.append('span').style('width','100px').style('height','6px').style('background','#21262d')
       .style('border-radius','3px').style('overflow','hidden').style('flex-shrink','0').style('position','relative');
@@ -694,11 +695,11 @@ function renderCrossRanked(el){
     row.append('span').style('width','80px').style('font','9px monospace').style('color',crossTierColor(tier)).style('flex-shrink','0')
       .text(d.detected?'detected':'not detected');
     row.append('span').style('width','120px').style('font','9px monospace').style('color','#8b949e').style('flex-shrink','0')
-      .text(d.method||'\\u2014');
+      .text(d.method==='per_round_block_step'?'per-round':(d.method||'\\u2014'));
     row.append('span').style('width','60px').style('font','9px monospace').style('color','#8b949e').style('flex-shrink','0').style('text-align','center')
-      .text((d.impulses_used||0)+'/'+(d.impulse_count||0));
+      .text((d.rounds||d.impulses_used||0)+'/'+(d.rounds||d.impulse_count||0)+'\u2009rd');
     row.append('span').style('width','70px').style('font','9px monospace').style('color',crossTierColor(tier)).style('flex-shrink','0').style('text-align','center')
-      .text('snr '+snrVal.toFixed(1));
+      .text((snrVal>1?'snr ':'shift ')+snrVal.toFixed(snrVal>1?1:2));
     row.append('span').style('width','70px').style('font','9px monospace').style('color','#6e7681').style('flex-shrink','0').style('text-align','center')
       .text(d.sender_trials||0);
 
@@ -736,21 +737,23 @@ function renderCrossMatrix(el){
         g.append('rect').attr('x',cx+2).attr('y',cy+2).attr('width',cellSize-4).attr('height',cellSize-4)
           .attr('fill',crossTierBg(tier)).attr('rx',3).attr('stroke',crossTierColor(tier)).attr('stroke-width',1.5);
         g.append('text').attr('x',cx+cellSize/2).attr('y',cy+16).attr('text-anchor','middle')
-          .attr('fill',crossTierColor(tier)).style('font','bold 9px monospace').text((d.best_snr||0).toFixed(1));
+          .attr('fill',crossTierColor(tier)).style('font','bold 9px monospace').text((d.best_snr||d.best_shift||0).toFixed(d.best_shift?3:1));
         g.append('text').attr('x',cx+cellSize/2).attr('y',cy+30).attr('text-anchor','middle')
-          .attr('fill','#6e7681').style('font','7px monospace').text(d.method||'impulse_stacking');
+          .attr('fill','#6e7681').style('font','7px monospace').text(d.method==='per_round_block_step'?'per-round':(d.method||'impulse_stacking'));
         g.append('text').attr('x',cx+cellSize/2).attr('y',cy+42).attr('text-anchor','middle')
-          .attr('fill','#484f58').style('font','7px monospace').text('impulses: '+(d.impulses_used||0));
+          .attr('fill','#484f58').style('font','7px monospace').text((d.rounds!=null?(d.rounds+' rounds'):(d.impulses_used||0)+' impulses'));
         g.append('text').attr('x',cx+cellSize/2).attr('y',cy+56).attr('text-anchor','middle')
-          .attr('fill','#484f58').style('font','7px monospace').text((d.impulse_count||0)+' impulses');
+          .attr('fill','#484f58').style('font','7px monospace').text(d.detected?(d.rounds_with_detection||0)+'/'+(d.rounds||0)+' detected':(d.impulse_count||d.rounds||0)+' total');
         g.on('click',()=>{const ri=crossData.findIndex(b=>b.name===from),tj=crossData.findIndex(b=>b.name===to);if(ri>=0&&tj>=0)showWmPairDetail({from,to,fromIdx:ri,toIdx:tj,key:from+'::'+to,d})});
         g.on('mouseenter',function(event){
           d3.select(this).select('rect').attr('stroke-width',2.5);
           let html='<div class="tt-title">'+from+' \u2192 '+to+'</div>';
-          html+='<div class="tt-line">snr: <span>'+(d.best_snr||0).toFixed(1)+'</span></div>';
-          html+='<div class="tt-line">method: <span>'+(d.method||'impulse_stacking')+'</span></div>';
-          html+='<div class="tt-line">impulses: <span>'+(d.impulses_used||0)+'</span></div>';
-          html+='<div class="tt-line">verdict: <span>'+(d.detected?'detected':'not detected')+'</span></div>';
+          html+='<div class="tt-line">'+(d.detected?'<span style="color:#3fb950">detected</span>':'<span style="color:#f85149">not detected</span>')+'</div>';
+          html+='<div class="tt-line">method: <span>'+(d.method==='per_round_block_step'?'per-round':d.method||'\\u2014')+'</span></div>';
+          if(d.rounds!=null) html+='<div class="tt-line">rounds: <span>'+(d.rounds_with_detection||0)+'/'+(d.rounds||0)+'</span></div>';
+          if(d.best_snr) html+='<div class="tt-line">snr: <span>'+d.best_snr.toFixed(1)+'</span></div>';
+          if(d.best_shift) html+='<div class="tt-line">best shift: <span>'+d.best_shift.toFixed(4)+'</span></div>';
+          if(d.impulses_used) html+='<div class="tt-line">impulses: <span>'+d.impulses_used+'</span></div>';
           showTip(html,event.clientX,event.clientY);
         })
         .on('mouseleave',function(){d3.select(this).select('rect').attr('stroke-width',1.5);hideTip()});
@@ -769,7 +772,7 @@ function renderCrossCausality(el){
   Object.entries(wmDetections||{}).forEach(([key,d])=>{
     if(!d.detected) return;
     const [from,to]=key.split('::');
-    edges.push({from,to,strength:d.best_snr||0,tier:'detected',method:d.method||'impulse_stacking',lag:d.impulses_used||0,d});
+    edges.push({from,to,strength:d.best_snr||d.best_shift||0,tier:'detected',method:d.method||'per_round_block_step',lag:d.rounds||d.impulses_used||0,d});
   });
 
   const fromMap={};
@@ -1196,16 +1199,19 @@ function renderInterferenceTraceOverlay(parent,breeder,selObjIdx){
   const legend=parent.append('div').attr('class','legend').style('margin-top','4px');
   if((wmType==='sinusoidal'||wmType==='impulse')){
     if(wmType==='impulse'){
-      legend.append('span').html('<div class="dot" style="background:#f0883e"></div>impulse probe');
-      legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>free trial');
+      legend.append('span').html('<div class="dot" style="background:#f0883e"></div>push');
+      legend.append('span').html('<div class="dot" style="background:#d29922"></div>calibration');
+      legend.append('span').html('<div class="dot" style="background:#8b949e"></div>hold');
+      legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>optimize');
     } else {
       legend.append('span').html('<div class="dot" style="background:#3fb950"></div>impulse probe');
       legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>free trial');
     }
     legend.append('span').html('<div class="dot" style="background:#8b949e"></div>inactive');
   } else {
-    legend.append('span').html('<div class="dot" style="background:#f0883e"></div>impulse probe');
-    legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>free trial');
+    legend.append('span').html('<div class="dot" style="background:#f0883e"></div>push');
+    legend.append('span').html('<div class="dot" style="background:#8b949e"></div>hold');
+    legend.append('span').html('<div class="dot" style="background:#58a6ff"></div>optimize');
   }
 }
 
@@ -1218,56 +1224,107 @@ function visPanelTitle(sel,text){
   sel.append('div').style('font','bold 11px monospace').style('color','#c9d1d9').style('margin-bottom','8px').text(text);
 }
 
-function drawImpulseStack(container,perObjective){
+function drawImpulseStack(container,perObjective,d){
   visPanelStyle(container);
-  visPanelTitle(container,'Impulse Stacking — Stacked vs Baseline');
+  // Handle both old format (stacked_mean/baseline_mean) and new format (push_median/baseline_median)
+  var isPerRound = d && d.method === 'per_round_block_step';
+  visPanelTitle(container, isPerRound ? 'Block-Step Detection — Push vs Baseline vs Pause' : 'Impulse Stacking — Stacked vs Baseline');
   if(!perObjective||!perObjective.length){container.append('div').style('color','#6e7681').style('font','10px monospace').text('no per-objective data');return;}
   var w=Math.min(900,window.innerWidth-80);
   var m={top:30,right:20,bottom:35,left:60};
   var cw=w-m.left-m.right;
-  var objCount=perObjective.length;
   var ch=160;
   var svg=container.append('svg').attr('width',w).attr('height',ch+m.top+m.bottom);
   var g=svg.append('g').attr('transform','translate('+m.left+','+m.top+')');
   var objNames=['growth_rate','energy','water'];
-  // Grouped bar chart: baseline_mean vs stacked_mean per objective
-  var allVals=perObjective.map(function(o){return o.stacked_mean||0}).concat(perObjective.map(function(o){return o.baseline_mean||0}));
-  var yMin=d3.min(allVals)*0.9;
-  var yMax=d3.max(allVals)*1.1;
-  var y=d3.scaleLinear().domain([yMin,yMax]).range([ch,0]);
-  var x=d3.scaleBand().domain(perObjective.map(function(o){return 'obj '+o.objective_index})).range([0,cw]).padding(0.3);
-  var x1=d3.scaleBand().domain(['baseline','stacked']).range([0,x.bandwidth()]).padding(0.1);
-  g.append('g').attr('transform','translate(0,'+ch+')').call(d3.axisBottom(x))
-    .selectAll('text').attr('fill','#6e7681').style('font','9px monospace');
-  g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.3f')))
-    .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
-  g.selectAll('.domain').attr('stroke','#21262d');
-  g.selectAll('.tick line').attr('stroke','#21262d');
-  // Baseline bars
-  perObjective.forEach(function(o){
-    var gx=x('obj '+o.objective_index);
-    g.append('rect').attr('x',gx+x1('baseline')).attr('width',x1.bandwidth())
-      .attr('y',y(o.baseline_mean||0)).attr('height',ch-y(o.baseline_mean||0))
-      .attr('fill','#484f58').attr('rx',2);
-    // Stacked bars
-    var det=o.detected;
-    g.append('rect').attr('x',gx+x1('stacked')).attr('width',x1.bandwidth())
-      .attr('y',y(o.stacked_mean||0)).attr('height',ch-y(o.stacked_mean||0))
-      .attr('fill',det?'#3fb950':'#f85149').attr('rx',2);
-    // SNR label
-    g.append('text').attr('x',gx+x.bandwidth()/2).attr('y',-4)
-      .style('font','bold 9px monospace').style('fill',det?'#3fb950':'#8b949e')
-      .style('text-anchor','middle').text('SNR '+(o.snr||0).toFixed(1));
-  });
-  // Threshold line at SNR 2.5 (on the value axis — show as annotation)
-  g.append('text').attr('x',cw).attr('y',-8).style('font','8px monospace')
-    .style('fill','#58a6ff').style('text-anchor','end').text('threshold: SNR >= 2.5');
-  // Legend
-  var leg=g.append('g').attr('transform','translate('+(cw-200)+','+(ch+20)+')');
-  leg.append('rect').attr('width',8).attr('height',8).attr('fill','#484f58').attr('rx',1);
-  leg.append('text').attr('x',12).attr('y',8).style('font','8px monospace').style('fill','#6e7681').text('baseline');
-  leg.append('rect').attr('x',70).attr('width',8).attr('height',8).attr('fill','#3fb950').attr('rx',1);
-  leg.append('text').attr('x',82).attr('y',8).style('font','8px monospace').style('fill','#6e7681').text('stacked (post-impulse)');
+
+  if(isPerRound){
+    // New format: three bars per objective (baseline/push/pause medians)
+    var allVals=perObjective.map(function(o){return o.push_median||o.stacked_rising_edge||0})
+      .concat(perObjective.map(function(o){return o.baseline_median||0}))
+      .concat(perObjective.map(function(o){return o.pause_median||0}));
+    var yMin=d3.min(allVals)*0.9;
+    var yMax=d3.max(allVals)*1.1;
+    var y=d3.scaleLinear().domain([yMin,yMax]).range([ch,0]);
+    var x=d3.scaleBand().domain(perObjective.map(function(o){return 'obj '+o.objective_index})).range([0,cw]).padding(0.3);
+    var x1=d3.scaleBand().domain(['baseline','push','pause']).range([0,x.bandwidth()]).padding(0.08);
+    g.append('g').attr('transform','translate(0,'+ch+')').call(d3.axisBottom(x))
+      .selectAll('text').attr('fill','#6e7681').style('font','9px monospace');
+    g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.3f')))
+      .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
+    g.selectAll('.domain').attr('stroke','#21262d');
+    g.selectAll('.tick line').attr('stroke','#21262d');
+    perObjective.forEach(function(o){
+      var gx=x('obj '+o.objective_index);
+      // baseline
+      g.append('rect').attr('x',gx+x1('baseline')).attr('width',x1.bandwidth())
+        .attr('y',y(o.baseline_median||0)).attr('height',ch-y(o.baseline_median||0))
+        .attr('fill','#484f58').attr('rx',2);
+      // push
+      g.append('rect').attr('x',gx+x1('push')).attr('width',x1.bandwidth())
+        .attr('y',y(o.push_median||0)).attr('height',ch-y(o.push_median||0))
+        .attr('fill',o.detected?'#3fb950':'#f85149').attr('rx',2);
+      // pause
+      g.append('rect').attr('x',gx+x1('pause')).attr('width',x1.bandwidth())
+        .attr('y',y(o.pause_median||0)).attr('height',ch-y(o.pause_median||0))
+        .attr('fill','#8b949e').attr('rx',2);
+      // SNR labels: rising and falling
+      var risingSnr=o.stacked_rising_edge!=null?(o.stacked_rising_edge/(o.baseline_mad||0.01)):0;
+      var fallingSnr=o.stacked_falling_edge!=null?(o.stacked_falling_edge/(o.baseline_mad||0.01)):0;
+      g.append('text').attr('x',gx+x.bandwidth()/2).attr('y',-4)
+        .style('font','bold 9px monospace')
+        .style('fill',o.detected?'#3fb950':'#8b949e')
+        .style('text-anchor','middle')
+        .text(o.detected?'DETECTED':'not detected');
+      g.append('text').attr('x',gx+x.bandwidth()/2).attr('y',-16)
+        .style('font','8px monospace').style('fill','#8b949e')
+        .style('text-anchor','middle')
+        .text((o.rounds_detected||0)+'/'+(o.rounds_total||0)+' rounds');
+    });
+    // Legend
+    var leg=g.append('g').attr('transform','translate('+(cw-250)+','+(ch+20)+')');
+    leg.append('rect').attr('width',8).attr('height',8).attr('fill','#484f58').attr('rx',1);
+    leg.append('text').attr('x',12).attr('y',8).style('font','8px monospace').style('fill','#6e7681').text('baseline');
+    leg.append('rect').attr('x',70).attr('width',8).attr('height',8).attr('fill','#3fb950').attr('rx',1);
+    leg.append('text').attr('x',82).attr('y',8).style('font','8px monospace').style('fill','#6e7681').text('push (coupling)');
+    leg.append('rect').attr('x',170).attr('width',8).attr('height',8).attr('fill','#8b949e').attr('rx',1);
+    leg.append('text').attr('x',182).attr('y',8).style('font','8px monospace').style('fill','#6e7681').text('pause (recovery)');
+    g.append('text').attr('x',cw).attr('y',-8).style('font','8px monospace')
+      .style('fill','#58a6ff').style('text-anchor','end').text('threshold: SNR >= 2.0 (rising AND falling)');
+  } else {
+    // Old format: baseline_mean vs stacked_mean
+    var allVals2=perObjective.map(function(o){return o.stacked_mean||0}).concat(perObjective.map(function(o){return o.baseline_mean||0}));
+    var yMin2=d3.min(allVals2)*0.9;
+    var yMax2=d3.max(allVals2)*1.1;
+    var y2=d3.scaleLinear().domain([yMin2,yMax2]).range([ch,0]);
+    var x2=d3.scaleBand().domain(perObjective.map(function(o){return 'obj '+o.objective_index})).range([0,cw]).padding(0.3);
+    var x1b=d3.scaleBand().domain(['baseline','stacked']).range([0,x2.bandwidth()]).padding(0.1);
+    g.append('g').attr('transform','translate(0,'+ch+')').call(d3.axisBottom(x2))
+      .selectAll('text').attr('fill','#6e7681').style('font','9px monospace');
+    g.append('g').call(d3.axisLeft(y2).ticks(5).tickFormat(d3.format('.3f')))
+      .selectAll('text').attr('fill','#8b949e').style('font','8px monospace');
+    g.selectAll('.domain').attr('stroke','#21262d');
+    g.selectAll('.tick line').attr('stroke','#21262d');
+    perObjective.forEach(function(o){
+      var gx=x2('obj '+o.objective_index);
+      g.append('rect').attr('x',gx+x1b('baseline')).attr('width',x1b.bandwidth())
+        .attr('y',y2(o.baseline_mean||0)).attr('height',ch-y2(o.baseline_mean||0))
+        .attr('fill','#484f58').attr('rx',2);
+      g.append('rect').attr('x',gx+x1b('stacked')).attr('width',x1b.bandwidth())
+        .attr('y',y2(o.stacked_mean||0)).attr('height',ch-y2(o.stacked_mean||0))
+        .attr('fill',o.detected?'#3fb950':'#f85149').attr('rx',2);
+      g.append('text').attr('x',gx+x2.bandwidth()/2).attr('y',-4)
+        .style('font','bold 9px monospace').style('fill',o.detected?'#3fb950':'#8b949e')
+        .style('text-anchor','middle').text('SNR '+(o.snr||0).toFixed(1));
+    });
+    g.append('text').attr('x',cw).attr('y',-8).style('font','8px monospace')
+      .style('fill','#58a6ff').style('text-anchor','end').text('threshold: SNR >= 2.5');
+    var leg2=g.append('g').attr('transform','translate('+(cw-200)+','+(ch+20)+')');
+    leg2.append('rect').attr('width',8).attr('height',8).attr('fill','#484f58').attr('rx',1);
+    leg2.append('text').attr('x',12).attr('y',8).style('font','8px monospace').style('fill','#6e7681').text('baseline');
+    leg2.append('rect').attr('x',70).attr('width',8).attr('height',8).attr('fill','#3fb950').attr('rx',1);
+    leg2.append('text').attr('x',82).attr('y',8).style('font','8px monospace').style('fill','#6e7681').text('stacked (post-impulse)');
+  }
 }
 
 function drawImpulseTimeline(container,po,d){
