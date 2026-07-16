@@ -165,6 +165,35 @@ jobs:
         fi
         echo "Reset successful, tick back to 0"
 
+    - name: Test metrics respond to params (not cumulative)
+      run: |
+        echo "Testing that energy/water are per-trial, not cumulative..."
+
+        # Apply high-energy params
+        HIGH=$(curl -sf -X POST http://localhost:8090/apply \
+          -H 'Content-Type: application/json' \
+          -d '{"heating_setpoints":[40,40],"vent_openings":[1.0,1.0],"shading":0,"co2_injection":20,"light_intensity":1000,"irrigation":3.0,"sim_steps":100}')
+        HIGH_E=$(echo "$HIGH" | python3 -c "import sys,json; print(json.load(sys.stdin)['trial_energy_kwh'])")
+        HIGH_W=$(echo "$HIGH" | python3 -c "import sys,json; print(json.load(sys.stdin)['trial_water_liters'])")
+        echo "High-energy trial: energy=$HIGH_E water=$HIGH_W"
+
+        # Apply low-energy params
+        LOW=$(curl -sf -X POST http://localhost:8090/apply \
+          -H 'Content-Type: application/json' \
+          -d '{"heating_setpoints":[10,10],"vent_openings":[0.1,0.1],"shading":0,"co2_injection":2,"light_intensity":100,"irrigation":0.5,"sim_steps":100}')
+        LOW_E=$(echo "$LOW" | python3 -c "import sys,json; print(json.load(sys.stdin)['trial_energy_kwh'])")
+        LOW_W=$(echo "$LOW" | python3 -c "import sys,json; print(json.load(sys.stdin)['trial_water_liters'])")
+        echo "Low-energy trial: energy=$LOW_E water=$LOW_W"
+
+        # Energy and water must be LOWER after low params
+        python3 -c "
+        high_e, low_e = float('$HIGH_E'), float('$LOW_E')
+        high_w, low_w = float('$HIGH_W'), float('$LOW_W')
+        assert low_e < high_e, f'Energy cumulative bug: high={high_e} low={low_e} (low should be smaller)'
+        assert low_w < high_w, f'Water cumulative bug: high={high_w} low={low_w} (low should be smaller)'
+        print(f'OK: energy {high_e:.3f} -> {low_e:.3f}, water {high_w:.3f} -> {low_w:.3f}')
+        "
+
     - name: Container cleanup
       if: always()
       run: |

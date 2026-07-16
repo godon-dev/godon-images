@@ -145,7 +145,8 @@ impl Microgrid {
         let dt = 0.1;
         let grid_energy = (net.abs() * 0.001) * dt;
         let local_energy = (params.local_generation.clamp(0.0, 500.0) * 0.0005) * dt;
-        self.cumulative_energy_kwh += grid_energy + local_energy;
+        // Instantaneous rate, not cumulative. Same pattern as greenhouse growth_rate.
+        self.cumulative_energy_kwh = grid_energy + local_energy;
 
         self.tick += 1;
     }
