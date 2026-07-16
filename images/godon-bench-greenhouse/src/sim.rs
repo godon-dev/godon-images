@@ -600,13 +600,15 @@ impl Greenhouse {
         let total_venting: f64 = params.vent_openings.iter().map(|v| v * 0.005).sum();
         let total_lighting = params.light_intensity * 0.001;
 
-        self.trial_energy_kwh += dt * (total_heating + total_venting + total_lighting);
-        self.trial_water_liters += dt * params.irrigation * 0.1;
+        // Energy and water are instantaneous rates from current params.
+        // Same pattern as growth_rate — snapshot, not accumulation.
+        self.trial_energy_kwh = total_heating + total_venting + total_lighting;
+        self.trial_water_liters = params.irrigation * 0.1;
 
         // --- Shared water tank dynamics ---
         // Drain: my irrigation draw reduces the tank
         let my_draw = params.irrigation * 0.3 * dt; // liters this tick
-        let neighbor_draw = self.coupling.neighbor_water_draw * 0.01 * dt; // scaled estimate
+        let neighbor_draw = self.coupling.neighbor_water_draw * 0.3 * dt; // rate, same scale as my_draw
         let total_draw = my_draw + neighbor_draw;
         self.coupling.shared_water_tank -= total_draw;
         // Refill: slow well influx
@@ -779,8 +781,6 @@ impl Greenhouse {
             total_neighbor_water += ns.trial_water_liters;
 
             // SHARED WALL (thermal): same conductance as inter-zone walls.
-            // Factor scales the effective wall area. At factor=1.0,
-            // neighbor zones conduct heat as strongly as own zones.
             delta_temp += (neighbor_avg_temp - my_avg_temp) * factor * 0.25;
 
             // AIR EXCHANGE (CO2 + humidity): shared ventilation duct.
@@ -789,8 +789,10 @@ impl Greenhouse {
             let neighbor_avg_vent = if ns.zones.is_empty() {
                 0.0
             } else {
-                // Estimate from energy usage as proxy for activity level
-                (ns.trial_energy_kwh / 10.0).min(1.0)
+                // Estimate from energy rate as proxy for activity level.
+                // Energy rate for an aggressive greenhouse is ~2-3 kWh.
+                // Scale to 0-1 range.
+                (ns.trial_energy_kwh / 3.0).min(1.0)
             };
             let air_exchange_rate = (my_avg_vent + neighbor_avg_vent) * factor * 0.3;
 
@@ -859,6 +861,8 @@ impl Greenhouse {
         let avg_growth =
             zone_growth_rates.iter().sum::<f64>() / zone_growth_rates.len().max(1) as f64;
 
+        // Energy and water are now instantaneous rates stored in step().
+        // No accumulation, no reset needed — same pattern as growth_rate.
         let (noisy_temps, noisy_humidities, noisy_co2, noisy_growth, noisy_energy, noisy_water) =
             match self.weather_mode {
                 WeatherMode::Smooth => (
@@ -919,7 +923,7 @@ impl Greenhouse {
 impl Zone {
     /// Compute a simplified growth rate based on temperature and humidity only.
     /// Used for CO2 plant uptake calculation (which doesn't need the full model).
-    fn growth_rate_for(&self) -> f64 {
+    pub fn growth_rate_for(&self) -> f64 {
         let temp_factor = if self.temp < 5.0 || self.temp > 40.0 {
             0.0
         } else if self.temp < 15.0 {
