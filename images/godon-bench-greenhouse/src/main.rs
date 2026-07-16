@@ -383,7 +383,7 @@ async fn status(State(state): State<Arc<AppState>>) -> axum::Json<StatusResponse
             temp: z.temp,
             humidity: z.humidity,
             co2: z.co2,
-            growth_rate: z.growth_accumulated,
+            growth_rate: z.growth_rate_for(),
             damage_factor: z.damage_factor,
         })
         .collect();
