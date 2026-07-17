@@ -23,6 +23,7 @@ pub struct TrialRecord {
 
 pub struct OptunaReader {
     config: DbConfig,
+    config_detection_confidence: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +46,9 @@ impl OptunaReader {
                     .and_then(|p| p.parse().ok())
                     .unwrap_or(5433),
             },
+            config_detection_confidence: std::env::var("GODON_DETECTION_CONFIDENCE")
+                .ok()
+                .and_then(|v| v.parse().ok()),
         }
     }
 
@@ -492,10 +496,15 @@ impl OptunaReader {
         let propagation_lag = 20.0_f64; // seconds — thermal mass delay
 
         // CFAR parameters
-        // Pfa = desired false alarm probability. k is derived dynamically from
-        // the number of reference cells (hold_calib trials in each round):
-        //   k = N * (Pfa^(-1/N) - 1)
-        let pfa = 0.01_f64;
+        // Detection confidence = 1 - false_alarm_rate.
+        // Higher = more conservative (fewer detections, fewer false alarms).
+        // k is derived dynamically from N reference cells:
+        //   pfa = 1 - confidence
+        //   k = N * (pfa^(-1/N) - 1)
+        // Configurable via interference_detection.detection_confidence in breeder config.
+        // Default 0.95 (5% false alarm rate).
+        let confidence = self.config_detection_confidence.unwrap_or(0.95_f64);
+        let pfa = 1.0 - confidence;
         let min_ref_cells = 3usize;   // minimum hold_calib trials for reference
         let min_test_cells = 3usize;  // minimum push/pause trials
 
