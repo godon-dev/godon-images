@@ -435,11 +435,15 @@ impl OptunaReader {
         let receiver_hold: Vec<ReceiverTrial> = receiver_trials.iter()
             .filter(|t| t.state == "COMPLETE")
             .filter(|t| {
-                // Only include hold trials (detection_mode=hold or no detection_mode)
+                // Only include RECEIVER hold trials — not the sender's own hold_calib.
+                // Receiver has coord_state=hold; sender has coord_state=hold_calib.
                 let dm = t.user_attrs.get("detection_mode")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                dm == "hold" || dm.is_empty()
+                let cs = t.user_attrs.get("coord_state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                (dm == "hold" || dm.is_empty()) && cs != "hold_calib"
             })
             .filter_map(|t| {
                 // Start with objective values from trial.values
@@ -521,9 +525,11 @@ impl OptunaReader {
             let mut obj_detected_rounds = 0usize;
 
             for (ri, round) in rounds.iter().enumerate() {
-                // ── CFAR reference window: hold_calib trials only ──
-                // These are the receiver sitting at neutral params before push.
-                // NOT optimize/cooldown trials — those contain active param changes.
+                // ── CFAR reference window: receiver hold trials that see
+                // the sender in hold_calib phase. These are the receiver
+                // sitting at neutral params — pure noise reference.
+                // NOT the sender's own hold_calib (state=hold_calib) which
+                // may include unstable early readings.
                 let baseline_vals: Vec<f64> = receiver_hold.iter()
                     .filter(|rt| rt.phase == "hold_calib")
                     .filter(|rt| {
