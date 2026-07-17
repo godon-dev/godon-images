@@ -595,6 +595,7 @@ async function renderCross(){
 
   const tabs=el.append('div').attr('class','cross-tabs');
   tabs.append('button').classed('active',crossView==='ranked').text('ranked').on('click',()=>{crossView='ranked';renderCross()});
+  tabs.append('button').classed('active',crossView==='signal').text('signal').on('click',()=>{crossView='signal';renderCross()});
   tabs.append('button').classed('active',crossView==='matrix').text('matrix').on('click',()=>{crossView='matrix';renderCross()});
   tabs.append('button').classed('active',crossView==='causality').text('causality').on('click',()=>{crossView='causality';renderCross()});
   tabs.append('button').classed('active',crossView==='interference').text('interference').on('click',()=>{crossView='interference';renderCross()});
@@ -617,6 +618,7 @@ async function renderCross(){
   }
 
   if(crossView==='ranked') renderCrossRanked(el);
+  else if(crossView==='signal') renderCrossSignal(el);
   else if(crossView==='matrix') renderCrossMatrix(el);
   else if(crossView==='interference') renderCrossInterference(el);
   else renderCrossCausality(el);
@@ -704,6 +706,234 @@ function renderCrossRanked(el){
       .text(d.sender_trials||0);
 
     row.on('click',()=>showWmPairDetail(r));
+  });
+}
+
+function renderCrossSignal(el){
+  // Signal overlay: shows RECEIVER metrics with SENDER push/pause windows as bands.
+  // For each sender→receiver pair, renders a chart per objective with:
+  // - Vertical bands for push (orange) and pause (blue) phases
+  // - Receiver's metric values as dots/line
+  // - Baseline median as dashed line
+  // This makes the coupling signal visible at a glance.
+
+  const pairs = [];
+  for (let i = 0; i < crossData.length; i++) {
+    for (let j = 0; j < crossData.length; j++) {
+      if (i !== j) pairs.push({ sender: crossData[i], receiver: crossData[j] });
+    }
+  }
+  if (pairs.length === 0) {
+    el.append('div').attr('class', 'info').text('need at least 2 breeders');
+    return;
+  }
+
+  el.append('div').attr('class', 'info').style('margin-bottom', '12px')
+    .text('signal overlay — receiver metrics with sender push/pause windows');
+
+  pairs.forEach(pair => {
+    const sender = pair.sender, receiver = pair.receiver;
+
+    // Check if sender has push/pause trials
+    const senderPhased = sender.trials.filter(t =>
+      t.user_attrs && (t.user_attrs.impulse_phase === 'push' || t.user_attrs.impulse_phase === 'pause')
+    );
+    if (senderPhased.length === 0) return;
+
+    const section = el.append('div').style('margin-bottom', '20px')
+      .style('padding', '12px').style('background', '#0d1117')
+      .style('border', '1px solid #21262d').style('border-radius', '6px');
+
+    section.append('div').style('font', 'bold 11px monospace').style('color', '#c9d1d9')
+      .style('margin-bottom', '8px')
+      .text(sender.name + ' → ' + receiver.name);
+
+    // Get objective names
+    const objNames = receiver.config && receiver.config.objectives
+      ? receiver.config.objectives.map(o => o.name)
+      : ['obj0', 'obj1', 'obj2'];
+
+    // Parse timestamps
+    function parseTs(s) {
+      if (!s) return null;
+      let n = s.replace(' ', 'T');
+      const parts = n.split('T');
+      if (parts.length !== 2) return null;
+      const dp = parts[0].split('-');
+      const tp = parts[1].split(/[:+.]/).filter(x => x);
+      return Date.UTC(+dp[0], +dp[1]-1, +dp[2], +(tp[0]||0), +(tp[1]||0), +(tp[2]||0)) / 1000;
+    }
+
+    // Build sender phase windows
+    const senderPushRanges = [];
+    const senderPauseRanges = [];
+    let curPhase = null, curStart = null;
+
+    const sortedSender = sender.trials
+      .map(t => ({
+        ts: parseTs(t.datetime_start),
+        phase: t.user_attrs && t.user_attrs.impulse_phase,
+        num: t.number
+      }))
+      .filter(t => t.ts && (t.phase === 'push' || t.phase === 'pause' || t.phase === 'hold_calib'))
+      .sort((a, b) => a.ts - b.ts);
+
+    for (const t of sortedSender) {
+      if (t.phase !== curPhase) {
+        if (curPhase === 'push' && curStart !== null) {
+          senderPushRanges.push([curStart, t.ts]);
+        } else if (curPhase === 'pause' && curStart !== null) {
+          senderPauseRanges.push([curStart, t.ts]);
+        }
+        curPhase = t.phase;
+        curStart = t.ts;
+      }
+    }
+    // Close last range
+    if (curPhase === 'push' && curStart !== null) {
+      senderPushRanges.push([curStart, sortedSender[sortedSender.length-1].ts + 30]);
+    } else if (curPhase === 'pause' && curStart !== null) {
+      senderPauseRanges.push([curStart, sortedSender[sortedSender.length-1].ts + 30]);
+    }
+
+    // Get receiver hold trials with values
+    const receiverHold = receiver.trials
+      .filter(t => t.state === 'COMPLETE' && t.values && t.values.length > 0)
+      .map(t => ({
+        ts: parseTs(t.datetime_start),
+        dm: t.user_attrs && t.user_attrs.detection_mode,
+        cs: t.user_attrs && t.user_attrs.coord_state,
+        values: t.values
+      }))
+      .filter(t => t.ts && (t.dm === 'hold' || !t.dm))
+      .sort((a, b) => a.ts - b.ts);
+
+    if (receiverHold.length < 3) {
+      section.append('div').style('color', '#6e7681').style('font', '10px monospace')
+        .text('insufficient receiver hold trials (' + receiverHold.length + ')');
+      return;
+    }
+
+    // Find time bounds from sender phases
+    const allSenderTs = sortedSender.map(t => t.ts);
+    const firstPush = allSenderTs.find((_, i) => sortedSender[i].phase === 'push');
+    if (!firstPush) return;
+
+    // Show receiver trials from before first push (baseline) through last phase
+    const tsMin = firstPush - 600; // 10 min before first push
+    const tsMax = allSenderTs[allSenderTs.length - 1] + 600;
+
+    // Draw one chart per objective
+    const nObj = Math.min(receiverHold[0].values.length, objNames.length, 5);
+
+    for (let oi = 0; oi < nObj; oi++) {
+      const vals = receiverHold
+        .filter(t => t.values[oi] != null && isFinite(t.values[oi]))
+        .map(t => ({ ts: t.ts, v: t.values[oi] }));
+
+      if (vals.length < 3) continue;
+
+      const allV = vals.map(v => v.v);
+      const vMin = Math.min(...allV);
+      const vMax = Math.max(...allV);
+      const vPad = (vMax - vMin) * 0.15 || Math.abs(vMin) * 0.1 || 0.1;
+
+      const m = { top: 24, right: 20, bottom: 28, left: 55 };
+      const w = Math.min(900, window.innerWidth - 80) - m.left - m.right;
+      const h = 140;
+
+      const svg = section.append('svg').attr('width', w + m.left + m.right).attr('height', h + m.top + m.bottom)
+        .style('display', 'block').style('margin', '2px 0');
+      const g = svg.append('g').attr('transform', 'translate(' + m.left + ',' + m.top + ')');
+
+      const x = d3.scaleLinear().domain([tsMin, tsMax]).range([0, w]);
+      const y = d3.scaleLinear().domain([vMin - vPad, vMax + vPad]).range([h, 0]);
+
+      // Push bands (orange)
+      senderPushRanges.forEach(r => {
+        g.append('rect')
+          .attr('x', x(r[0])).attr('y', 0)
+          .attr('width', Math.max(x(r[1]) - x(r[0]), 2)).attr('height', h)
+          .attr('fill', 'rgba(240,136,62,0.12)').style('pointer-events', 'none');
+      });
+
+      // Pause bands (blue)
+      senderPauseRanges.forEach(r => {
+        g.append('rect')
+          .attr('x', x(r[0])).attr('y', 0)
+          .attr('width', Math.max(x(r[1]) - x(r[0]), 2)).attr('height', h)
+          .attr('fill', 'rgba(88,166,255,0.08)').style('pointer-events', 'none');
+      });
+
+      // Baseline median line (trials before first push)
+      const baselineVals = vals.filter(v => v.ts < firstPush - 10).map(v => v.v);
+      if (baselineVals.length >= 2) {
+        const sorted = baselineVals.slice().sort((a,b) => a-b);
+        const median = sorted[Math.floor(sorted.length/2)];
+        g.append('line').attr('x1', 0).attr('x2', w)
+          .attr('y1', y(median)).attr('y2', y(median))
+          .attr('stroke', '#484f58').attr('stroke-width', 1)
+          .attr('stroke-dasharray', '4,3');
+        g.append('text').attr('x', 4).attr('y', y(median) - 4)
+          .style('font', '7px monospace').style('fill', '#484f58')
+          .text('baseline ' + median.toFixed(3));
+      }
+
+      // Data line
+      const line = d3.line().x(d => x(d.ts)).y(d => y(d.v))
+        .defined(d => d.v != null && isFinite(d.v));
+      g.append('path').datum(vals).attr('d', line)
+        .attr('fill', 'none').attr('stroke', '#8b949e').attr('stroke-width', 1);
+
+      // Data dots colored by phase
+      vals.forEach(v => {
+        let color = '#8b949e';
+        const inPush = senderPushRanges.some(r => v.ts >= r[0]-5 && v.ts <= r[1]+20);
+        const inPause = senderPauseRanges.some(r => v.ts >= r[0]-5 && v.ts <= r[1]+20);
+        if (inPush) color = '#f0883e';
+        else if (inPause) color = '#58a6ff';
+
+        g.append('circle').attr('cx', x(v.ts)).attr('cy', y(v.v))
+          .attr('r', 2.5).attr('fill', color).attr('opacity', 0.7)
+          .style('cursor', 'pointer')
+          .on('mouseenter', function(event) {
+            d3.select(this).attr('r', 5).attr('opacity', 1);
+            showTip('<b>' + objNames[oi] + '</b>: ' + v.v.toFixed(4) +
+              '<br>ts: ' + new Date(v.ts * 1000).toISOString().substring(11, 19) +
+              '<br><span style="color:' + color + '">' +
+              (inPush ? 'push window' : inPause ? 'pause window' : 'baseline') + '</span>',
+              event.clientX, event.clientY);
+          })
+          .on('mouseleave', function() {
+            d3.select(this).attr('r', 2.5).attr('opacity', 0.7);
+            hideTip();
+          });
+      });
+
+      // Axes
+      g.append('g').attr('transform', 'translate(0,' + h + ')')
+        .call(d3.axisBottom(x).ticks(5).tickFormat(d => {
+          const dt = new Date(d * 1000);
+          return dt.getUTCHours().toString().padStart(2,'0') + ':' + dt.getUTCMinutes().toString().padStart(2,'0');
+        }))
+        .selectAll('text').attr('fill', '#484f58').style('font', '7px monospace');
+      g.selectAll('.domain').attr('stroke', '#21262d');
+      g.selectAll('.tick line').attr('stroke', '#21262d');
+
+      g.append('g').call(d3.axisLeft(y).ticks(4).tickFormat(d3.format('.2g')))
+        .selectAll('text').attr('fill', '#8b949e').style('font', '7px monospace');
+
+      // Label
+      g.append('text').attr('x', 0).attr('y', -8)
+        .style('font', 'bold 9px monospace').style('fill', '#c9d1d9')
+        .text(objNames[oi]);
+    }
+
+    // Legend for this pair
+    const leg = section.append('div').attr('class', 'legend').style('margin-top', '4px');
+    leg.append('span').html('<div class="dot" style="background:#f0883e"></div>push window');
+    leg.append('span').html('<div class="dot" style="background:#58a6ff"></div>pause window');
+    leg.append('span').html('<div class="dot" style="background:#8b949e"></div>baseline');
   });
 }
 
