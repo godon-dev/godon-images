@@ -437,7 +437,31 @@ impl OptunaReader {
                 dm == "hold" || dm.is_empty()
             })
             .filter_map(|t| {
-                let vals: Vec<f64> = t.values.iter().filter_map(|v| *v).collect();
+                // Start with objective values from trial.values
+                let mut vals: Vec<f64> = t.values.iter().filter_map(|v| *v).collect();
+
+                // Merge guardrail observation values from user_attrs.
+                // These are collected per trial (as guardrails) but are NOT
+                // optimization objectives — they're appended here so the detector
+                // can check for coupling on thermal/CO2 channels without polluting
+                // the optuna Pareto front.
+                if let Some(g) = t.user_attrs.get("guardrails").and_then(|v| v.as_str()) {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(g) {
+                        if let Some(obj) = parsed.as_object() {
+                            let mut keys: Vec<&String> = obj.keys().collect();
+                            keys.sort();
+                            for key in keys {
+                                if let Some(v) = obj.get(key)
+                                    .and_then(|gv| gv.get("value"))
+                                    .and_then(|vv| vv.as_f64())
+                                {
+                                    vals.push(v);
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if vals.is_empty() { return None; }
                 let ts = t.datetime_start.as_ref()
                     .and_then(|s| parse_timestamp_secs(s))?;
@@ -455,7 +479,14 @@ impl OptunaReader {
             }));
         }
 
-        let n_obj = receiver_hold[0].values.len();
+        // Count pure optuna objectives (before guardrail merge) for output labeling
+        let n_objectives = receiver_trials.iter()
+            .filter(|t| t.state == "COMPLETE")
+            .map(|t| t.values.len())
+            .max()
+            .unwrap_or(0);
+        // Total channels = max across all receiver_hold (includes guardrail observations)
+        let n_obj = receiver_hold.iter().map(|rt| rt.values.len()).max().unwrap_or(0);
         let propagation_lag = 20.0_f64; // seconds — thermal mass delay
         let snr_threshold = 2.0_f64;    // both edges must exceed this
         let min_samples = 3usize;        // minimum per window
@@ -580,6 +611,7 @@ impl OptunaReader {
 
             per_objective.push(serde_json::json!({
                 "objective_index": obj_idx,
+                "source": if obj_idx < n_objectives { "objective" } else { "observation" },
                 "detected": obj_detected,
                 "method": "per_round_block_step",
                 "rounds_detected": obj_detected_rounds,
@@ -597,6 +629,8 @@ impl OptunaReader {
             "receiver_id": receiver_id,
             "rounds": rounds.len(),
             "rounds_with_detection": rounds_detected,
+            "n_objectives": n_objectives,
+            "n_channels": n_obj,
             "best_shift": round4(best_shift),
             "best_objective": best_obj,
             "per_objective": per_objective,
