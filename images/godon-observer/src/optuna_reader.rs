@@ -440,19 +440,18 @@ impl OptunaReader {
                 // Start with objective values from trial.values
                 let mut vals: Vec<f64> = t.values.iter().filter_map(|v| *v).collect();
 
-                // Merge guardrail observation values from user_attrs.
-                // These are collected per trial (as guardrails) but are NOT
-                // optimization objectives — they're appended here so the detector
-                // can check for coupling on thermal/CO2 channels without polluting
-                // the optuna Pareto front.
-                if let Some(g) = t.user_attrs.get("guardrails").and_then(|v| v.as_str()) {
+                // Merge observation values from user_attrs.
+                // These are signals declared in the `observations` config section,
+                // collected per trial by the breeder, stored as user_attrs.
+                // NOT optimization objectives — the detector checks these channels
+                // for coupling step changes caused by the sender's push/pause blocks.
+                if let Some(g) = t.user_attrs.get("observations").and_then(|v| v.as_str()) {
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(g) {
                         if let Some(obj) = parsed.as_object() {
                             let mut keys: Vec<&String> = obj.keys().collect();
                             keys.sort();
                             for key in keys {
                                 if let Some(v) = obj.get(key)
-                                    .and_then(|gv| gv.get("value"))
                                     .and_then(|vv| vv.as_f64())
                                 {
                                     vals.push(v);
