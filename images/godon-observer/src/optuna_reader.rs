@@ -420,11 +420,12 @@ impl OptunaReader {
             }));
         }
 
-        // ── Build receiver hold trial lookup ──────────────────────────
+        // ── Build receiver trial lookups ──────────────────────────
         #[derive(Clone)]
         struct ReceiverTrial {
             timestamp: f64,
             values: Vec<f64>,
+            phase: String,  // hold_calib, push, pause, etc.
         }
 
         let receiver_hold: Vec<ReceiverTrial> = receiver_trials.iter()
@@ -441,10 +442,6 @@ impl OptunaReader {
                 let mut vals: Vec<f64> = t.values.iter().filter_map(|v| *v).collect();
 
                 // Merge observation values from user_attrs.
-                // These are signals declared in the `observations` config section,
-                // collected per trial by the breeder, stored as user_attrs.
-                // NOT optimization objectives — the detector checks these channels
-                // for coupling step changes caused by the sender's push/pause blocks.
                 if let Some(g) = t.user_attrs.get("observations").and_then(|v| v.as_str()) {
                     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(g) {
                         if let Some(obj) = parsed.as_object() {
@@ -464,7 +461,13 @@ impl OptunaReader {
                 if vals.is_empty() { return None; }
                 let ts = t.datetime_start.as_ref()
                     .and_then(|s| parse_timestamp_secs(s))?;
-                Some(ReceiverTrial { timestamp: ts, values: vals })
+                // Extract phase: impulse_phase or lease_phase from user_attrs
+                let phase = t.user_attrs.get("impulse_phase")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| t.user_attrs.get("lease_phase").and_then(|v| v.as_str()))
+                    .unwrap_or("")
+                    .to_string();
+                Some(ReceiverTrial { timestamp: ts, values: vals, phase })
             })
             .collect();
 
@@ -478,19 +481,25 @@ impl OptunaReader {
             }));
         }
 
-        // Count pure optuna objectives (before guardrail merge) for output labeling
+        // Count pure optuna objectives (before observation merge) for output labeling
         let n_objectives = receiver_trials.iter()
             .filter(|t| t.state == "COMPLETE")
             .map(|t| t.values.len())
             .max()
             .unwrap_or(0);
-        // Total channels = max across all receiver_hold (includes guardrail observations)
+        // Total channels = max across all receiver_hold (includes observation channels)
         let n_obj = receiver_hold.iter().map(|rt| rt.values.len()).max().unwrap_or(0);
         let propagation_lag = 20.0_f64; // seconds — thermal mass delay
-        let snr_threshold = 2.0_f64;    // both edges must exceed this
-        let min_samples = 3usize;        // minimum per window
 
-        // ── Per-round detection ───────────────────────────────────────
+        // CFAR parameters
+        // Pfa = desired false alarm probability. k is derived dynamically from
+        // the number of reference cells (hold_calib trials in each round):
+        //   k = N * (Pfa^(-1/N) - 1)
+        let pfa = 0.01_f64;
+        let min_ref_cells = 3usize;   // minimum hold_calib trials for reference
+        let min_test_cells = 3usize;  // minimum push/pause trials
+
+        // ── Per-round detection (CFAR) ───────────────────────────────
         let mut per_round_results: Vec<serde_json::Value> = Vec::new();
         let mut per_objective: Vec<serde_json::Value> = Vec::new();
         let mut any_detected = false;
@@ -499,36 +508,44 @@ impl OptunaReader {
         let mut best_obj = 0usize;
 
         for obj_idx in 0..n_obj {
-            let mut round_edges: Vec<(f64, f64, bool)> = Vec::new(); // (rising, falling, detected)
+            let mut round_edges: Vec<(f64, f64, bool)> = Vec::new();
             let mut obj_detected_rounds = 0usize;
 
             for (ri, round) in rounds.iter().enumerate() {
-                let mut baseline_vals: Vec<f64> = Vec::new();
-                let mut push_vals: Vec<f64> = Vec::new();
-                let mut pause_vals: Vec<f64> = Vec::new();
+                // ── CFAR reference window: hold_calib trials only ──
+                // These are the receiver sitting at neutral params before push.
+                // NOT optimize/cooldown trials — those contain active param changes.
+                let baseline_vals: Vec<f64> = receiver_hold.iter()
+                    .filter(|rt| rt.phase == "hold_calib")
+                    .filter(|rt| {
+                        // Must be before this round's push started
+                        rt.timestamp < round.push_start - 10.0
+                    })
+                    .filter_map(|rt| {
+                        if obj_idx < rt.values.len() { Some(rt.values[obj_idx]) } else { None }
+                    })
+                    .collect();
 
-                for rt in &receiver_hold {
-                    let t = rt.timestamp;
-                    if obj_idx >= rt.values.len() { continue; }
-                    let v = rt.values[obj_idx];
+                let push_vals: Vec<f64> = receiver_hold.iter()
+                    .filter(|rt| rt.timestamp >= round.push_start - 10.0
+                            && rt.timestamp <= round.push_end + propagation_lag)
+                    .filter_map(|rt| {
+                        if obj_idx < rt.values.len() { Some(rt.values[obj_idx]) } else { None }
+                    })
+                    .collect();
 
-                    if t < round.push_start - 30.0 {
-                        // Baseline: before this round's push started
-                        // (for rounds > 0, this includes previous round's pause/post trials)
-                        baseline_vals.push(v);
-                    } else if t >= round.push_start - 10.0 && t <= round.push_end + propagation_lag {
-                        push_vals.push(v);
-                    } else if t >= round.pause_start - 10.0
-                        && t <= round.pause_end + propagation_lag + 30.0
-                    {
-                        pause_vals.push(v);
-                    }
-                }
+                let pause_vals: Vec<f64> = receiver_hold.iter()
+                    .filter(|rt| rt.timestamp >= round.pause_start - 10.0
+                            && rt.timestamp <= round.pause_end + propagation_lag + 30.0)
+                    .filter_map(|rt| {
+                        if obj_idx < rt.values.len() { Some(rt.values[obj_idx]) } else { None }
+                    })
+                    .collect();
 
-                // Need minimum samples in each window
-                if baseline_vals.len() < min_samples
-                    || push_vals.len() < min_samples
-                    || pause_vals.len() < min_samples
+                // Need minimum samples
+                if baseline_vals.len() < min_ref_cells
+                    || push_vals.len() < min_test_cells
+                    || pause_vals.len() < min_test_cells
                 {
                     round_edges.push((0.0, 0.0, false));
                     per_round_results.push(serde_json::json!({
@@ -536,7 +553,7 @@ impl OptunaReader {
                         "objective_index": obj_idx,
                         "detected": false,
                         "reason": "insufficient samples",
-                        "baseline_samples": baseline_vals.len(),
+                        "ref_samples": baseline_vals.len(),
                         "push_samples": push_vals.len(),
                         "pause_samples": pause_vals.len(),
                     }));
@@ -546,24 +563,33 @@ impl OptunaReader {
                 let baseline_median = median(&baseline_vals);
                 let push_median = median(&push_vals);
                 let pause_median = median(&pause_vals);
-                let baseline_mad = mad(&baseline_vals).max(0.01); // floor at 0.01
+                let baseline_mad = mad(&baseline_vals).max(0.001); // floor
 
+                // ── Dynamic CFAR threshold ──
+                // k = N * (Pfa^(-1/N) - 1) where N = reference cell count
+                let n_ref = baseline_vals.len() as f64;
+                let k = n_ref * (pfa.powf(-1.0 / n_ref) - 1.0);
+                let threshold = k * baseline_mad;
+
+                // Detection: push or pause median must be outside
+                // baseline_median ± threshold (the CFAR band)
                 let rising_edge = push_median - baseline_median;
                 let falling_edge = push_median - pause_median;
+
+                let rising_exceeds = rising_edge.abs() >= threshold;
+                let falling_exceeds = falling_edge.abs() >= threshold;
+                let detected = rising_exceeds && falling_exceeds;
+
+                // Report SNR-style metrics for observability
                 let rising_snr = rising_edge.abs() / baseline_mad;
                 let falling_snr = falling_edge.abs() / baseline_mad;
-
-                // Both edges must exceed threshold — falling edge is NEVER bypassed
-                let rising_detected = rising_snr >= snr_threshold && rising_edge.abs() > 0.0;
-                let falling_detected = falling_snr >= snr_threshold && falling_edge.abs() > 0.0;
-                let detected = rising_detected && falling_detected;
 
                 round_edges.push((rising_edge, falling_edge, detected));
 
                 if detected {
                     obj_detected_rounds += 1;
-                    if rising_edge.abs() > best_shift {
-                        best_shift = rising_edge.abs();
+                    if falling_edge.abs() > best_shift {
+                        best_shift = falling_edge.abs();
                         best_obj = obj_idx;
                     }
                 }
@@ -578,9 +604,12 @@ impl OptunaReader {
                     "rising_edge": round4(rising_edge),
                     "falling_edge": round4(falling_edge),
                     "baseline_mad": round4(baseline_mad),
+                    "cfar_k": round4(k),
+                    "cfar_threshold": round4(threshold),
                     "rising_snr": round4(rising_snr),
                     "falling_snr": round4(falling_snr),
-                    "baseline_samples": baseline_vals.len(),
+                    "pfa": pfa,
+                    "ref_cells": baseline_vals.len(),
                     "push_samples": push_vals.len(),
                     "pause_samples": pause_vals.len(),
                 }));
@@ -612,18 +641,18 @@ impl OptunaReader {
                 "objective_index": obj_idx,
                 "source": if obj_idx < n_objectives { "objective" } else { "observation" },
                 "detected": obj_detected,
-                "method": "per_round_block_step",
+                "method": "cfar_per_round",
                 "rounds_detected": obj_detected_rounds,
                 "rounds_total": n_rounds,
                 "stacked_rising_edge": round4(avg_rising),
                 "stacked_falling_edge": round4(avg_falling),
-                "snr_threshold": snr_threshold,
+                "pfa": pfa,
             }));
         }
 
         let result = serde_json::json!({
             "detected": any_detected,
-            "method": "per_round_block_step",
+            "method": "cfar_per_round",
             "sender_id": sender_id,
             "receiver_id": receiver_id,
             "rounds": rounds.len(),
@@ -690,7 +719,7 @@ fn mad(v: &[f64]) -> f64 {
 
 /// Parse an ISO 8601 / RFC 3339 timestamp string to epoch seconds.
 /// Returns None if parsing fails. Used for cross-breeder trial alignment.
-fn parse_timestamp_secs(ts: &str) -> Option<f64> {
+pub fn parse_timestamp_secs(ts: &str) -> Option<f64> {
     // Optuna timestamps from YugaByte look like "2026-06-14 10:23:45.123456+00"
     // or "2026-06-14T10:23:45.123456+00:00"
     // Strategy: normalize to ISO 8601, then parse.
