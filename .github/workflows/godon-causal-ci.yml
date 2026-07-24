@@ -1,0 +1,76 @@
+name: Godon Causal CI
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'images/godon-causal/**'
+      - 'build/**'
+      - '.github/workflows/godon-causal-ci.yml'
+  workflow_dispatch:
+
+env:
+  NIXPKGS_CHANNEL: https://nixos.org/channels/nixos-25.05
+
+jobs:
+  build-and-test:
+    name: Build and Test Container
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Setup Nix
+      uses: cachix/install-nix-action@v22
+      with:
+        nix_path: nixpkgs=https://nixos.org/channels/nixos-25.05
+
+    - name: Build godon-causal container with Nix
+      run: |
+        cd images/godon-causal
+        PROJECT_ROOT="$(git rev-parse --show-toplevel)" \
+        ../../build/build-container-nix.sh \
+          --version "test-${{ github.run_number }}" \
+          --name "godon-causal-test" \
+          --builder-file ../../build/Dockerfile.nix-builder
+
+    - name: Start container for endpoint tests
+      run: |
+        docker run -d --name causal-test \
+          -p 8091:8091 \
+          -e HOST=0.0.0.0 \
+          -e PORT=8091 \
+          godon-causal-test:test-${{ github.run_number }}
+
+        sleep 3
+
+        if ! docker ps | grep causal-test; then
+          echo "Container failed to start"
+          docker logs causal-test
+          exit 1
+        fi
+
+    - name: Test /health endpoint
+      run: curl -sf http://localhost:8091/health || { echo "/health failed"; docker logs causal-test; exit 1; }
+
+    - name: Test /build/status endpoint
+      run: curl -sf http://localhost:8091/build/status || { echo "/build/status failed"; docker logs causal-test; exit 1; }
+
+    - name: Test /summary returns 503 before build
+      run: |
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8091/summary)
+        if [ "$STATUS" != "503" ]; then
+          echo "Expected 503 before build, got $STATUS"
+          exit 1
+        fi
+        echo "Correctly returns 503 before first build"
+
+    - name: Container cleanup
+      if: always()
+      run: |
+        docker stop causal-test || true
+        docker rm causal-test || true
+        docker rmi godon-causal-test:test-${{ github.run_number }} || true
