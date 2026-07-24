@@ -59,9 +59,9 @@ jobs:
     - name: Test /build/status endpoint
       run: curl -sf http://localhost:8091/build/status || { echo "/build/status failed"; docker logs causal-test; exit 1; }
 
-    - name: Test /summary returns 503 before build
+    - name: Test /graph returns 503 before build
       run: |
-        STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8091/summary)
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8091/graph)
         if [ "$STATUS" != "503" ]; then
           echo "Expected 503 before build, got $STATUS"
           exit 1

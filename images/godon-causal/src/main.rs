@@ -253,23 +253,6 @@ async fn causes(
     })))
 }
 
-async fn summary(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let guard = state.graph.read().await;
-    let graph = match guard.as_ref() {
-        Some(g) => g,
-        None => {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({"error": "no graph built"})),
-            ))
-        }
-    };
-
-    Ok(Json(serde_json::json!(graph.summary())))
-}
-
 // ─── Graph Building ─────────────────────────────────────────────────
 
 async fn build_graph_inner(
@@ -472,7 +455,6 @@ async fn main() {
         .route("/predict", post(predict))
         .route("/impact/{breeder_id}", get(impact))
         .route("/causes/{breeder_id}", get(causes))
-        .route("/summary", get(summary))
         .layer(CorsLayer::very_permissive())
         .with_state(state);
 

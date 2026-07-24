@@ -213,23 +213,6 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
         };
     }
 
-    // /api/connectome/summary — proxy to godon-causal for graph summary
-    if path_parts.len() == 3 && path_parts[0] == "api" && path_parts[1] == "connectome" && path_parts[2] == "summary" {
-        let causal_url = format!("{}/summary", state.causal_url);
-        return match state.http_client.get(&causal_url).send() {
-            Ok(response) if response.status().is_success() => {
-                let body = response.text().unwrap_or_default();
-                Ok(json_response(StatusCode::OK, &body))
-            }
-            Ok(response) => {
-                Ok(json_response(response.status(), &format!("{{\"error\": \"causal returned {}\"}}", response.status())))
-            }
-            Err(e) => {
-                Ok(json_response(StatusCode::SERVICE_UNAVAILABLE, &format!("{{\"error\": \"causal unreachable: {}\"}}", e)))
-            }
-        };
-    }
-
     // /api/coupling-detection/<sender_id>/<receiver_id>
     // Proxied to godon-causal's /detect endpoint. Falls back to local
     // detection if causal is unreachable (gradual migration).
