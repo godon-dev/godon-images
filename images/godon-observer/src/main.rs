@@ -26,6 +26,9 @@ struct Args {
     #[clap(long, env = "GODON_API_URL", default_value = "http://godon-api:8080")]
     api_url: String,
 
+    #[clap(long, env = "GODON_CAUSAL_URL", default_value = "http://godon-causal:8091")]
+    causal_url: String,
+
     #[clap(long, default_value = "INFO")]
     log_level: String,
 }
@@ -42,10 +45,11 @@ struct ObserverState {
     http_client: Client,
     optuna: OptunaReader,
     api_url: String,
+    causal_url: String,
 }
 
 impl ObserverState {
-    fn new(push_gateway_url: String, api_url: String) -> Self {
+    fn new(push_gateway_url: String, api_url: String, causal_url: String) -> Self {
         Self {
             push_gateway_url,
             cache: Arc::new(Mutex::new(MetricsCache {
@@ -54,11 +58,12 @@ impl ObserverState {
                 last_error: String::new(),
             })),
             http_client: Client::builder()
-                .timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(30))
                 .build()
                 .unwrap(),
             optuna: OptunaReader::from_env(),
             api_url,
+            causal_url,
         }
     }
 
@@ -191,10 +196,64 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
         };
     }
 
-    // /api/watermark-detection/<sender_id>/<receiver_id>
-    if path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "watermark-detection" {
+    // /api/connectome — proxy to godon-causal for the full graph
+    if path_parts.len() == 2 && path_parts[0] == "api" && path_parts[1] == "connectome" {
+        let causal_url = format!("{}/graph", state.causal_url);
+        return match state.http_client.get(&causal_url).send() {
+            Ok(response) if response.status().is_success() => {
+                let body = response.text().unwrap_or_default();
+                Ok(json_response(StatusCode::OK, &body))
+            }
+            Ok(response) => {
+                Ok(json_response(response.status(), &format!("{{\"error\": \"causal returned {}\"}}", response.status())))
+            }
+            Err(e) => {
+                Ok(json_response(StatusCode::SERVICE_UNAVAILABLE, &format!("{{\"error\": \"causal unreachable: {}\"}}", e)))
+            }
+        };
+    }
+
+    // /api/connectome/summary — proxy to godon-causal for graph summary
+    if path_parts.len() == 3 && path_parts[0] == "api" && path_parts[1] == "connectome" && path_parts[2] == "summary" {
+        let causal_url = format!("{}/summary", state.causal_url);
+        return match state.http_client.get(&causal_url).send() {
+            Ok(response) if response.status().is_success() => {
+                let body = response.text().unwrap_or_default();
+                Ok(json_response(StatusCode::OK, &body))
+            }
+            Ok(response) => {
+                Ok(json_response(response.status(), &format!("{{\"error\": \"causal returned {}\"}}", response.status())))
+            }
+            Err(e) => {
+                Ok(json_response(StatusCode::SERVICE_UNAVAILABLE, &format!("{{\"error\": \"causal unreachable: {}\"}}", e)))
+            }
+        };
+    }
+
+    // /api/coupling-detection/<sender_id>/<receiver_id>
+    // Proxied to godon-causal's /detect endpoint. Falls back to local
+    // detection if causal is unreachable (gradual migration).
+    if (path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "coupling-detection")
+       || (path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "watermark-detection") {
         let sender_id = path_parts[2].to_string();
         let receiver_id = path_parts[3].to_string();
+
+        // Try causal first
+        let causal_url = format!("{}/detect/{}/{}", state.causal_url, sender_id, receiver_id);
+        match state.http_client.get(&causal_url).send() {
+            Ok(response) if response.status().is_success() => {
+                let body = response.text().unwrap_or_default();
+                return Ok(json_response(StatusCode::OK, &body));
+            }
+            Ok(response) => {
+                info!("causal returned HTTP {} for detection, falling back to local", response.status());
+            }
+            Err(e) => {
+                info!("causal unreachable ({}), falling back to local detection", e);
+            }
+        }
+
+        // Fallback: local detection
         return match state.optuna.detect_watermark_coupling(&sender_id, &receiver_id).await {
             Ok(result) => Ok(json_response(StatusCode::OK, &serde_json::to_string(&result).unwrap_or_default())),
             Err(e) => {
@@ -362,7 +421,7 @@ async fn main() {
     info!("Starting godon-observer v{}", env!("CARGO_PKG_VERSION"));
     info!("Push Gateway: {}", args.push_gateway_url);
 
-    let state = Arc::new(ObserverState::new(args.push_gateway_url.clone(), args.api_url.clone()));
+    let state = Arc::new(ObserverState::new(args.push_gateway_url.clone(), args.api_url.clone(), args.causal_url.clone()));
     let addr = format!("{}:{}", args.host, args.port);
     let addr = addr.parse().unwrap();
 
