@@ -462,7 +462,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health))
         // Real-time detection (per-pair, on-demand)
-        .route("/detect/:sender_id/:receiver_id", get(detect_pair))
+        .route("/detect/{sender_id}/{receiver_id}", get(detect_pair))
         // Batch graph building
         .route("/build", post(build))
         .route("/build/status", get(build_status))
@@ -470,8 +470,8 @@ async fn main() {
         .route("/graph", get(get_graph))
         .route("/artifact", get(get_artifact))
         .route("/predict", post(predict))
-        .route("/impact/:breeder_id", get(impact))
-        .route("/causes/:breeder_id", get(causes))
+        .route("/impact/{breeder_id}", get(impact))
+        .route("/causes/{breeder_id}", get(causes))
         .route("/summary", get(summary))
         .layer(CorsLayer::very_permissive())
         .with_state(state);
