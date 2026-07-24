@@ -561,7 +561,7 @@ async function fetchWmDetections(){
         else{console.log('DEMO_WM miss:',key,'a.name=',a.name,'b.name=',b.name); results[key]={detected:false,method:'per_round_block_step',rounds:0,best_shift:0,per_objective:[]};}
       } else {
         try{
-          const r=await fetch(baseUrl+'/api/watermark-detection/'+a.id+'/'+b.id);
+          const r=await fetch(baseUrl+'/api/coupling-detection/'+a.id+'/'+b.id);
           results[key]=await r.json();
         }catch(e){
           results[key]={detected:false,method:'per_round_block_step',rounds:0,best_shift:0,error:true};
