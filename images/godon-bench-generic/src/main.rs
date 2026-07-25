@@ -170,10 +170,12 @@ async fn main() {
     };
 
     info!(
-        "Starting generic bench: {} nodes, {} edges, noise sigma={}",
+        "Starting generic bench: {} nodes, {} edges, gaussian={}, colored={}, drift={}",
         config.nodes.len(),
         config.edges.len(),
-        config.noise.sigma
+        config.noise.gaussian_sigma,
+        config.noise.colored_sigma,
+        config.noise.drift_rate
     );
 
     let sim = Arc::new(std::sync::Mutex::new(Simulator::from_config(config.clone())));
@@ -213,6 +215,7 @@ fn default_config() -> BenchConfig {
                 objectives: 2,
                 base: "linear".to_string(),
                 weights: vec![vec![0.3, 0.5, 0.2], vec![0.1, 0.4, 0.5]],
+                interactions: vec![],
                 param_lower: 0.0,
                 param_upper: 100.0,
             },
@@ -222,6 +225,7 @@ fn default_config() -> BenchConfig {
                 objectives: 2,
                 base: "linear".to_string(),
                 weights: vec![vec![0.4, 0.3, 0.3], vec![0.2, 0.6, 0.2]],
+                interactions: vec![],
                 param_lower: 0.0,
                 param_upper: 100.0,
             },
@@ -232,13 +236,16 @@ fn default_config() -> BenchConfig {
             to: "node-2".to_string(),
             to_channel: 0,
             strength: 0.7,
+            drift_rate: 0.0,
         }],
         noise: SimNoiseConfig {
-            sigma: 0.02,
-            noise_type: "gaussian".to_string(),
+            gaussian_sigma: 0.02,
+            colored_sigma: 0.0,
             drift_rate: 0.0,
+            sigma: None,
+            noise_type: None,
         },
     }
 }
 
-use sim::{EdgeConfig as SimEdgeConfig, NoiseConfig as SimNoiseConfig, NodeConfig};
+use sim::{EdgeConfig as SimEdgeConfig, InteractionConfig as SimInteractionConfig, NoiseConfig as SimNoiseConfig, NodeConfig};
