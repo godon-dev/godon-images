@@ -44,16 +44,33 @@ use std::sync::Arc;
 
 // ─── Request/Response Types ─────────────────────────────────────────
 
+/// POST /{node_id}/apply — accepts named params as a flat dict.
+/// The breeder sends {"param_0": 50.0, "param_1": 50.0, ...}.
+/// We convert to array internally based on config.
 #[derive(Debug, Deserialize)]
 struct ApplyRequest {
-    params: Vec<f64>,
+    #[serde(flatten)]
+    params: std::collections::HashMap<String, f64>,
 }
 
-#[derive(Debug, Serialize)]
-struct MetricsResponse {
-    node_id: String,
+/// GET /{node_id}/metrics/json — returns named scalar objectives.
+/// objective_0, objective_1, etc. — built dynamically from config.
+/// The breeder reads via `key: objective_N` (scalar, not array).
+
+fn build_metrics_response(
+    node_id: &str,
     tick: u64,
-    objectives: Vec<f64>,
+    objectives: &[f64],
+) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    map.insert("node_id".to_string(), serde_json::Value::String(node_id.to_string()));
+    map.insert("tick".to_string(), serde_json::Value::Number(serde_json::Number::from(tick)));
+    for (i, val) in objectives.iter().enumerate() {
+        if let Some(n) = serde_json::Number::from_f64(*val) {
+            map.insert(format!("objective_{}", i), serde_json::Value::Number(n));
+        }
+    }
+    serde_json::Value::Object(map)
 }
 
 #[derive(Debug, Serialize)]
@@ -89,44 +106,49 @@ async fn apply(
     State(state): State<Arc<AppState>>,
     Path(node_id): Path<String>,
     Json(req): Json<ApplyRequest>,
-) -> Json<MetricsResponse> {
+) -> Json<serde_json::Value> {
+    // Convert named params dict to array based on config
+    let node_config = state.config.nodes.iter()
+        .find(|n| n.id == node_id)
+        .unwrap_or_else(|| panic!("unknown node: {}", node_id));
+
+    let mut param_array = vec![node_config.param_lower; node_config.params];
+    for (key, val) in &req.params {
+        // Try to parse param_N format
+        if let Some(idx_str) = key.strip_prefix("param_") {
+            if let Ok(idx) = idx_str.parse::<usize>() {
+                if idx < param_array.len() {
+                    param_array[idx] = *val;
+                }
+            }
+        }
+    }
+
     let mut sim = state.sim.lock().unwrap();
-    let objectives = sim.apply(&node_id, &req.params);
+    let objectives = sim.apply(&node_id, &param_array);
     let tick = sim.nodes.get(&node_id).map(|n| n.tick).unwrap_or(0);
-    info!("Node {} applied {} params → objectives: {:?}", node_id, req.params.len(), objectives);
-    Json(MetricsResponse {
-        node_id,
-        tick,
-        objectives,
-    })
+    info!("Node {} applied {} params -> objectives: {:?}", node_id, param_array.len(), objectives);
+    Json(build_metrics_response(&node_id, tick, &objectives))
 }
 
 async fn metrics_json(
     State(state): State<Arc<AppState>>,
     Path(node_id): Path<String>,
-) -> Json<MetricsResponse> {
+) -> Json<serde_json::Value> {
     let sim = state.sim.lock().unwrap();
     let objectives = sim.get_status(&node_id).unwrap_or_default();
     let tick = sim.nodes.get(&node_id).map(|n| n.tick).unwrap_or(0);
-    Json(MetricsResponse {
-        node_id,
-        tick,
-        objectives,
-    })
+    Json(build_metrics_response(&node_id, tick, &objectives))
 }
 
 async fn status(
     State(state): State<Arc<AppState>>,
     Path(node_id): Path<String>,
-) -> Json<MetricsResponse> {
+) -> Json<serde_json::Value> {
     let sim = state.sim.lock().unwrap();
     let objectives = sim.get_status(&node_id).unwrap_or_default();
     let tick = sim.nodes.get(&node_id).map(|n| n.tick).unwrap_or(0);
-    Json(MetricsResponse {
-        node_id,
-        tick,
-        objectives,
-    })
+    Json(build_metrics_response(&node_id, tick, &objectives))
 }
 
 async fn reset(
