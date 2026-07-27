@@ -62,7 +62,7 @@ jobs:
       run: |
         curl -sf -X POST http://localhost:8090/node-1/apply \
           -H "Content-Type: application/json" \
-          -d '{"params": [50.0, 50.0, 50.0]}' | grep -q "objectives" || { echo "/apply failed"; exit 1; }
+          -d '{"param_0": 50.0, "param_1": 50.0, "param_2": 50.0}' | grep -q "objective_0" || { echo "/apply failed"; exit 1; }
 
     - name: Test /node-1/status endpoint
       run: curl -sf http://localhost:8090/node-1/status | grep -q "node-1" || { echo "/status failed"; exit 1; }
