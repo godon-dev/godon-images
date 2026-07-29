@@ -73,16 +73,15 @@ impl TrialReader {
     pub async fn list_breeders(&self) -> Result<Vec<String>, Error> {
         let client = self.connect("yugabyte").await?;
         let rows = client
-            .query("SELECT study_name FROM studies ORDER BY study_name", &[])
+            .query("SELECT datname FROM pg_database WHERE datname LIKE 'breeder_%' ORDER BY datname", &[])
             .await?;
 
-        // Study names look like "uuid_study" — extract the UUID part
         let mut breeders = Vec::new();
         for row in &rows {
-            let study_name: String = row.get(0);
-            // Strip _study suffix to get breeder UUID
-            if let Some(uuid) = study_name.strip_suffix("_study") {
-                breeders.push(uuid.to_string());
+            let dbname: String = row.get(0);
+            // Strip breeder_ prefix to get UUID with dashes
+            if let Some(uuid) = dbname.strip_prefix("breeder_") {
+                breeders.push(uuid.replace('_', "-"));
             }
         }
         Ok(breeders)
