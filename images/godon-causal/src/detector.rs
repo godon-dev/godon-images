@@ -244,10 +244,12 @@ impl CfarDetector {
                 .filter_map(|rt| extract_channel(rt, idx, is_objective))
                 .collect();
 
-            // Push window
+            // Push window: receiver hold trials during sender's push.
+            // End at push_end (not push_end + lag) to avoid overlap with
+            // the pause/baseline window.
             let push_vals: Vec<f64> = receiver.receiver_hold_trials.iter()
                 .filter(|rt| rt.timestamp >= round.push_start - 5.0
-                        && rt.timestamp <= round.push_end + lag)
+                        && rt.timestamp < round.pause_start)
                 .filter_map(|rt| extract_channel(rt, idx, is_objective))
                 .collect();
 
