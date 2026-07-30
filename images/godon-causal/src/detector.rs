@@ -360,13 +360,15 @@ struct Round {
 }
 
 fn build_rounds(sender: &ProbeTrials) -> Vec<Round> {
-    let push_ts: Vec<f64> = sender.push_trials.iter()
+    let mut push_ts: Vec<f64> = sender.push_trials.iter()
         .map(|t| t.timestamp)
         .collect();
 
     if push_ts.is_empty() {
         return Vec::new();
     }
+
+    push_ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
     // Determine round boundaries by temporal gaps
     let mut round_starts: Vec<usize> = vec![0];
@@ -409,10 +411,11 @@ fn build_rounds(sender: &ProbeTrials) -> Vec<Round> {
             f64::MAX
         };
 
-        let pause_ts: Vec<f64> = sender.pause_trials.iter()
+        let mut pause_ts: Vec<f64> = sender.pause_trials.iter()
             .filter(|t| t.timestamp > push_end - 10.0 && t.timestamp < next_push_start)
             .map(|t| t.timestamp)
             .collect();
+        pause_ts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
         let (pause_start, pause_end) = if pause_ts.is_empty() {
             (push_end, push_end)
