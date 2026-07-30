@@ -119,7 +119,7 @@ impl CfarDetector {
                         false
                     }
                 })
-                .min_by(|a, b| a.timestamp.partial_cmp(&b.timestamp));
+                .min_by(|a, b| a.timestamp.partial_cmp(&b.timestamp).unwrap_or(std::cmp::Ordering::Equal));
 
             if let Some(rt) = responder {
                 let lag = rt.timestamp - round.push_start;
