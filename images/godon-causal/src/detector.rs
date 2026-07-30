@@ -314,8 +314,7 @@ impl CfarDetector {
         }
 
         let n_rounds = rounds.len();
-        let majority = n_rounds / 2 + 1;
-        let detected = round_detected >= majority;
+        let detected = round_detected >= 1;
 
         let avg_rising = if rising_edges.is_empty() { 0.0 } else {
             rising_edges.iter().sum::<f64>() / rising_edges.len() as f64
