@@ -233,7 +233,7 @@ impl CfarDetector {
         let mut total_pause_samples = 0usize;
         let mut total_baseline_samples = 0usize;
 
-        for round in rounds {
+        for (round_idx, round) in rounds.iter().enumerate() {
             // Baseline: receiver hold trials during sender's pause phase
             // (sender returns to neutral during pause = receiver sees baseline)
             let baseline_vals: Vec<f64> = receiver.receiver_hold_trials.iter()
@@ -261,6 +261,14 @@ impl CfarDetector {
                 || push_vals.len() < self.min_test_cells
                 || pause_vals.len() < self.min_test_cells
             {
+                log::debug!(
+                    "Round {} SKIP: baseline={} push={} pause={} (min_ref={} min_test={}) push_window=[{:.1}-{:.1}] pause_window=[{:.1}-{:.1}] lag={:.1}",
+                    round_idx, baseline_vals.len(), push_vals.len(), pause_vals.len(),
+                    self.min_ref_cells, self.min_test_cells,
+                    round.push_start, round.push_end,
+                    round.pause_start, round.pause_end,
+                    lag,
+                );
                 continue;
             }
 
@@ -276,6 +284,13 @@ impl CfarDetector {
 
             let rising_edge = push_median - baseline_median;
             let falling_edge = push_median - pause_median;
+
+            log::debug!(
+                "Round {} OK: baseline={} push={} pause={} push_med={:.4} pause_med={:.4} base_med={:.4} base_mad={:.4} threshold={:.4} rising={:.4} falling={:.4}",
+                round_idx, baseline_vals.len(), push_vals.len(), pause_vals.len(),
+                push_median, pause_median, baseline_median, baseline_mad,
+                threshold, rising_edge, falling_edge,
+            );
 
             let rising_exceeds = rising_edge.abs() >= threshold;
             let falling_exceeds = falling_edge.abs() >= threshold;
