@@ -234,10 +234,11 @@ impl CfarDetector {
         let mut total_baseline_samples = 0usize;
 
         for (round_idx, round) in rounds.iter().enumerate() {
-            // Baseline: receiver hold trials during sender's pause phase
-            // (sender returns to neutral during pause = receiver sees baseline)
+            // Baseline: receiver hold trials during sender's pause time window.
+            // Don't filter by phase label — the timestamp window already
+            // ensures we're in the right period. The lease_phase label
+            // may not be updated yet when the receiver trial runs.
             let baseline_vals: Vec<f64> = receiver.receiver_hold_trials.iter()
-                .filter(|rt| rt.phase == "pause")
                 .filter(|rt| rt.timestamp >= round.pause_start - 5.0
                         && rt.timestamp <= round.pause_end + lag + margin)
                 .filter_map(|rt| extract_channel(rt, idx, is_objective))
