@@ -161,10 +161,12 @@ impl CfarDetector {
         let mut total_baseline_samples = 0usize;
 
         for round in rounds {
-            // Baseline: receiver hold_calib trials before this round's push
+            // Baseline: receiver hold trials during sender's pause phase
+            // (sender returns to neutral during pause = receiver sees baseline)
             let baseline_vals: Vec<f64> = receiver.receiver_hold_trials.iter()
-                .filter(|rt| rt.phase == "hold_calib")
-                .filter(|rt| rt.timestamp < round.push_start - 10.0)
+                .filter(|rt| rt.phase == "pause")
+                .filter(|rt| rt.timestamp >= round.pause_start - 10.0
+                        && rt.timestamp <= round.pause_end + self.propagation_lag + 30.0)
                 .filter_map(|rt| extract_channel(rt, idx, is_objective))
                 .collect();
 
