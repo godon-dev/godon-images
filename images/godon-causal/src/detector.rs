@@ -67,8 +67,19 @@ impl Default for CfarDetector {
 impl CfarDetector {
     pub fn new(confidence: f64) -> Self {
         Self {
+            propagation_lag: std::env::var("GODON_PROPAGATION_LAG")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0.0),
+            min_ref_cells: std::env::var("GODON_MIN_REF_CELLS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3),
+            min_test_cells: std::env::var("GODON_MIN_TEST_CELLS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3),
             detection_confidence: confidence,
-            ..Default::default()
         }
     }
 }
