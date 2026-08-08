@@ -9,9 +9,14 @@ impl<'a> QueryEngine<'a> {
         Self { graph }
     }
 
-    /// "If sender probes at scale S, what happens to everyone?"
+    /// "If sender probes at scale S, what happens to everyone?" (single-hop)
     pub fn what_if(&self, sender_id: &str, impulse_scale: f64) -> Vec<Prediction> {
         self.graph.predict(sender_id, impulse_scale)
+    }
+
+    /// "If sender probes at scale S, what happens through the entire graph?" (multi-hop)
+    pub fn what_if_multihop(&self, sender_id: &str, impulse_scale: f64) -> Vec<Prediction> {
+        self.graph.predict_multihop(sender_id, impulse_scale)
     }
 
     /// "What affects this breeder?"
