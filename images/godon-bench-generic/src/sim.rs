@@ -222,34 +222,62 @@ impl Simulator {
         self.recompute_objectives(node_id)
     }
 
-    /// Recompute objectives for a node: base + coupling contributions + noise.
+    /// Recompute objectives for a node: base + cascaded coupling + noise.
+    ///
+    /// Coupling propagates through the entire graph via iterative relaxation
+    /// (Jacobi iteration). Each pass extends signal one hop. For a graph with
+    /// N nodes, N-1 passes suffice for exact cascade in any DAG. Cyclic graphs
+    /// converge if loop gain < 1.
     fn recompute_objectives(&mut self, requesting_node: &str) -> Vec<f64> {
-        // Compute base for all nodes first
-        let mut base_values: HashMap<String, Vec<f64>> = HashMap::new();
+        // Initialize all nodes at their base (parameter-derived) values
+        let mut coupled: HashMap<String, Vec<f64>> = HashMap::new();
         for (id, node) in &self.nodes {
-            base_values.insert(id.clone(), node.compute_base());
+            coupled.insert(id.clone(), node.compute_base());
         }
 
-        let mut result = base_values[requesting_node].clone();
+        // Iterative relaxation: propagate coupling through the graph.
+        // Noise-free — coupling is physical, noise is measurement at readout.
+        let max_iter = self.nodes.len().saturating_sub(1).max(1);
+        for _ in 0..max_iter {
+            let prev = coupled.clone();
+            let mut converged = true;
 
-        // Add coupling contributions from edges pointing INTO this node.
-        // Edge strengths drift over time if drift_rate > 0.
-        for edge in &self.edges {
-            if edge.to == requesting_node && edge.to_channel < result.len() {
-                let effective_strength = if edge.drift_rate > 0.0 {
-                    edge.strength * (1.0 + edge.drift_rate * self.total_ticks as f64)
-                } else {
-                    edge.strength
-                };
-                if let Some(source_base) = base_values.get(&edge.from) {
-                    if edge.from_channel < source_base.len() {
-                        result[edge.to_channel] += effective_strength * source_base[edge.from_channel];
+            for (id, coupled_vals) in coupled.iter_mut() {
+                let mut updated = self.nodes[id].compute_base();
+
+                for edge in &self.edges {
+                    if edge.to == *id && edge.to_channel < updated.len() {
+                        let effective_strength = if edge.drift_rate > 0.0 {
+                            edge.strength * (1.0 + edge.drift_rate * self.total_ticks as f64)
+                        } else {
+                            edge.strength
+                        };
+                        if let Some(source) = prev.get(&edge.from) {
+                            if edge.from_channel < source.len() {
+                                updated[edge.to_channel] +=
+                                    effective_strength * source[edge.from_channel];
+                            }
+                        }
                     }
                 }
+
+                for (i, &new_v) in updated.iter().enumerate() {
+                    if let Some(&old_v) = coupled_vals.get(i) {
+                        if (new_v - old_v).abs() > 1e-10 {
+                            converged = false;
+                        }
+                    }
+                }
+                *coupled_vals = updated;
+            }
+
+            if converged {
+                break;
             }
         }
 
-        // Add stacked noise
+        // Add stacked noise to the requesting node only
+        let mut result = coupled[requesting_node].clone();
         for val in result.iter_mut() {
             *val += self.generate_noise();
         }
