@@ -207,6 +207,26 @@ async fn predict(
     Ok(Json(serde_json::json!({"predictions": predictions})))
 }
 
+async fn predict_multihop(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PredictRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let guard = state.graph.read().await;
+    let graph = match guard.as_ref() {
+        Some(g) => g,
+        None => {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "no graph built"})),
+            ))
+        }
+    };
+
+    let scale = req.impulse_scale.unwrap_or(1.0);
+    let predictions = graph.predict_multihop(&req.sender_id, scale);
+    Ok(Json(serde_json::json!({"predictions": predictions})))
+}
+
 async fn impact(
     State(state): State<Arc<AppState>>,
     Path(breeder_id): Path<String>,
@@ -453,6 +473,7 @@ async fn main() {
         .route("/graph", get(get_graph))
         .route("/artifact", get(get_artifact))
         .route("/predict", post(predict))
+        .route("/predict/multihop", post(predict_multihop))
         .route("/impact/{breeder_id}", get(impact))
         .route("/causes/{breeder_id}", get(causes))
         .layer(CorsLayer::very_permissive())
