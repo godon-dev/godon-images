@@ -185,6 +185,7 @@ impl CausalGraph {
         }
     }
 
+    /// Single-hop prediction (preserved for backward compat).
     pub fn predict(&self, sender_id: &str, impulse_scale: f64) -> Vec<Prediction> {
         self.detected_edges()
             .iter()
@@ -201,6 +202,104 @@ impl CausalGraph {
                     noise_floor: edge.noise_floor,
                     snr_estimate: shift.abs() / edge.noise_floor.max(1e-12),
                     path: vec![sender_id.to_string(), edge.receiver_id.clone()],
+                }
+            })
+            .collect()
+    }
+
+    /// Multi-hop prediction: compose sensitivities along all paths from sender.
+    ///
+    /// For each reachable node, finds the best path (highest confidence) and
+    /// composes edge sensitivities multiplicatively. Returns predictions for
+    /// both direct neighbors and distant nodes reachable through the graph.
+    ///
+    /// Naive linear composition: predicted_shift = product(sensitivities) × impulse_scale.
+    /// Accurate for linear systems at weak coupling; diverges for strong/nonlinear
+    /// coupling where intermediate node state shifts alter edge weights.
+    pub fn predict_multihop(&self, sender_id: &str, impulse_scale: f64) -> Vec<Prediction> {
+        use std::collections::VecDeque;
+
+        let detected: Vec<&CharacterizedEdge> = self.detected_edges();
+
+        // BFS from sender through detected edges. Track best path per (node, channel).
+        // Key: (receiver_id, channel) → (composed_sensitivity, confidence, path)
+        let mut best: HashMap<(String, ChannelId), (f64, f64, Vec<String>)> = HashMap::new();
+
+        let mut queue: VecDeque<(String, ChannelId, f64, f64, Vec<String>)> = VecDeque::new();
+
+        // Seed: all direct edges from sender
+        for edge in &detected {
+            if edge.sender_id == sender_id {
+                let sens = match &edge.response {
+                    ResponseFunction::StepResponse { sensitivity, .. } => *sensitivity,
+                };
+                queue.push_back((
+                    edge.receiver_id.clone(),
+                    edge.channel.clone(),
+                    sens,
+                    edge.confidence,
+                    vec![sender_id.to_string(), edge.receiver_id.clone()],
+                ));
+            }
+        }
+
+        while let Some((node, channel, composed_sens, confidence, path)) = queue.pop_front() {
+            let key = (node.clone(), channel.clone());
+
+            // Keep the highest-confidence prediction per (node, channel)
+            let is_better = match best.get(&key) {
+                Some((_, existing_conf, _)) => confidence > *existing_conf,
+                None => true,
+            };
+
+            if !is_better {
+                continue;
+            }
+
+            best.insert(key.clone(), (composed_sens, confidence, path.clone()));
+
+            // Avoid cycles
+            if path.len() > self.nodes.len() {
+                continue;
+            }
+
+            // Extend: find edges leaving this node on this channel
+            for edge in &detected {
+                if edge.sender_id == node && !path.contains(&edge.receiver_id) {
+                    let edge_sens = match &edge.response {
+                        ResponseFunction::StepResponse { sensitivity, .. } => *sensitivity,
+                    };
+                    let mut new_path = path.clone();
+                    new_path.push(edge.receiver_id.clone());
+                    queue.push_back((
+                        edge.receiver_id.clone(),
+                        edge.channel.clone(),
+                        composed_sens * edge_sens,
+                        confidence * edge.confidence,
+                        new_path,
+                    ));
+                }
+            }
+        }
+
+        best.into_iter()
+            .map(|((receiver_id, channel), (composed_sens, confidence, path))| {
+                let shift = composed_sens * impulse_scale;
+                let noise_floor = detected
+                    .iter()
+                    .find(|e| e.receiver_id == receiver_id && e.channel == channel)
+                    .map(|e| e.noise_floor)
+                    .unwrap_or(1e-12);
+                Prediction {
+                    sender_id: sender_id.to_string(),
+                    receiver_id,
+                    channel,
+                    impulse_scale,
+                    predicted_shift: shift,
+                    confidence,
+                    noise_floor,
+                    snr_estimate: shift.abs() / noise_floor.max(1e-12),
+                    path,
                 }
             })
             .collect()
@@ -255,4 +354,164 @@ pub struct BuildResult {
     pub duration_secs: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_edge(
+        sender: &str,
+        receiver: &str,
+        sensitivity: f64,
+        detected: bool,
+    ) -> CharacterizedEdge {
+        CharacterizedEdge {
+            sender_id: sender.to_string(),
+            receiver_id: receiver.to_string(),
+            channel: ChannelId::Objective(0),
+            detected,
+            confidence: 0.8,
+            method: "cfar_block_step".to_string(),
+            response: ResponseFunction::StepResponse {
+                sensitivity,
+                baseline: 0.5,
+                recovery_fraction: 0.9,
+            },
+            noise_floor: 0.02,
+            impulse_scale: 1.0,
+            rising_edge: sensitivity * 0.5,
+            falling_edge: sensitivity * 0.45,
+            baseline_median: 0.5,
+            push_median: 0.5 + sensitivity * 0.5,
+            pause_median: 0.5,
+            n_push_samples: 15,
+            n_pause_samples: 15,
+            n_baseline_samples: 15,
+            characterized_at: String::new(),
+            rounds_total: 3,
+        }
+    }
+
+    fn make_node(id: &str) -> CausalNode {
+        CausalNode {
+            id: id.to_string(),
+            label: id.to_string(),
+            objectives: vec![],
+            observations: vec![],
+        }
+    }
+
+    #[test]
+    fn test_predict_multihop_chain4() {
+        // Chain: node-1 → node-2 → node-3 → node-4
+        // Edge sensitivities: 0.7, 0.5, 0.3
+        // Expected composed at node-4: 0.7 × 0.5 × 0.3 = 0.105
+        let graph = CausalGraph {
+            nodes: vec![
+                make_node("node-1"),
+                make_node("node-2"),
+                make_node("node-3"),
+                make_node("node-4"),
+            ],
+            edges: vec![
+                make_edge("node-1", "node-2", 0.7, true),
+                make_edge("node-2", "node-3", 0.5, true),
+                make_edge("node-3", "node-4", 0.3, true),
+            ],
+            ..Default::default()
+        };
+
+        let preds = graph.predict_multihop("node-1", 1.0);
+        assert_eq!(preds.len(), 3, "Should predict 3 reachable nodes");
+
+        // Sort by path length for deterministic checking
+        let mut sorted = preds.clone();
+        sorted.sort_by_key(|p| p.path.len());
+
+        // node-2: direct, sensitivity 0.7
+        let p2 = &sorted[0];
+        assert_eq!(p2.receiver_id, "node-2");
+        assert_eq!(p2.path, vec!["node-1", "node-2"]);
+        assert!(
+            (p2.predicted_shift - 0.7).abs() < 0.001,
+            "node-2 shift should be ~0.7, got {}",
+            p2.predicted_shift
+        );
+
+        // node-3: two-hop, sensitivity 0.7 × 0.5 = 0.35
+        let p3 = &sorted[1];
+        assert_eq!(p3.receiver_id, "node-3");
+        assert_eq!(p3.path, vec!["node-1", "node-2", "node-3"]);
+        assert!(
+            (p3.predicted_shift - 0.35).abs() < 0.001,
+            "node-3 shift should be ~0.35, got {}",
+            p3.predicted_shift
+        );
+
+        // node-4: three-hop, sensitivity 0.7 × 0.5 × 0.3 = 0.105
+        let p4 = &sorted[2];
+        assert_eq!(p4.receiver_id, "node-4");
+        assert_eq!(
+            p4.path,
+            vec!["node-1", "node-2", "node-3", "node-4"]
+        );
+        assert!(
+            (p4.predicted_shift - 0.105).abs() < 0.001,
+            "node-4 shift should be ~0.105, got {}",
+            p4.predicted_shift
+        );
+    }
+
+    #[test]
+    fn test_predict_single_hop_unchanged() {
+        // Verify the original single-hop predict still works
+        let graph = CausalGraph {
+            nodes: vec![make_node("A"), make_node("B")],
+            edges: vec![make_edge("A", "B", 0.6, true)],
+            ..Default::default()
+        };
+
+        let preds = graph.predict("A", 1.0);
+        assert_eq!(preds.len(), 1);
+        assert_eq!(preds[0].receiver_id, "B");
+        assert_eq!(preds[0].path, vec!["A", "B"]);
+        assert!((preds[0].predicted_shift - 0.6).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_predict_multihop_no_edges() {
+        let graph = CausalGraph {
+            nodes: vec![make_node("A"), make_node("B")],
+            edges: vec![make_edge("A", "B", 0.6, false)], // NOT detected
+            ..Default::default()
+        };
+
+        let preds = graph.predict_multihop("A", 1.0);
+        assert!(preds.is_empty(), "Undetected edges should not propagate");
+    }
+
+    #[test]
+    fn test_predict_multihop_cycle_protection() {
+        // A → B → A (cycle). Should not loop forever.
+        let graph = CausalGraph {
+            nodes: vec![make_node("A"), make_node("B")],
+            edges: vec![
+                make_edge("A", "B", 0.5, true),
+                make_edge("B", "A", 0.5, true),
+            ],
+            ..Default::default()
+        };
+
+        let preds = graph.predict_multihop("A", 1.0);
+        // A→B is a valid prediction. B→A would cycle back to sender — skipped.
+        assert!(
+            preds.iter().any(|p| p.receiver_id == "B"),
+            "Should predict B"
+        );
+        assert!(
+            !preds.iter().any(|p| p.receiver_id == "A"),
+            "Should not predict back to sender via cycle"
+        );
+    }
 }
