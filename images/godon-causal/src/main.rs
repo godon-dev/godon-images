@@ -2,6 +2,7 @@ mod artifact;
 mod characterizer;
 mod detector;
 mod graph;
+mod probe_curves;
 mod query;
 mod trial_reader;
 
@@ -28,6 +29,7 @@ struct AppState {
     reader: TrialReader,
     graph: RwLock<Option<CausalGraph>>,
     build_status: RwLock<BuildStatus>,
+    curves: RwLock<probe_curves::CurveRegistry>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -57,6 +59,7 @@ impl AppState {
             reader,
             graph: RwLock::new(None),
             build_status: RwLock::new(BuildStatus::default()),
+            curves: RwLock::new(probe_curves::CurveRegistry::new()),
         }
     }
 }
@@ -449,6 +452,109 @@ async fn detect_pair(
     })))
 }
 
+// ─── Real-Time Per-Edge Characterization ────────────────────────────
+//
+// Measures a receiver's objective_0 shift between the push and pause windows
+// of a single probe, records (probe_level, shift) into the per-edge response
+// curve, and reports the curve's convergence delta.
+
+#[derive(serde::Deserialize)]
+struct ProbeResultRequest {
+    group_id: String,
+    sender_id: String,
+    probe_param: String,
+    probe_level: f64,
+    push_start: f64,
+    pause_end: f64,
+    convergence_threshold: f64,
+}
+
+async fn probe_result(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ProbeResultRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Split the [push_start, pause_end] window at its midpoint: the first half
+    // covers the push (excitation) phase, the second half the pause (settling)
+    // phase. We compare the median receiver objective_0 in each window.
+    let midpoint = (req.push_start + req.pause_end) / 2.0;
+
+    let push_obs = state
+        .reader
+        .read_receiver_observations(&req.group_id, req.push_start, midpoint)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("failed to read push observations: {}", e)
+                })),
+            )
+        })?;
+
+    let pause_obs = state
+        .reader
+        .read_receiver_observations(&req.group_id, midpoint, req.pause_end)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": format!("failed to read pause observations: {}", e)
+                })),
+            )
+        })?;
+
+    let push_median = median_f64(&push_obs);
+    let pause_median = median_f64(&pause_obs);
+    let shift = push_median - pause_median;
+
+    // Feed the measured shift into the per-edge response curve.
+    let delta = {
+        let mut curves = state.curves.write().await;
+        curves.add_point(
+            &req.sender_id,
+            &req.probe_param,
+            req.probe_level,
+            shift,
+            req.convergence_threshold,
+        )
+    };
+
+    let converged = state
+        .curves
+        .read()
+        .await
+        .is_converged(&req.sender_id, &req.probe_param);
+
+    Ok(Json(serde_json::json!({
+        "sender_id": req.sender_id,
+        "probe_param": req.probe_param,
+        "probe_level": req.probe_level,
+        "shift": shift,
+        "delta": delta,
+        "converged": converged,
+        "push_median": push_median,
+        "pause_median": pause_median,
+        "push_samples": push_obs.len(),
+        "pause_samples": pause_obs.len(),
+    })))
+}
+
+/// Median of a slice of f64 (0.0 for empty slices).
+fn median_f64(v: &[f64]) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let mut sorted = v.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = sorted.len() / 2;
+    if sorted.len() % 2 == 0 {
+        (sorted[mid - 1] + sorted[mid]) / 2.0
+    } else {
+        sorted[mid]
+    }
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::init();
@@ -466,6 +572,8 @@ async fn main() {
         .route("/health", get(health))
         // Real-time detection (per-pair, on-demand)
         .route("/detect/{sender_id}/{receiver_id}", get(detect_pair))
+        // Real-time characterization (response curves per edge)
+        .route("/characterize", post(probe_result))
         // Batch graph building
         .route("/build", post(build))
         .route("/build/status", get(build_status))
