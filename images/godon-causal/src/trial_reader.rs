@@ -68,6 +68,47 @@ impl TrialReader {
         }
     }
 
+    // ─── Read receiver observations within a time window ────────────
+
+    pub async fn read_receiver_observations(
+        &self,
+        group_id: &str,
+        start_epoch: f64,
+        end_epoch: f64,
+    ) -> Result<Vec<f64>, Error> {
+        let db = Self::breeder_db_name(group_id);
+        let client = self.connect(&db).await?;
+
+        let rows = client
+            .query(
+                "SELECT CAST(objective_values AS TEXT) FROM receiver_observations \
+                 WHERE EXTRACT(EPOCH FROM timestamp) >= $1 \
+                 AND EXTRACT(EPOCH FROM timestamp) <= $2 \
+                 ORDER BY timestamp",
+                &[&start_epoch, &end_epoch],
+            )
+            .await?;
+
+        let mut values = Vec::new();
+        for row in &rows {
+            let json_str: String = row.get(0);
+            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                if let Some(v) = obj.get("objective_0").and_then(|vv| vv.as_f64()) {
+                    values.push(v);
+                }
+            }
+        }
+
+        debug!(
+            "read_receiver_observations: group={} window=[{:.0}, {:.0}] -> {} obs",
+            group_id,
+            start_epoch,
+            end_epoch,
+            values.len()
+        );
+        Ok(values)
+    }
+
     // ─── List all breeder IDs ────────────────────────────────────────
 
     pub async fn list_breeders(&self) -> Result<Vec<String>, Error> {
