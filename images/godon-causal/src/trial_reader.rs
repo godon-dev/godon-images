@@ -76,8 +76,7 @@ impl TrialReader {
         start_epoch: f64,
         end_epoch: f64,
     ) -> Result<Vec<f64>, Error> {
-        let db = Self::breeder_db_name(group_id);
-        let client = self.connect(&db).await?;
+        let client = self.connect("archive_db").await?;
 
         let rows = client
             .query(
