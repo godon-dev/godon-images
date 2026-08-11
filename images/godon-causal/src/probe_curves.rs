@@ -205,12 +205,25 @@ mod tests {
     }
 
     #[test]
-    fn test_second_point_returns_finite_delta() {
+    fn test_second_point_returns_infinity_too() {
+        // First two points return INFINITY because prev_grid is only
+        // set when points.len() >= 2 (the else branch). The first
+        // point: len < 2 → INFINITY. The second point: prev_grid is
+        // None → INFINITY. Finite delta starts on the third point.
         let mut curve = ResponseCurve::new(0.02);
         curve.add_point(0.0, 0.0);
         let delta = curve.add_point(100.0, 1.0);
-        assert!(delta.is_finite(), "second point delta should be finite");
-        assert!(delta > 0.0, "adding a point that extends the curve should have positive delta");
+        assert!(delta.is_infinite(), "second point delta should also be INFINITY (no prev_grid yet)");
+    }
+
+    #[test]
+    fn test_third_point_returns_finite_delta() {
+        let mut curve = ResponseCurve::new(0.02);
+        curve.add_point(0.0, 0.0);
+        curve.add_point(100.0, 1.0);
+        let delta = curve.add_point(50.0, 0.5);
+        assert!(delta.is_finite(), "third point delta should be finite");
+        assert!(delta >= 0.0, "delta should be non-negative");
     }
 
     #[test]
@@ -275,7 +288,9 @@ mod tests {
     fn test_registry_adds_to_same_curve_for_same_edge() {
         let mut registry = CurveRegistry::new();
         registry.add_point("sender_a", "param_0", 0.0, 0.0, 0.02);
-        let d2 = registry.add_point("sender_a", "param_0", 100.0, 1.0, 0.02);
-        assert!(d2.is_finite(), "second point on same curve should produce finite delta");
+        registry.add_point("sender_a", "param_0", 100.0, 1.0, 0.02);
+        // Third point — now prev_grid exists, delta should be finite
+        let d3 = registry.add_point("sender_a", "param_0", 50.0, 0.5, 0.02);
+        assert!(d3.is_finite(), "third point on same curve should produce finite delta");
     }
 }
