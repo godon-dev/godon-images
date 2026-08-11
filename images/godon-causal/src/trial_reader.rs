@@ -81,9 +81,9 @@ impl TrialReader {
         let rows = client
             .query(
                 "SELECT CAST(objective_values AS TEXT) FROM receiver_observations \
-                 WHERE EXTRACT(EPOCH FROM timestamp) >= $1 \
-                 AND EXTRACT(EPOCH FROM timestamp) <= $2 \
-                 ORDER BY timestamp",
+                 WHERE EXTRACT(EPOCH FROM written_at) >= $1 \
+                 AND EXTRACT(EPOCH FROM written_at) <= $2 \
+                 ORDER BY written_at",
                 &[&start_epoch, &end_epoch],
             )
             .await?;
