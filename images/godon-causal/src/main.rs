@@ -544,12 +544,20 @@ async fn probe_result(
         .await
         .is_converged(&req.sender_id, &req.probe_param);
 
+    // Replace INFINITY with a large finite value — serde_json serializes
+    // Infinity as null, which the coordinator interprets as failure.
+    let delta_json = if delta.is_infinite() {
+        serde_json::Value::from(f64::MAX / 2.0)
+    } else {
+        serde_json::Value::from(delta)
+    };
+
     Ok(Json(serde_json::json!({
         "sender_id": req.sender_id,
         "probe_param": req.probe_param,
         "probe_level": req.probe_level,
         "shift": shift,
-        "delta": delta,
+        "delta": delta_json,
         "converged": converged,
         "push_median": push_median,
         "pause_median": pause_median,
