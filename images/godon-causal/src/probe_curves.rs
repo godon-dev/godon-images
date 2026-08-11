@@ -236,7 +236,7 @@ mod tests {
         // Adding points that barely change the surface
         let delta = curve.add_point(5.0, 0.05);
         assert!(delta < 0.001, "should be converged, delta={}", delta);
-        assert!(curve.is_converged);
+        assert!(curve.is_converged());
     }
 
     #[test]
