@@ -464,8 +464,8 @@ struct ProbeResultRequest {
     sender_id: String,
     probe_param: String,
     probe_level: f64,
-    push_start: f64,
-    pause_end: f64,
+    push_start: String,
+    pause_end: String,
     convergence_threshold: f64,
 }
 
@@ -473,14 +473,32 @@ async fn probe_result(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ProbeResultRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // Parse ISO 8601 timestamps to epoch seconds for DB queries.
+    let push_start = parse_iso_to_epoch(&req.push_start).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("invalid push_start '{}': {}", req.push_start, e)
+            })),
+        )
+    })?;
+    let pause_end = parse_iso_to_epoch(&req.pause_end).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("invalid pause_end '{}': {}", req.pause_end, e)
+            })),
+        )
+    })?;
+
     // Split the [push_start, pause_end] window at its midpoint: the first half
     // covers the push (excitation) phase, the second half the pause (settling)
     // phase. We compare the median receiver objective_0 in each window.
-    let midpoint = (req.push_start + req.pause_end) / 2.0;
+    let midpoint = (push_start + pause_end) / 2.0;
 
     let push_obs = state
         .reader
-        .read_receiver_observations(&req.group_id, req.push_start, midpoint)
+        .read_receiver_observations(&req.group_id, push_start, midpoint)
         .await
         .map_err(|e| {
             (
@@ -493,7 +511,7 @@ async fn probe_result(
 
     let pause_obs = state
         .reader
-        .read_receiver_observations(&req.group_id, midpoint, req.pause_end)
+        .read_receiver_observations(&req.group_id, midpoint, pause_end)
         .await
         .map_err(|e| {
             (
@@ -553,6 +571,21 @@ fn median_f64(v: &[f64]) -> f64 {
     } else {
         sorted[mid]
     }
+}
+
+/// Parse an ISO 8601 timestamp string to epoch seconds.
+/// Handles both naive (no timezone) and timezone-aware ISO strings.
+/// Naive timestamps are assumed UTC.
+fn parse_iso_to_epoch(s: &str) -> Result<f64, String> {
+    // Try RFC 3339 first (with timezone), fall back to naive parsing.
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.timestamp() as f64 + dt.timestamp_subsec_nanos() as f64 / 1e9);
+    }
+    // Naive datetime — assume UTC.
+    let naive = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
+        .map_err(|e| e.to_string())?;
+    let utc = chrono::TimeZone::from_utc_datetime(&chrono::Utc, &naive);
+    Ok(utc.timestamp() as f64 + utc.timestamp_subsec_nanos() as f64 / 1e9)
 }
 
 #[tokio::main]
