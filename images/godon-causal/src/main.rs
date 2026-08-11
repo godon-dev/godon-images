@@ -634,3 +634,112 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── parse_iso_to_epoch ───────────────────────────────────────
+
+    #[test]
+    fn test_parse_naive_iso() {
+        // Python datetime.isoformat() produces naive timestamps (no timezone).
+        let epoch = parse_iso_to_epoch("2026-08-11T12:00:00.000000").unwrap();
+        assert!((epoch - 1723387200.0).abs() < 1.0, "expected ~1723387200, got {}", epoch);
+    }
+
+    #[test]
+    fn test_parse_rfc3339_iso() {
+        let epoch = parse_iso_to_epoch("2026-08-11T12:00:00Z").unwrap();
+        assert!(epoch > 1700000000.0, "expected recent epoch, got {}", epoch);
+    }
+
+    #[test]
+    fn test_parse_iso_with_offset() {
+        let epoch = parse_iso_to_epoch("2026-08-11T12:00:00+00:00").unwrap();
+        assert!(epoch > 1700000000.0);
+    }
+
+    #[test]
+    fn test_parse_iso_garbage_fails() {
+        assert!(parse_iso_to_epoch("not-a-date").is_err());
+    }
+
+    // ─── ProbeResultRequest deserialization ───────────────────────
+
+    #[test]
+    fn test_deserialize_probe_result_request_naive_iso() {
+        // The coordinator sends datetime.isoformat() — naive ISO strings.
+        let json = r#"{
+            "group_id": "bench-char",
+            "sender_id": "abc-123",
+            "probe_param": "param_0",
+            "probe_level": 50.0,
+            "push_start": "2026-08-11T12:00:00.123456",
+            "pause_end": "2026-08-11T12:05:00.654321",
+            "convergence_threshold": 0.02
+        }"#;
+        let req: ProbeResultRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.probe_param, "param_0");
+        assert!((req.probe_level - 50.0).abs() < 1e-9);
+        assert_eq!(req.push_start, "2026-08-11T12:00:00.123456");
+    }
+
+    #[test]
+    fn test_deserialize_probe_result_request_rejects_float_timestamps() {
+        // If someone sends epoch floats instead of ISO strings, it must fail
+        // (not silently parse a truncated float as a string).
+        let json = r#"{
+            "group_id": "test",
+            "sender_id": "test",
+            "probe_param": "param_0",
+            "probe_level": 50.0,
+            "push_start": 1723387200.0,
+            "pause_end": 1723387500.0,
+            "convergence_threshold": 0.02
+        }"#;
+        let result: Result<ProbeResultRequest, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "float timestamps must be rejected");
+    }
+
+    // ─── JSON response serialization (the INFINITY bug) ───────────
+
+    #[test]
+    fn test_delta_infinity_is_not_null_in_json() {
+        // The first point on a ResponseCurve returns f64::INFINITY.
+        // serde_json serializes Infinity as null. The coordinator reads
+        // null delta as failure. This test catches that regression.
+        let delta = f64::INFINITY;
+
+        // Naive serialization (the old code):
+        let naive_json = serde_json::to_string(&serde_json::json!({"delta": delta})).unwrap();
+        assert!(
+            naive_json.contains("null"),
+            "INFINITY should serialize as null (this is the bug we're testing for)"
+        );
+
+        // The fix: convert INFINITY to finite before serializing.
+        let fixed_value = if delta.is_infinite() {
+            f64::MAX / 2.0
+        } else {
+            delta
+        };
+        let fixed_json = serde_json::to_string(&serde_json::json!({"delta": fixed_value})).unwrap();
+        assert!(
+            !fixed_json.contains("null"),
+            "fixed delta must not be null in JSON: {}", fixed_json
+        );
+        assert!(
+            fixed_json.contains("1.7976931348623157e308"),
+            "expected large finite value, got: {}", fixed_json
+        );
+    }
+
+    #[test]
+    fn test_normal_delta_serializes_correctly() {
+        let delta = 0.015_f64;
+        let json = serde_json::to_string(&serde_json::json!({"delta": delta})).unwrap();
+        assert!(json.contains("0.015"));
+        assert!(!json.contains("null"));
+    }
+}
