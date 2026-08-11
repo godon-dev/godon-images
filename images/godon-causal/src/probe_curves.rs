@@ -188,3 +188,94 @@ impl CurveRegistry {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── ResponseCurve ────────────────────────────────────────────
+
+    #[test]
+    fn test_first_point_returns_infinity() {
+        // The first point has no prior to compare against → INFINITY.
+        // This is what caused the JSON null bug. Document it.
+        let mut curve = ResponseCurve::new(0.02);
+        let delta = curve.add_point(50.0, 0.1);
+        assert!(delta.is_infinite(), "first point should return INFINITY");
+    }
+
+    #[test]
+    fn test_second_point_returns_finite_delta() {
+        let mut curve = ResponseCurve::new(0.02);
+        curve.add_point(0.0, 0.0);
+        let delta = curve.add_point(100.0, 1.0);
+        assert!(delta.is_finite(), "second point delta should be finite");
+        assert!(delta > 0.0, "adding a point that extends the curve should have positive delta");
+    }
+
+    #[test]
+    fn test_third_point_smaller_delta_than_second() {
+        // As the curve stabilizes, delta should decrease.
+        let mut curve = ResponseCurve::new(0.02);
+        curve.add_point(0.0, 0.0);
+        let d2 = curve.add_point(100.0, 1.0);
+        let d3 = curve.add_point(50.0, 0.5);
+        // Adding a midpoint between two known points should move the
+        // surface less than adding a point that extended the range.
+        assert!(d3 <= d2, "delta should decrease as curve stabilizes: d2={} d3={}", d2, d3);
+    }
+
+    #[test]
+    fn test_convergence_after_stable_points() {
+        let mut curve = ResponseCurve::new(0.001);
+        // Build a linear curve
+        for i in 0..10 {
+            let level = i as f64 * 10.0;
+            curve.add_point(level, level * 0.01);
+        }
+        // Adding points that barely change the surface
+        let delta = curve.add_point(5.0, 0.05);
+        assert!(delta < 0.001, "should be converged, delta={}", delta);
+        assert!(curve.is_converged);
+    }
+
+    #[test]
+    fn test_remeasure_updates_point() {
+        let mut curve = ResponseCurve::new(0.02);
+        curve.add_point(50.0, 0.5);
+        curve.add_point(100.0, 1.0);
+        // Re-measure at same level with different response → drift signal
+        let delta = curve.add_point(50.0, 0.8);
+        assert!(delta.is_finite());
+        assert!(delta > 0.0, "drift should produce positive delta");
+    }
+
+    #[test]
+    fn test_not_converged_with_few_points() {
+        let mut curve = ResponseCurve::new(0.02);
+        curve.add_point(0.0, 0.0);
+        curve.add_point(100.0, 1.0);
+        assert!(!curve.is_converged(), "need more than min_points for convergence");
+    }
+
+    // ─── CurveRegistry ────────────────────────────────────────────
+
+    #[test]
+    fn test_registry_isolates_curves_per_edge() {
+        let mut registry = CurveRegistry::new();
+        let d1 = registry.add_point("sender_a", "param_0", 50.0, 0.1, 0.02);
+        let d2 = registry.add_point("sender_b", "param_0", 50.0, 0.2, 0.02);
+        // Different sender → different curve, both are first points
+        assert!(d1.is_infinite());
+        assert!(d2.is_infinite());
+        assert!(!registry.is_converged("sender_a", "param_0"));
+    }
+
+    #[test]
+    fn test_registry_adds_to_same_curve_for_same_edge() {
+        let mut registry = CurveRegistry::new();
+        registry.add_point("sender_a", "param_0", 0.0, 0.0, 0.02);
+        let d2 = registry.add_point("sender_a", "param_0", 100.0, 1.0, 0.02);
+        assert!(d2.is_finite(), "second point on same curve should produce finite delta");
+    }
+}

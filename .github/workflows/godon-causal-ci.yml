@@ -28,6 +28,11 @@ jobs:
       with:
         nix_path: nixpkgs=https://nixos.org/channels/nixos-25.05
 
+    - name: Run unit tests
+      run: |
+        cd images/godon-causal
+        nix-shell -p rustc cargo --run "cargo test"
+
     - name: Build godon-causal container with Nix
       run: |
         cd images/godon-causal
