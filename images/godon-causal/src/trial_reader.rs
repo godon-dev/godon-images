@@ -13,6 +13,7 @@ struct DbConfig {
     port: u16,
 }
 
+#[derive(Debug, Clone)]
 pub struct TrialReader {
     config: DbConfig,
 }
