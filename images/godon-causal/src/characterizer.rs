@@ -174,9 +174,7 @@ mod tests {
         let detection = make_detection(0.28);
         let edge = characterize(&detection, &sender);
 
-        let sens = match &edge.response {
-            ResponseFunction::StepResponse { sensitivity, .. } => *sensitivity,
-        };
+        let sens = edge.response.predict_shift(1.0);
 
         // sender_push_median = 0.80, sender_pause_median = 0.40
         // sender_delta = 0.40
@@ -202,9 +200,7 @@ mod tests {
         let detection = make_detection(0.3);
         let edge = characterize(&detection, &sender);
 
-        let sens = match &edge.response {
-            ResponseFunction::StepResponse { sensitivity, .. } => *sensitivity,
-        };
+        let sens = edge.response.predict_shift(1.0);
 
         // Fallback: 0.3 / 1.0 = 0.3
         assert!(
