@@ -67,6 +67,12 @@ jobs:
     - name: Test /build/status endpoint
       run: curl -sf http://localhost:8091/build/status || { echo "/build/status failed"; docker logs causal-test; exit 1; }
 
+    - name: Test /curves returns empty list without DB
+      run: |
+        RESP=$(curl -sf http://localhost:8091/curves) || { echo "/curves failed"; docker logs causal-test; exit 1; }
+        echo "${RESP}"
+        echo "${RESP}" | jq -e '.curves | type == "array"' > /dev/null || { echo "/curves did not return a curves array"; docker logs causal-test; exit 1; }
+
     - name: Test /graph returns 503 before build
       run: |
         STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8091/graph)
