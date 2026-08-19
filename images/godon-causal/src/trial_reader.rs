@@ -68,6 +68,11 @@ impl TrialReader {
         }
     }
 
+    /// Connect to the archive DB (curve persistence + observation reads).
+    pub async fn connect_archive(&self) -> Result<tokio_postgres::Client, Error> {
+        self.connect("archive_db").await
+    }
+
     // ─── Read receiver observations within a time window ────────────
 
     pub async fn read_receiver_observations(

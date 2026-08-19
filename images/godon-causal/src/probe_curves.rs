@@ -9,12 +9,22 @@ struct Point {
     response: f64,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct CurveState {
     pub num_points: usize,
     pub last_delta: f64,
     pub converged: bool,
     pub points: Vec<(f64, f64)>,
+}
+
+/// Serializable registry entry: identity + full curve state.
+/// Shape of GET /curves items and of graph-artifact curve entries.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CurveEntry {
+    pub sender_id: String,
+    pub param: String,
+    #[serde(flatten)]
+    pub state: CurveState,
 }
 
 pub struct ResponseCurve {
@@ -187,11 +197,81 @@ impl CurveRegistry {
             .map(|((sender, param), curve)| (sender.clone(), param.clone(), curve.state()))
             .collect()
     }
+
+    /// Serializable snapshot of every curve in the registry,
+    /// ordered by (sender_id, param) for stable output.
+    pub fn snapshot(&self) -> Vec<CurveEntry> {
+        let mut entries: Vec<CurveEntry> = self
+            .curves
+            .iter()
+            .map(|((sender, param), curve)| CurveEntry {
+                sender_id: sender.clone(),
+                param: param.clone(),
+                state: curve.state(),
+            })
+            .collect();
+        entries.sort_by(|a, b| (&a.sender_id, &a.param).cmp(&(&b.sender_id, &b.param)));
+        entries
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── CurveRegistry snapshot ──────────────────────────────────
+
+    #[test]
+    fn test_snapshot_empty_registry() {
+        let reg = CurveRegistry::new();
+        assert!(reg.snapshot().is_empty());
+    }
+
+    #[test]
+    fn test_snapshot_entries_sorted_with_points() {
+        let mut reg = CurveRegistry::new();
+        reg.add_point("b1", "param_1", 20.0, 0.1, 0.02);
+        reg.add_point("b1", "param_1", 40.0, 0.25, 0.02);
+        reg.add_point("b1", "param_0", 10.0, 0.01, 0.02);
+        let snap = reg.snapshot();
+        assert_eq!(snap.len(), 2, "one entry per (sender, param)");
+        assert_eq!(snap[0].param, "param_0", "sorted by param");
+        assert_eq!(snap[1].param, "param_1");
+        assert_eq!(snap[1].sender_id, "b1");
+        assert_eq!(snap[1].state.num_points, 2);
+        assert_eq!(snap[1].state.points[0], (20.0, 0.1), "points sorted by level");
+        assert!(!snap[1].state.converged);
+    }
+
+    #[test]
+    fn test_curve_entry_serde_roundtrip() {
+        let mut reg = CurveRegistry::new();
+        reg.add_point("b1", "param_1", 20.0, 0.1, 0.02);
+        reg.add_point("b1", "param_1", 40.0, 0.25, 0.02);
+        let entry = reg.snapshot().pop().unwrap();
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(json.contains("\"sender_id\""));
+        assert!(json.contains("\"num_points\""), "CurveState flattened");
+        let back: CurveEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.sender_id, "b1");
+        assert_eq!(back.state.num_points, 2);
+        assert_eq!(back.state.points, entry.state.points);
+    }
+
+    #[test]
+    fn test_snapshot_replay_matches_live_registry() {
+        // The persistence contract: replaying the same points through
+        // add_point reconstructs the same snapshot (restart recovery).
+        let mut live = CurveRegistry::new();
+        live.add_point("b1", "param_1", 20.0, 0.1, 0.02);
+        live.add_point("b1", "param_1", 40.0, 0.25, 0.02);
+        live.add_point("b1", "param_1", 20.0, 0.12, 0.02); // re-measure
+        let mut replayed = CurveRegistry::new();
+        replayed.add_point("b1", "param_1", 20.0, 0.1, 0.02);
+        replayed.add_point("b1", "param_1", 40.0, 0.25, 0.02);
+        replayed.add_point("b1", "param_1", 20.0, 0.12, 0.02);
+        assert_eq!(live.snapshot(), replayed.snapshot());
+    }
 
     // ─── ResponseCurve ────────────────────────────────────────────
 
