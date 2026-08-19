@@ -87,9 +87,13 @@ impl ResponseCurve {
     }
 
     pub fn state(&self) -> CurveState {
+        let ld = self.last_delta();
         CurveState {
             num_points: self.points.len(),
-            last_delta: self.last_delta(),
+            // INFINITY (no prior yet, <3 points) serializes as null in
+            // JSON — use the established f64::MAX/2 convention from the
+            // /characterize handler. Consumers treat >1e10 as "no prior".
+            last_delta: if ld.is_infinite() { f64::MAX / 2.0 } else { ld },
             converged: self.is_converged(),
             points: self.points.iter().map(|p| (p.level, p.response)).collect(),
         }
@@ -240,6 +244,21 @@ mod tests {
         assert_eq!(snap[1].state.num_points, 2);
         assert_eq!(snap[1].state.points[0], (20.0, 0.1), "points sorted by level");
         assert!(!snap[1].state.converged);
+    }
+
+    #[test]
+    fn test_state_maps_infinite_delta_to_finite() {
+        // Curves with fewer than 3 points have INFINITY last_delta.
+        // JSON serializes that as null — state() must emit f64::MAX/2
+        // (the established convention) so GET /curves and the artifact
+        // stay parseable.
+        let mut reg = CurveRegistry::new();
+        reg.add_point("b1", "param_1", 20.0, 0.1, 0.02);
+        let entry = reg.snapshot().pop().unwrap();
+        assert!(entry.state.last_delta.is_finite());
+        assert!(entry.state.last_delta > 1e10, "sentinel value, got {}", entry.state.last_delta);
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(!json.contains("null"), "null breaks consumers: {}", json);
     }
 
     #[test]
