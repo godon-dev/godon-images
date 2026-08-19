@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 // ─── Response Curve (port of characterization.py) ───────────────────
 
