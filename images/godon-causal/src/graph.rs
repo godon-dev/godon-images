@@ -28,14 +28,83 @@ pub enum ResponseFunction {
         baseline: f64,
         recovery_fraction: f64,
     },
+    /// Measured multi-level response curve: (level, shift) pairs.
+    /// Source of truth for nonlinear composition; StepResponse stays
+    /// the fallback when no curve was accumulated for an edge.
+    CurveResponse {
+        points: Vec<(f64, f64)>,
+        converged: bool,
+    },
 }
 
 impl ResponseFunction {
     pub fn predict_shift(&self, impulse_scale: f64) -> f64 {
         match self {
             ResponseFunction::StepResponse { sensitivity, .. } => sensitivity * impulse_scale,
+            // Scalar contract preserved via linearization: least-squares
+            // slope of the measured curve times the push magnitude.
+            ResponseFunction::CurveResponse { points, .. } => {
+                linear_regression_slope(points) * impulse_scale
+            }
         }
     }
+
+    /// Evaluate the response at an absolute parameter level.
+    /// CurveResponse interpolates on the measured curve (clamped at the
+    /// measured range); StepResponse falls back to the linear model.
+    pub fn eval_level(&self, level: f64) -> f64 {
+        match self {
+            ResponseFunction::StepResponse { sensitivity, .. } => sensitivity * level,
+            ResponseFunction::CurveResponse { points, .. } => interp_curve(level, points),
+        }
+    }
+}
+
+/// Least-squares slope through (x, y) points; 0.0 for fewer than 2 points.
+fn linear_regression_slope(points: &[(f64, f64)]) -> f64 {
+    if points.len() < 2 {
+        return 0.0;
+    }
+    let n = points.len() as f64;
+    let sx: f64 = points.iter().map(|p| p.0).sum();
+    let sy: f64 = points.iter().map(|p| p.1).sum();
+    let sxx: f64 = points.iter().map(|p| p.0 * p.0).sum();
+    let sxy: f64 = points.iter().map(|p| p.0 * p.1).sum();
+    let denom = n * sxx - sx * sx;
+    if denom.abs() < 1e-12 {
+        return 0.0;
+    }
+    (n * sxy - sx * sy) / denom
+}
+
+/// Linear interpolation on a curve, clamped outside the measured range.
+fn interp_curve(level: f64, points: &[(f64, f64)]) -> f64 {
+    if points.is_empty() {
+        return 0.0;
+    }
+    let sorted: Vec<(f64, f64)> = {
+        let mut v = points.to_vec();
+        v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        v
+    };
+    if level <= sorted[0].0 {
+        return sorted[0].1;
+    }
+    if level >= sorted[sorted.len() - 1].0 {
+        return sorted[sorted.len() - 1].1;
+    }
+    for i in 0..sorted.len() - 1 {
+        let (x0, y0) = sorted[i];
+        let (x1, y1) = sorted[i + 1];
+        if x0 <= level && level <= x1 {
+            if (x1 - x0).abs() < 1e-12 {
+                return y0;
+            }
+            let t = (level - x0) / (x1 - x0);
+            return y0 + t * (y1 - y0);
+        }
+    }
+    sorted[sorted.len() - 1].1
 }
 
 // ─── Characterized Edge ─────────────────────────────────────────────
@@ -92,6 +161,10 @@ pub struct CausalNode {
 pub struct CausalGraph {
     pub nodes: Vec<CausalNode>,
     pub edges: Vec<CharacterizedEdge>,
+    /// Measured response curves at build time, per (sender, param).
+    /// Carries the characterization output into the exported artifact.
+    #[serde(default)]
+    pub curves: Vec<crate::probe_curves::CurveEntry>,
     #[serde(default)]
     pub built_at: String,
     #[serde(default)]
@@ -111,6 +184,7 @@ impl Default for CausalGraph {
         Self {
             nodes: Vec::new(),
             edges: Vec::new(),
+            curves: Vec::new(),
             built_at: String::new(),
             detector: String::new(),
             detector_params: serde_json::Value::Null,
@@ -513,5 +587,91 @@ mod tests {
             !preds.iter().any(|p| p.receiver_id == "A"),
             "Should not predict back to sender via cycle"
         );
+    }
+
+    // ─── CurveResponse ────────────────────────────────────────────
+
+    #[test]
+    fn test_curve_response_predict_shift_linearization() {
+        let rf = ResponseFunction::CurveResponse {
+            points: vec![(0.0, 0.0), (10.0, 2.0), (20.0, 4.0)],
+            converged: false,
+        };
+        // Least-squares slope = 0.2 → shift at scale 5 is 1.0
+        assert!(
+            (rf.predict_shift(5.0) - 1.0).abs() < 1e-9,
+            "linearized shift, got {}",
+            rf.predict_shift(5.0)
+        );
+    }
+
+    #[test]
+    fn test_curve_response_eval_level_interpolates() {
+        // Saturating curve: rises 0→1 over levels 0→20, flat afterwards.
+        let rf = ResponseFunction::CurveResponse {
+            points: vec![(0.0, 0.0), (20.0, 1.0), (40.0, 1.0)],
+            converged: true,
+        };
+        assert!((rf.eval_level(10.0) - 0.5).abs() < 1e-9, "midpoint interpolation");
+        assert!((rf.eval_level(30.0) - 1.0).abs() < 1e-9, "flat region");
+        assert!((rf.eval_level(50.0) - 1.0).abs() < 1e-9, "clamped above range (saturation)");
+        assert!((rf.eval_level(-5.0) - 0.0).abs() < 1e-9, "clamped below range");
+    }
+
+    #[test]
+    fn test_artifact_roundtrip_with_curves() {
+        use crate::probe_curves::{CurveEntry, CurveState};
+
+        let edge = CharacterizedEdge {
+            response: ResponseFunction::CurveResponse {
+                points: vec![(20.0, 0.1), (40.0, 0.25), (60.0, 0.3)],
+                converged: true,
+            },
+            ..make_edge("A", "B", 0.5, true)
+        };
+        let graph = CausalGraph {
+            edges: vec![edge],
+            curves: vec![CurveEntry {
+                sender_id: "A".to_string(),
+                param: "param_1".to_string(),
+                state: CurveState {
+                    num_points: 3,
+                    last_delta: 0.01,
+                    converged: true,
+                    points: vec![(20.0, 0.1), (40.0, 0.25), (60.0, 0.3)],
+                },
+            }],
+            ..Default::default()
+        };
+
+        let json = crate::artifact::export_artifact(&graph).unwrap();
+        let back = crate::artifact::import_artifact(&json).unwrap();
+
+        assert_eq!(back.curves.len(), 1);
+        assert_eq!(back.curves[0].sender_id, "A");
+        assert_eq!(back.curves[0].state.points, graph.curves[0].state.points);
+        assert_eq!(back.curves[0].state.converged, true);
+        match &back.edges[0].response {
+            ResponseFunction::CurveResponse { points, converged } => {
+                assert_eq!(points.len(), 3);
+                assert!(*converged);
+            }
+            _ => panic!("expected CurveResponse after round-trip"),
+        }
+    }
+
+    #[test]
+    fn test_old_artifact_without_curves_still_imports() {
+        // Pre-curve artifacts have no `curves` key — serde default keeps
+        // them importable.
+        let legacy = r#"{
+            "nodes": [],
+            "edges": [],
+            "built_at": "2026-08-01T00:00:00Z",
+            "detector": "cfar",
+            "edges_detected": 0
+        }"#;
+        let back = crate::artifact::import_artifact(legacy).unwrap();
+        assert!(back.curves.is_empty());
     }
 }
