@@ -304,9 +304,7 @@ impl CausalGraph {
         // Seed: all direct edges from sender
         for edge in &detected {
             if edge.sender_id == sender_id {
-                let sens = match &edge.response {
-                    ResponseFunction::StepResponse { sensitivity, .. } => *sensitivity,
-                };
+                let sens = edge.response.predict_shift(1.0);
                 queue.push_back((
                     edge.receiver_id.clone(),
                     edge.channel.clone(),
@@ -340,9 +338,7 @@ impl CausalGraph {
             // Extend: find edges leaving this node on this channel
             for edge in &detected {
                 if edge.sender_id == node && !path.contains(&edge.receiver_id) {
-                    let edge_sens = match &edge.response {
-                        ResponseFunction::StepResponse { sensitivity, .. } => *sensitivity,
-                    };
+                    let edge_sens = edge.response.predict_shift(1.0);
                     let mut new_path = path.clone();
                     new_path.push(edge.receiver_id.clone());
                     queue.push_back((
