@@ -9,7 +9,7 @@ struct Point {
     response: f64,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct CurveState {
     pub num_points: usize,
     pub last_delta: f64,
@@ -19,11 +19,10 @@ pub struct CurveState {
 
 /// Serializable registry entry: identity + full curve state.
 /// Shape of GET /curves items and of graph-artifact curve entries.
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct CurveEntry {
     pub sender_id: String,
     pub param: String,
-    #[serde(flatten)]
     pub state: CurveState,
 }
 
