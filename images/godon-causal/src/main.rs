@@ -117,7 +117,11 @@ async fn build(
         let duration = start.elapsed().as_secs_f64();
 
         match result {
-            Ok(graph) => {
+            Ok(mut graph) => {
+                // Attach the characterization output: measured response
+                // curves at build time. Detection edges + curves leave
+                // the service as one artifact.
+                graph.curves = state_clone.curves.read().await.snapshot();
                 let edges = graph.edges_detected;
                 info!(
                     "Graph build complete: {} edges detected in {:.1}s",
@@ -376,6 +380,7 @@ async fn build_graph_inner(
     let graph = CausalGraph {
         nodes,
         edges,
+        curves: Vec::new(),
         built_at: chrono::Utc::now().to_rfc3339(),
         detector: detector.name().to_string(),
         detector_params: detector.params(),
