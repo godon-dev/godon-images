@@ -3,6 +3,7 @@ mod characterizer;
 mod detector;
 mod graph;
 mod probe_curves;
+mod curve_store;
 mod query;
 mod trial_reader;
 
@@ -148,6 +149,11 @@ async fn build(
 async fn build_status(State(state): State<Arc<AppState>>) -> Json<BuildStatus> {
     let status = state.build_status.read().await;
     Json(status.clone())
+}
+
+async fn get_curves(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let curves = state.curves.read().await.snapshot();
+    Json(serde_json::json!({ "curves": curves }))
 }
 
 async fn get_graph(
@@ -544,6 +550,26 @@ async fn probe_result(
         .await
         .is_converged(&req.sender_id, &req.probe_param);
 
+    // Write-through persistence (best-effort, failure only logs).
+    if let Ok(client) = state.reader.connect_archive().await {
+        curve_store::persist_point(
+            &client,
+            &req.group_id,
+            &req.sender_id,
+            &req.probe_param,
+            req.probe_level,
+            shift,
+            req.convergence_threshold,
+        )
+        .await;
+    } else {
+        log::error!(
+            "curve point NOT persisted — archive DB unreachable (sender={} param={})",
+            req.sender_id,
+            req.probe_param
+        );
+    }
+
     // Replace INFINITY with a large finite value — serde_json serializes
     // Infinity as null, which the coordinator interprets as failure.
     let delta_json = if delta.is_infinite() {
@@ -607,7 +633,38 @@ async fn main() {
         .unwrap_or(8091);
 
     let reader = TrialReader::from_env();
-    let state = Arc::new(AppState::new(reader));
+    let state = Arc::new(AppState::new(reader.clone()));
+
+    // Restart recovery: replay persisted curve points into the registry.
+    // Best-effort — on DB failure the registry starts empty and live
+    // probing repopulates it (and re-persists).
+    match reader.connect_archive().await {
+        Ok(client) => {
+            if let Err(e) = curve_store::ensure_curve_table(&client).await {
+                log::error!("curve_points table setup failed: {}", e);
+            }
+            match curve_store::load_curve_points(&client).await {
+                Ok(rows) => {
+                    let n = rows.len();
+                    let mut curves = state.curves.write().await;
+                    for r in rows {
+                        curves.add_point(
+                            &r.sender_id,
+                            &r.probe_param,
+                            r.probe_level,
+                            r.shift,
+                            r.convergence_threshold,
+                        );
+                    }
+                    info!("loaded {} persisted curve points into registry", n);
+                }
+                Err(e) => log::error!("curve point load failed: {}", e),
+            }
+        }
+        Err(e) => {
+            log::error!("archive DB unavailable at startup, curves start empty: {}", e)
+        }
+    }
 
     let app = Router::new()
         .route("/health", get(health))
@@ -621,6 +678,7 @@ async fn main() {
         // Cached graph endpoints
         .route("/graph", get(get_graph))
         .route("/artifact", get(get_artifact))
+        .route("/curves", get(get_curves))
         .route("/predict", post(predict))
         .route("/predict/multihop", post(predict_multihop))
         .route("/impact/{breeder_id}", get(impact))
@@ -638,6 +696,16 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── GET /curves ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_curves_empty_registry() {
+        let state = Arc::new(AppState::new(TrialReader::from_env()));
+        let res = get_curves(State(state)).await;
+        let arr = res.0["curves"].as_array().expect("curves array");
+        assert_eq!(arr.len(), 0);
+    }
 
     // ─── parse_iso_to_epoch ───────────────────────────────────────
 
