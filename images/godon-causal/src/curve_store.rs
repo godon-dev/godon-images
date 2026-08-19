@@ -112,9 +112,31 @@ pub async fn persist_point(
     )
     .await
     {
-        error!(
-            "curve point persistence failed (sender={} param={} level={}): {}",
-            sender_id, probe_param, probe_level, e
-        );
+        // The table may not exist yet: startup ran while the DB was down
+        // (stack reinstall ordering), or this deployment predates it.
+        // Create it now and retry once — self-healing write path.
+        if let Err(e2) = ensure_curve_table(client).await {
+            error!(
+                "curve point persistence failed and table setup failed (sender={} param={} level={}): insert: {} / setup: {}",
+                sender_id, probe_param, probe_level, e, e2
+            );
+            return;
+        }
+        if let Err(e3) = insert_curve_point(
+            client,
+            group_id,
+            sender_id,
+            probe_param,
+            probe_level,
+            shift,
+            convergence_threshold,
+        )
+        .await
+        {
+            error!(
+                "curve point persistence failed after table setup (sender={} param={} level={}): {}",
+                sender_id, probe_param, probe_level, e3
+            );
+        }
     }
 }
