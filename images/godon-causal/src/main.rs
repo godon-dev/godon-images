@@ -22,7 +22,7 @@ use tower_http::cors::CorsLayer;
 
 use detector::{CfarDetector, EdgeDetector};
 use graph::{BuildResult, CausalGraph, CausalNode};
-use trial_reader::TrialReader;
+use trial_reader::{mad, TrialReader};
 
 // ─── App State ──────────────────────────────────────────────────────
 
@@ -537,17 +537,28 @@ async fn probe_result(
     let pause_median = median_f64(&pause_obs);
     let shift = push_median - pause_median;
 
+    // Measurement uncertainty of the shift: MAD of the raw samples in
+    // each window (the same robust estimator CFAR uses), combined in
+    // quadrature. Conservative by construction — sample-scale scatter,
+    // not median-of-N — so it errs toward blending; drift fires only
+    // on movements larger than the raw scatter.
+    let push_mad = mad(&push_obs);
+    let pause_mad = mad(&pause_obs);
+    let shift_bar = (push_mad * push_mad + pause_mad * pause_mad).sqrt();
+
     // Feed the measured shift into the per-edge response curve.
-    let delta = {
+    let outcome = {
         let mut curves = state.curves.write().await;
-        curves.add_point(
+        curves.probe(
             &req.sender_id,
             &req.probe_param,
             req.probe_level,
             shift,
+            shift_bar,
             req.convergence_threshold,
         )
     };
+    let delta = outcome.delta;
 
     let converged = state
         .curves
@@ -564,6 +575,7 @@ async fn probe_result(
             &req.probe_param,
             req.probe_level,
             shift,
+            shift_bar,
             req.convergence_threshold,
         )
         .await;
@@ -588,6 +600,9 @@ async fn probe_result(
         "probe_param": req.probe_param,
         "probe_level": req.probe_level,
         "shift": shift,
+        "shift_bar": shift_bar,
+        "z": outcome.z,
+        "drift": outcome.drift,
         "delta": delta_json,
         "converged": converged,
         "push_median": push_median,
@@ -653,11 +668,12 @@ async fn main() {
                     let n = rows.len();
                     let mut curves = state.curves.write().await;
                     for r in rows {
-                        curves.add_point(
+                        curves.probe(
                             &r.sender_id,
                             &r.probe_param,
                             r.probe_level,
                             r.shift,
+                            r.bar,
                             r.convergence_threshold,
                         );
                     }
