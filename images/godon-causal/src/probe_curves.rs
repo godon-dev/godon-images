@@ -1,12 +1,25 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
+/// Result of one uncertainty-aware probe: surface movement (delta,
+/// convergence signal), information score (z, study objective), and
+/// the drift flag (re-measure disagreed beyond bars).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProbeOutcome {
+    pub delta: f64,
+    pub z: f64,
+    pub drift: bool,
+}
+
 // ─── Response Curve (port of characterization.py) ───────────────────
 
 #[derive(Clone)]
 struct Point {
     level: f64,
     response: f64,
+    /// Measurement uncertainty (±) of the response. Precision-weighted
+    /// blending on re-measure; drives drift-vs-noise separation.
+    bar: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -14,7 +27,8 @@ pub struct CurveState {
     pub num_points: usize,
     pub last_delta: f64,
     pub converged: bool,
-    pub points: Vec<(f64, f64)>,
+    /// (level, response, bar) — bar = measurement uncertainty.
+    pub points: Vec<(f64, f64, f64)>,
 }
 
 /// Serializable registry entry: identity + full curve state.
@@ -46,18 +60,70 @@ impl ResponseCurve {
     }
 
     pub fn add_point(&mut self, level: f64, response: f64) -> f64 {
-        // Replace existing point at same level (drift detection)
-        if let Some(p) = self.points.iter_mut().find(|p| (p.level - level).abs() < 1e-9) {
-            log::info!(
-                "ResponseCurve: re-measured level {:.1}: {:.4} → {:.4}",
-                level, p.response, response
-            );
-            p.response = response;
+        // Legacy entry: default bar (tests, replay of bar-less rows).
+        self.probe(level, response, 0.02).delta
+    }
+
+    /// Add or re-measure a point, uncertainty-aware.
+    ///
+    /// Re-measured level, readings AGREE within their combined bars →
+    /// inverse-variance blend: the point tightens, the surface barely
+    /// moves → small delta, convergence proceeds. Readings DISAGREE
+    /// beyond the bars → the point relocates, delta reflects the real
+    /// movement, drift flag set (maintenance-loop signal).
+    ///
+    /// z = |response − prediction| / bar with the prediction taken
+    /// from the curve BEFORE this update — the information score the
+    /// characterization study consumes as its objective.
+    pub fn probe(&mut self, level: f64, response: f64, bar: f64) -> ProbeOutcome {
+        const BAR_FLOOR: f64 = 1e-6;
+        let bar = bar.max(BAR_FLOOR);
+
+        // Prediction before update (None on an empty curve).
+        let predicted = if self.points.is_empty() {
+            None
         } else {
-            self.points.push(Point { level, response });
+            Some(Self::interp_at(level, &self.points))
+        };
+
+        let mut drift = false;
+        match self
+            .points
+            .iter_mut()
+            .find(|p| (p.level - level).abs() < 1e-9)
+        {
+            Some(p) => {
+                let old_bar = p.bar.max(BAR_FLOOR);
+                if (response - p.response).abs() <= old_bar + bar {
+                    // Agreement: precision-weighted blend.
+                    let w_old = 1.0 / (old_bar * old_bar);
+                    let w_new = 1.0 / (bar * bar);
+                    let w_sum = w_old + w_new;
+                    let blended = (w_old * p.response + w_new * response) / w_sum;
+                    let blended_bar = 1.0 / w_sum.sqrt();
+                    log::info!(
+                        "ResponseCurve: blend level {:.1}: {:.4} ±{:.4} + {:.4} ±{:.4} → {:.4} ±{:.4}",
+                        p.level, p.response, old_bar, response, bar, blended, blended_bar
+                    );
+                    p.response = blended;
+                    p.bar = blended_bar;
+                } else {
+                    log::warn!(
+                        "ResponseCurve: DRIFT level {:.1}: {:.4} → {:.4} (beyond bars ±{:.4}/±{:.4})",
+                        p.level, p.response, response, old_bar, bar
+                    );
+                    drift = true;
+                    p.response = response;
+                    p.bar = bar;
+                }
+            }
+            None => {
+                self.points.push(Point { level, response, bar });
+            }
         }
 
-        self.points.sort_by(|a, b| a.level.partial_cmp(&b.level).unwrap_or(std::cmp::Ordering::Equal));
+        self.points
+            .sort_by(|a, b| a.level.partial_cmp(&b.level).unwrap_or(std::cmp::Ordering::Equal));
 
         let delta = if self.points.len() < 2 {
             f64::INFINITY
@@ -72,7 +138,15 @@ impl ResponseCurve {
         };
 
         self.delta_history.push(delta);
-        delta
+
+        // First point on a curve: no prior — neutral score. Coverage
+        // comes from the sampler's startup randomness.
+        let z = match predicted {
+            None => 1.0,
+            Some(pr) => (response - pr).abs() / bar,
+        };
+
+        ProbeOutcome { delta, z, drift }
     }
 
     pub fn is_converged(&self) -> bool {
@@ -95,7 +169,11 @@ impl ResponseCurve {
             // /characterize handler. Consumers treat >1e10 as "no prior".
             last_delta: if ld.is_infinite() { f64::MAX / 2.0 } else { ld },
             converged: self.is_converged(),
-            points: self.points.iter().map(|p| (p.level, p.response)).collect(),
+            points: self
+                .points
+                .iter()
+                .map(|p| (p.level, p.response, p.bar))
+                .collect(),
         }
     }
 
@@ -178,6 +256,17 @@ impl CurveRegistry {
         curve.add_point(level, shift)
     }
 
+    /// Uncertainty-aware probe (the /characterize path).
+    pub fn probe(&mut self, sender_id: &str, param: &str,
+                 level: f64, shift: f64, bar: f64,
+                 threshold: f64) -> ProbeOutcome {
+        let key = (sender_id.to_string(), param.to_string());
+        let curve = self.curves
+            .entry(key)
+            .or_insert_with(|| ResponseCurve::new(threshold));
+        curve.probe(level, shift, bar)
+    }
+
     pub fn is_converged(&self, sender_id: &str, param: &str) -> bool {
         self.curves
             .get(&(sender_id.to_string(), param.to_string()))
@@ -242,7 +331,7 @@ mod tests {
         assert_eq!(snap[1].param, "param_1");
         assert_eq!(snap[1].sender_id, "b1");
         assert_eq!(snap[1].state.num_points, 2);
-        assert_eq!(snap[1].state.points[0], (20.0, 0.1), "points sorted by level");
+        assert_eq!(snap[1].state.points[0], (20.0, 0.1, 0.02), "points sorted by level");
         assert!(!snap[1].state.converged);
     }
 
@@ -289,6 +378,79 @@ mod tests {
         replayed.add_point("b1", "param_1", 40.0, 0.25, 0.02);
         replayed.add_point("b1", "param_1", 20.0, 0.12, 0.02);
         assert_eq!(live.snapshot(), replayed.snapshot());
+    }
+
+    // ─── Uncertainty-aware probe: blend / drift / z ───────────────
+
+    #[test]
+    fn test_probe_blend_within_bars() {
+        // Re-measure agreeing within combined bars: point tightens,
+        // no drift flag, surface movement stays small.
+        let mut c = ResponseCurve::new(0.02);
+        c.add_point(0.0, 0.0);
+        c.add_point(100.0, 1.0);
+        let out = c.probe(100.0, 0.98, 0.02); // |Δ|=0.02 <= 0.04
+        assert!(!out.drift, "agreement within bars is not drift");
+        let pt = c.state().points.iter().find(|p| p.0 == 100.0).unwrap();
+        assert!(pt.1 > 0.98 && pt.1 < 1.0, "blended between readings, got {}", pt.1);
+        assert!(pt.2 < 0.02, "bar tightens with replication, got ±{}", pt.2);
+        assert!(out.delta < 0.05, "blend barely moves the surface, delta={}", out.delta);
+    }
+
+    #[test]
+    fn test_probe_drift_beyond_bars() {
+        // Re-measure disagreeing beyond bars: point relocates, drift
+        // flag set, delta reflects the real movement.
+        let mut c = ResponseCurve::new(0.02);
+        c.add_point(0.0, 0.0);
+        c.add_point(100.0, 1.0);
+        let out = c.probe(100.0, 0.4, 0.02); // |Δ|=0.6 >> 0.04
+        assert!(out.drift, "disagreement beyond bars is drift");
+        let pt = c.state().points.iter().find(|p| p.0 == 100.0).unwrap();
+        assert!((pt.1 - 0.4).abs() < 1e-9, "relocated to new reading");
+        assert!(out.delta > 0.1, "surface genuinely moved, delta={}", out.delta);
+    }
+
+    #[test]
+    fn test_probe_z_scores() {
+        // First point: neutral. Prediction-matching re-probe: small z.
+        // Prediction-contradicting probe: large z.
+        let mut c = ResponseCurve::new(0.02);
+        let first = c.probe(0.0, 0.0, 0.01);
+        assert!((first.z - 1.0).abs() < 1e-9, "first point neutral, z={}", first.z);
+        c.probe(100.0, 1.0, 0.01);
+        // Line 0→1: prediction at 50 is 0.5.
+        let boring = c.probe(50.0, 0.505, 0.01); // surprise 0.005, bar 0.01
+        assert!(boring.z < 1.0, "reading within its own bar → z<1, got {}", boring.z);
+        let surprising = c.probe(60.0, 0.9, 0.01); // prediction 0.6, surprise 0.3
+        assert!(surprising.z > 10.0, "surprise 30× the bar → z>10, got {}", surprising.z);
+    }
+
+    #[test]
+    fn test_probe_bar_floor_prevents_nan() {
+        let mut c = ResponseCurve::new(0.02);
+        c.probe(0.0, 0.1, 0.0); // degenerate bar (e.g. single sample)
+        let out = c.probe(10.0, 0.1, 0.0);
+        assert!(out.z.is_finite(), "z must be finite even with zero bar");
+    }
+
+    #[test]
+    fn test_noisy_dead_param_stays_boring() {
+        // The run-1/run-2 failure mode: a dead param whose re-measures
+        // wiggle at the noise scale must NOT look informative. With
+        // honest bars, every re-probe scores z≈1 and blends — the
+        // sampler loses interest, convergence proceeds.
+        let mut c = ResponseCurve::new(0.02);
+        c.probe(25.0, 0.02, 0.02);
+        c.probe(50.0, 0.03, 0.02);
+        c.probe(75.0, 0.04, 0.02);
+        let zs: Vec<f64> = vec![
+            c.probe(25.0, 0.06, 0.03).z, // wiggle within bars
+            c.probe(50.0, 0.0, 0.03).z,  // wiggle other direction
+            c.probe(75.0, 0.06, 0.03).z,
+        ];
+        assert!(zs.iter().all(|z| *z < 2.0), "noise wiggles score low z, got {:?}", zs);
+        assert!(!c.state().points.iter().any(|p| p.2 > 0.05), "bars stay tight");
     }
 
     // ─── ResponseCurve ────────────────────────────────────────────
