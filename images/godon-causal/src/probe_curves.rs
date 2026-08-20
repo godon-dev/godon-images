@@ -224,7 +224,7 @@ impl ResponseCurve {
         if a.is_empty() || b.is_empty() {
             return f64::INFINITY;
         }
-        let b_pts: Vec<Point> = b.iter().map(|(x, y)| Point { level: *x, response: *y }).collect();
+        let b_pts: Vec<Point> = b.iter().map(|(x, y)| Point { level: *x, response: *y, bar: 0.0 }).collect();
         let total: f64 = a.iter()
             .map(|(x, ya)| {
                 let yb = Self::interp_at(*x, &b_pts);
@@ -391,7 +391,8 @@ mod tests {
         c.add_point(100.0, 1.0);
         let out = c.probe(100.0, 0.98, 0.02); // |Δ|=0.02 <= 0.04
         assert!(!out.drift, "agreement within bars is not drift");
-        let pt = c.state().points.iter().find(|p| p.0 == 100.0).unwrap();
+        let state = c.state();
+        let pt = state.points.iter().find(|p| p.0 == 100.0).unwrap();
         assert!(pt.1 > 0.98 && pt.1 < 1.0, "blended between readings, got {}", pt.1);
         assert!(pt.2 < 0.02, "bar tightens with replication, got ±{}", pt.2);
         assert!(out.delta < 0.05, "blend barely moves the surface, delta={}", out.delta);
@@ -406,7 +407,8 @@ mod tests {
         c.add_point(100.0, 1.0);
         let out = c.probe(100.0, 0.4, 0.02); // |Δ|=0.6 >> 0.04
         assert!(out.drift, "disagreement beyond bars is drift");
-        let pt = c.state().points.iter().find(|p| p.0 == 100.0).unwrap();
+        let state = c.state();
+        let pt = state.points.iter().find(|p| p.0 == 100.0).unwrap();
         assert!((pt.1 - 0.4).abs() < 1e-9, "relocated to new reading");
         assert!(out.delta > 0.1, "surface genuinely moved, delta={}", out.delta);
     }
