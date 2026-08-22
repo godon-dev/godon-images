@@ -638,21 +638,21 @@ mod tests {
     #[test]
     fn test_registry_isolates_curves_per_edge() {
         let mut registry = CurveRegistry::new();
-        let d1 = registry.add_point("sender_a", "param_0", 50.0, 0.1, 0.02);
-        let d2 = registry.add_point("sender_b", "param_0", 50.0, 0.2, 0.02);
+        let d1 = registry.add_point("sender_a", "param_0", "objective_0", 50.0, 0.1, 0.02);
+        let d2 = registry.add_point("sender_b", "param_0", "objective_0", 50.0, 0.2, 0.02);
         // Different sender → different curve, both are first points
         assert!(d1.is_infinite());
         assert!(d2.is_infinite());
-        assert!(!registry.is_converged("sender_a", "param_0"));
+        assert!(!registry.is_converged("sender_a", "param_0", "objective_0"));
     }
 
     #[test]
     fn test_registry_adds_to_same_curve_for_same_edge() {
         let mut registry = CurveRegistry::new();
-        registry.add_point("sender_a", "param_0", 0.0, 0.0, 0.02);
-        registry.add_point("sender_a", "param_0", 100.0, 1.0, 0.02);
+        registry.add_point("sender_a", "param_0", "objective_0", 0.0, 0.0, 0.02);
+        registry.add_point("sender_a", "param_0", "objective_0", 100.0, 1.0, 0.02);
         // Third point — now prev_grid exists, delta should be finite
-        let d3 = registry.add_point("sender_a", "param_0", 50.0, 0.5, 0.02);
+        let d3 = registry.add_point("sender_a", "param_0", "objective_0", 50.0, 0.5, 0.02);
         assert!(d3.is_finite(), "third point on same curve should produce finite delta");
     }
 }
