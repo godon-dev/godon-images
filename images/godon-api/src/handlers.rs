@@ -199,14 +199,39 @@ pub async fn delete_breeder(
 
     let client = get_client()?;
     let id_clone = id.clone();
-    
+
     tokio::task::spawn_blocking(move || {
         client.delete_breeder(&id_clone, force)
-            .map(|_| Json(DeleteResponse {
-                id: id_clone.clone(),
-                deleted: true,
-                force: Some(force),
-            }))
+            .map(|_| {
+                // Breeder purged: its curves die with it. Best-effort —
+                // purge must succeed even if causal is unreachable; a
+                // surviving ghost is visible in /curves and sweepable.
+                let causal_url = std::env::var("GODON_CAUSAL_URL")
+                    .unwrap_or_else(|_| "http://godon-godon-causal:9091".to_string());
+                let del_url = format!("{}/curves/{}", causal_url, id_clone);
+                match reqwest::blocking::Client::new()
+                    .delete(&del_url)
+                    .timeout(std::time::Duration::from_secs(10))
+                    .send()
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        log::info!("purged curves for breeder {} via causal", id_clone)
+                    }
+                    Ok(resp) => log::error!(
+                        "causal curve purge for breeder {} returned {}: {}",
+                        id_clone, resp.status(), del_url
+                    ),
+                    Err(e) => log::error!(
+                        "causal curve purge for breeder {} failed (ghost curves may linger in /curves): {}",
+                        id_clone, e
+                    ),
+                }
+                Json(DeleteResponse {
+                    id: id_clone.clone(),
+                    deleted: true,
+                    force: Some(force),
+                })
+            })
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
