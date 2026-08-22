@@ -170,10 +170,19 @@ async fn delete_curves_for_sender(
     let mut rows_deleted: u64 = 0;
     let mut db_error: Option<String> = None;
     match state.reader.connect_archive().await {
-        Ok(client) => match curve_store::delete_curve_points(&client, &sender_id).await {
-            Ok(n) => rows_deleted = n,
-            Err(e) => db_error = Some(e.to_string()),
-        },
+        Ok(client) => {
+            // Fresh stacks: startup table-create may have raced the DB
+            // (causal up before YugaByte ready) — the write path self-heals
+            // this; do the same before deleting.
+            if let Err(e) = curve_store::ensure_curve_table(&client).await {
+                db_error = Some(e.to_string());
+            } else {
+                match curve_store::delete_curve_points(&client, &sender_id).await {
+                    Ok(n) => rows_deleted = n,
+                    Err(e) => db_error = Some(e.to_string()),
+                }
+            }
+        }
         Err(e) => db_error = Some(e.to_string()),
     }
     if let Some(e) = &db_error {
