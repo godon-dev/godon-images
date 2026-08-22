@@ -540,7 +540,7 @@ async fn probe_result(
     // phase. We compare the median receiver objective_0 in each window.
     let midpoint = (push_start + pause_end) / 2.0;
 
-    let push_obs = state
+    let push_by_ch = state
         .reader
         .read_receiver_observations(&req.group_id, &req.sender_id, push_start, midpoint)
         .await
@@ -553,7 +553,7 @@ async fn probe_result(
             )
         })?;
 
-    let pause_obs = state
+    let pause_by_ch = state
         .reader
         .read_receiver_observations(&req.group_id, &req.sender_id, midpoint, pause_end)
         .await
@@ -566,53 +566,138 @@ async fn probe_result(
             )
         })?;
 
-    let push_median = median_f64(&push_obs);
-    let pause_median = median_f64(&pause_obs);
-    let shift = push_median - pause_median;
+    // Union of channels seen in either window (receiver writes every
+    // configured objective per row; union guards partial windows).
+    let mut channels: Vec<String> = push_by_ch.keys().cloned().collect();
+    for ch in pause_by_ch.keys() {
+        if !channels.contains(ch) {
+            channels.push(ch.clone());
+        }
+    }
+    channels.sort();
 
-    // Measurement uncertainty of the shift: MAD of the raw samples in
-    // each window (the same robust estimator CFAR uses), combined in
-    // quadrature. Conservative by construction — sample-scale scatter,
-    // not median-of-N — so it errs toward blending; drift fires only
-    // on movements larger than the raw scatter.
-    let push_mad = mad(&push_obs);
-    let pause_mad = mad(&pause_obs);
-    let shift_bar = (push_mad * push_mad + pause_mad * pause_mad).sqrt();
+    struct ChannelResult {
+        shift: f64,
+        shift_bar: f64,
+        z: f64,
+        drift: bool,
+        converged: bool,
+        gaps: Vec<crate::probe_curves::GapInfo>,
+    }
 
-    // Feed the measured shift into the per-edge response curve.
-    let outcome = {
-        let mut curves = state.curves.write().await;
-        curves.probe(
-            &req.sender_id,
-            &req.probe_param,
-            req.probe_level,
-            shift,
-            shift_bar,
-            req.convergence_threshold,
-            req.param_range,
-        )
-    };
-    let delta = outcome.delta;
+    let mut per_channel: Vec<(String, ChannelResult)> = Vec::new();
+    for ch in &channels {
+        let push_obs = push_by_ch.get(ch).cloned().unwrap_or_default();
+        let pause_obs = pause_by_ch.get(ch).cloned().unwrap_or_default();
+        if push_obs.is_empty() && pause_obs.is_empty() {
+            continue;
+        }
+        let push_median = median_f64(&push_obs);
+        let pause_median = median_f64(&pause_obs);
+        let shift = push_median - pause_median;
 
-    let converged = state
+        // Measurement uncertainty of the shift: MAD of the raw samples in
+        // each window (the same robust estimator CFAR uses), combined in
+        // quadrature. Conservative by construction — sample-scale scatter,
+        // not median-of-N — so it errs toward blending; drift fires only
+        // on movements larger than the raw scatter.
+        let push_mad = mad(&push_obs);
+        let pause_mad = mad(&pause_obs);
+        let shift_bar = (push_mad * push_mad + pause_mad * pause_mad).sqrt();
+
+        let outcome = {
+            let mut curves = state.curves.write().await;
+            curves.probe(
+                &req.sender_id,
+                &req.probe_param,
+                ch,
+                req.probe_level,
+                shift,
+                shift_bar,
+                req.convergence_threshold,
+                req.param_range,
+            )
+        };
+        let converged = state
+            .curves
+            .read()
+            .await
+            .is_converged(&req.sender_id, &req.probe_param, ch);
+        let gaps = state
+            .curves
+            .read()
+            .await
+            .get_curve(&req.sender_id, &req.probe_param, ch)
+            .map(|c| c.gaps())
+            .unwrap_or_default();
+        per_channel.push((
+            ch.clone(),
+            ChannelResult { shift, shift_bar, z: outcome.z, drift: outcome.drift, converged, gaps },
+        ));
+    }
+
+    if per_channel.is_empty() {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(serde_json::json!({
+                "error": "no receiver observations in the probe window"
+            })),
+        ));
+    }
+
+    // Top-level fields = the channel with the largest |shift| this round
+    // (deterministic tie-break: sorted channel name). converged (the
+    // retirement signal) = ALL channels converged; gaps = union.
+    let mut primary = per_channel[0].clone();
+    for cr in per_channel.iter().skip(1) {
+        if cr.1.shift.abs() > primary.1.shift.abs() {
+            primary = cr.clone();
+        }
+    }
+    let shift = primary.1.shift;
+    let shift_bar = primary.1.shift_bar;
+    let all_converged = per_channel.iter().all(|(_, c)| c.converged);
+    let mut gaps: Vec<crate::probe_curves::GapInfo> = Vec::new();
+    for (_, c) in per_channel.iter() {
+        gaps.extend(c.gaps.iter().cloned());
+    }
+    // de-dup identical gaps across channels (same levels/jump)
+    gaps.dedup_by(|a, b| {
+        a.from_level == b.from_level && a.to_level == b.to_level && a.jump == b.jump
+    });
+    let drift = per_channel.iter().any(|(_, c)| c.drift);
+    let z = primary.1.z;
+
+    // Curves were probed per-channel above; delta comes from the
+    // primary channel's last probe (via its outcome, stored below).
+    // Re-read the primary channel's last delta from its curve.
+    let primary_name = primary.0.clone();
+    let delta = state
         .curves
         .read()
         .await
-        .is_converged(&req.sender_id, &req.probe_param);
+        .get_curve(&req.sender_id, &req.probe_param, &primary_name)
+        .map(|c| c.last_delta())
+        .unwrap_or(f64::MAX / 2.0);
 
-    // Write-through persistence (best-effort, failure only logs).
+    let converged = all_converged;
+
+    // Write-through persistence per channel (best-effort, failure only logs).
     if let Ok(client) = state.reader.connect_archive().await {
-        curve_store::persist_point(
-            &client,
-            &req.group_id,
-            &req.sender_id,
-            &req.probe_param,
-            req.probe_level,
-            shift,
-            shift_bar,
-            req.convergence_threshold,
-        )
-        .await;
+        for (name, c) in per_channel.iter() {
+            curve_store::persist_point(
+                &client,
+                &req.group_id,
+                &req.sender_id,
+                &req.probe_param,
+                name,
+                req.probe_level,
+                c.shift,
+                c.shift_bar,
+                req.convergence_threshold,
+            )
+            .await;
+        }
     } else {
         log::error!(
             "curve point NOT persisted — archive DB unreachable (sender={} param={})",
@@ -629,32 +714,40 @@ async fn probe_result(
         serde_json::Value::from(delta)
     };
 
-    // Standing gap facts for this curve — the priced-stop input.
-    let gaps = state
-        .curves
-        .read()
-        .await
-        .get_curve(&req.sender_id, &req.probe_param)
-        .map(|c| c.gaps())
-        .unwrap_or_default();
+    // gaps: union across channels (computed above); unresolved count:
     let unresolved = gaps.iter().filter(|g| g.unresolved).count();
+
+    let channels_json: serde_json::Map<String, serde_json::Value> = per_channel
+        .iter()
+        .map(|(name, c)| {
+            (
+                name.clone(),
+                serde_json::json!({
+                    "shift": c.shift,
+                    "shift_bar": c.shift_bar,
+                    "z": c.z,
+                    "drift": c.drift,
+                    "converged": c.converged,
+                    "gaps": c.gaps,
+                }),
+            )
+        })
+        .collect();
 
     Ok(Json(serde_json::json!({
         "sender_id": req.sender_id,
         "probe_param": req.probe_param,
         "probe_level": req.probe_level,
+        "primary_channel": primary_name,
         "shift": shift,
         "shift_bar": shift_bar,
-        "z": outcome.z,
-        "drift": outcome.drift,
+        "z": z,
+        "drift": drift,
         "delta": delta_json,
         "converged": converged,
         "gaps": gaps,
         "unresolved_gaps": unresolved,
-        "push_median": push_median,
-        "pause_median": pause_median,
-        "push_samples": push_obs.len(),
-        "pause_samples": pause_obs.len(),
+        "channels": channels_json,
     })))
 }
 
@@ -717,6 +810,7 @@ async fn main() {
                         curves.probe(
                             &r.sender_id,
                             &r.probe_param,
+                            &r.channel,
                             r.probe_level,
                             r.shift,
                             r.bar,

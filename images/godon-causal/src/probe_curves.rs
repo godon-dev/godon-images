@@ -58,7 +58,14 @@ pub struct CurveState {
 pub struct CurveEntry {
     pub sender_id: String,
     pub param: String,
+    /// Readout channel this curve measures (e.g. objective_0).
+    #[serde(default = "default_channel")]
+    pub channel: String,
     pub state: CurveState,
+}
+
+fn default_channel() -> String {
+    "objective_0".to_string()
 }
 
 pub struct ResponseCurve {
@@ -298,7 +305,7 @@ impl ResponseCurve {
 // ─── Curve Registry (per edge: sender_id + param_name) ───────────────
 
 pub struct CurveRegistry {
-    curves: HashMap<(String, String), ResponseCurve>,
+    curves: HashMap<(String, String, String), ResponseCurve>,
 }
 
 impl CurveRegistry {
@@ -306,10 +313,10 @@ impl CurveRegistry {
         Self { curves: HashMap::new() }
     }
 
-    pub fn add_point(&mut self, sender_id: &str, param: &str,
+    pub fn add_point(&mut self, sender_id: &str, param: &str, channel: &str,
                      level: f64, shift: f64,
                      threshold: f64) -> f64 {
-        let key = (sender_id.to_string(), param.to_string());
+        let key = (sender_id.to_string(), param.to_string(), channel.to_string());
         let curve = self.curves
             .entry(key)
             .or_insert_with(|| ResponseCurve::new(threshold));
@@ -317,11 +324,11 @@ impl CurveRegistry {
     }
 
     /// Uncertainty-aware probe (the /characterize path).
-    pub fn probe(&mut self, sender_id: &str, param: &str,
+    pub fn probe(&mut self, sender_id: &str, param: &str, channel: &str,
                  level: f64, shift: f64, bar: f64,
                  threshold: f64,
                  param_range: Option<f64>) -> ProbeOutcome {
-        let key = (sender_id.to_string(), param.to_string());
+        let key = (sender_id.to_string(), param.to_string(), channel.to_string());
         let curve = self.curves
             .entry(key)
             .or_insert_with(|| ResponseCurve::new(threshold));
@@ -331,9 +338,9 @@ impl CurveRegistry {
         curve.probe(level, shift, bar)
     }
 
-    pub fn is_converged(&self, sender_id: &str, param: &str) -> bool {
+    pub fn is_converged(&self, sender_id: &str, param: &str, channel: &str) -> bool {
         self.curves
-            .get(&(sender_id.to_string(), param.to_string()))
+            .get(&(sender_id.to_string(), param.to_string(), channel.to_string()))
             .map(|c| c.is_converged())
             .unwrap_or(false)
     }
@@ -343,8 +350,8 @@ impl CurveRegistry {
         None
     }
 
-    pub fn get_curve(&self, sender_id: &str, param: &str) -> Option<&ResponseCurve> {
-        self.curves.get(&(sender_id.to_string(), param.to_string()))
+    pub fn get_curve(&self, sender_id: &str, param: &str, channel: &str) -> Option<&ResponseCurve> {
+        self.curves.get(&(sender_id.to_string(), param.to_string(), channel.to_string()))
     }
 
     /// Drop every curve owned by a sender (breeder purged). Returns the
@@ -352,14 +359,16 @@ impl CurveRegistry {
     /// lifecycle: kept across restarts, deleted on explicit purge.
     pub fn delete_sender(&mut self, sender_id: &str) -> usize {
         let before = self.curves.len();
-        self.curves.retain(|(sender, _), _| sender != sender_id);
+        self.curves.retain(|(sender, _, _), _| sender != sender_id);
         before - self.curves.len()
     }
 
-    pub fn all_curves(&self) -> Vec<(String, String, CurveState)> {
+    pub fn all_curves(&self) -> Vec<(String, String, String, CurveState)> {
         self.curves
             .iter()
-            .map(|((sender, param), curve)| (sender.clone(), param.clone(), curve.state()))
+            .map(|((sender, param, channel), curve)| {
+                (sender.clone(), param.clone(), channel.clone(), curve.state())
+            })
             .collect()
     }
 
@@ -369,13 +378,16 @@ impl CurveRegistry {
         let mut entries: Vec<CurveEntry> = self
             .curves
             .iter()
-            .map(|((sender, param), curve)| CurveEntry {
+            .map(|((sender, param, channel), curve)| CurveEntry {
                 sender_id: sender.clone(),
                 param: param.clone(),
+                channel: channel.clone(),
                 state: curve.state(),
             })
             .collect();
-        entries.sort_by(|a, b| (&a.sender_id, &a.param).cmp(&(&b.sender_id, &b.param)));
+        entries.sort_by(|a, b| {
+            (&a.sender_id, &a.param, &a.channel).cmp(&(&b.sender_id, &b.param, &b.channel))
+        });
         entries
     }
 }
@@ -395,9 +407,9 @@ mod tests {
     #[test]
     fn test_delete_sender_removes_only_that_sender() {
         let mut reg = CurveRegistry::new();
-        reg.add_point("s1", "param_0", 50.0, 0.1, 0.02);
-        reg.add_point("s1", "param_1", 50.0, 0.2, 0.02);
-        reg.add_point("s2", "param_0", 50.0, 0.3, 0.02);
+        reg.add_point("s1", "param_0", "objective_0", 50.0, 0.1, 0.02);
+        reg.add_point("s1", "param_1", "objective_0", 50.0, 0.2, 0.02);
+        reg.add_point("s2", "param_0", "objective_0", 50.0, 0.3, 0.02);
         let removed = reg.delete_sender("s1");
         assert_eq!(removed, 2);
         let senders: Vec<String> =
@@ -410,9 +422,9 @@ mod tests {
     #[test]
     fn test_snapshot_entries_sorted_with_points() {
         let mut reg = CurveRegistry::new();
-        reg.add_point("b1", "param_1", 20.0, 0.1, 0.02);
+        reg.add_point("b1", "param_1", "objective_0", 20.0, 0.1, 0.02);
         reg.add_point("b1", "param_1", 40.0, 0.25, 0.02);
-        reg.add_point("b1", "param_0", 10.0, 0.01, 0.02);
+        reg.add_point("b1", "param_0", "objective_0", 10.0, 0.01, 0.02);
         let snap = reg.snapshot();
         assert_eq!(snap.len(), 2, "one entry per (sender, param)");
         assert_eq!(snap[0].param, "param_0", "sorted by param");
@@ -430,7 +442,7 @@ mod tests {
         // (the established convention) so GET /curves and the artifact
         // stay parseable.
         let mut reg = CurveRegistry::new();
-        reg.add_point("b1", "param_1", 20.0, 0.1, 0.02);
+        reg.add_point("b1", "param_1", "objective_0", 20.0, 0.1, 0.02);
         let entry = reg.snapshot().pop().unwrap();
         assert!(entry.state.last_delta.is_finite());
         assert!(entry.state.last_delta > 1e10, "sentinel value, got {}", entry.state.last_delta);
@@ -441,7 +453,7 @@ mod tests {
     #[test]
     fn test_curve_entry_serde_roundtrip() {
         let mut reg = CurveRegistry::new();
-        reg.add_point("b1", "param_1", 20.0, 0.1, 0.02);
+        reg.add_point("b1", "param_1", "objective_0", 20.0, 0.1, 0.02);
         reg.add_point("b1", "param_1", 40.0, 0.25, 0.02);
         let entry = reg.snapshot().pop().unwrap();
         let json = serde_json::to_string(&entry).unwrap();
@@ -699,5 +711,43 @@ mod gap_tests {
         let c = curve_from(&[(0.0, 0.0, 0.01), (100.0, 0.9, 0.01)], Some(100.0));
         assert_eq!(c.state().gaps.len(), 1);
         assert!(c.state().gaps[0].unresolved);
+    }
+}
+
+#[cfg(test)]
+mod multichannel_tests {
+    use super::*;
+
+    #[test]
+    fn channels_get_independent_curves() {
+        let mut reg = CurveRegistry::new();
+        reg.probe("s1", "param_1", "objective_0", 50.0, 0.0, 0.02, 0.02, None);
+        reg.probe("s1", "param_1", "objective_0", 100.0, 0.4, 0.02, 0.02, None);
+        reg.probe("s1", "param_1", "objective_1", 50.0, 0.0, 0.02, 0.02, None);
+        reg.probe("s1", "param_1", "objective_1", 100.0, 0.0, 0.02, 0.02, None);
+        let snap = reg.snapshot();
+        assert_eq!(snap.len(), 2, "one curve per channel");
+        let ch0 = snap.iter().find(|e| e.channel == "objective_0").unwrap();
+        let ch1 = snap.iter().find(|e| e.channel == "objective_1").unwrap();
+        assert!(ch0.state.gaps.iter().any(|g| g.unresolved), "carrier channel has structure");
+        assert!(ch1.state.gaps.iter().all(|g| !g.unresolved), "flat channel stays flat");
+    }
+
+    #[test]
+    fn measured_param_channel_mapping_is_free() {
+        // The mapping "which params influence which channels" is exactly
+        // the set of channels where a param's curve is non-flat.
+        let mut reg = CurveRegistry::new();
+        for (ch, lv, r) in [("objective_0", 50.0, 0.0), ("objective_0", 100.0, 0.5),
+                            ("objective_1", 50.0, 0.0), ("objective_1", 100.0, 0.0)] {
+            reg.probe("s1", "param_1", ch, lv, r, 0.02, 0.02, None);
+        }
+        let snap = reg.snapshot();
+        let influences = |ch: &str| {
+            snap.iter().find(|e| e.channel == ch).unwrap()
+                .state.gaps.iter().any(|g| g.jump > 0.1)
+        };
+        assert!(influences("objective_0"));
+        assert!(!influences("objective_1"));
     }
 }
