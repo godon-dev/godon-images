@@ -156,6 +156,7 @@ pub async fn persist_point(
             group_id,
             sender_id,
             probe_param,
+            channel,
             probe_level,
             shift,
             bar,
