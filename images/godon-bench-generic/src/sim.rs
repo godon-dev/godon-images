@@ -318,8 +318,14 @@ impl Simulator {
         (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
     }
 
-    pub fn get_status(&self, node_id: &str) -> Option<Vec<f64>> {
-        self.nodes.get(node_id).map(|n| n.objectives.clone())
+    pub fn get_status(&mut self, node_id: &str) -> Option<Vec<f64>> {
+        // Live read: recompute coupled objectives (fresh measurement noise)
+        // before returning. A stored snapshot would hide cross-node coupling
+        // until the measured node itself is re-applied.
+        if !self.nodes.contains_key(node_id) {
+            return None;
+        }
+        Some(self.recompute_objectives(node_id))
     }
 
     pub fn list_nodes(&self) -> Vec<String> {
@@ -343,4 +349,59 @@ fn resolve_noise(mut noise: NoiseConfig) -> NoiseConfig {
         }
     }
     noise
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn two_node_sim() -> Simulator {
+        let config: serde_json::Value = serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0]]},
+                {"id": "b", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[0.5]]}
+            ],
+            "edges": [
+                {"from": "a", "from_channel": 0, "to": "b", "to_channel": 0,
+                 "strength": 0.7}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        });
+        let bench: BenchConfig = serde_json::from_value(config).unwrap();
+        Simulator::from_config(bench)
+    }
+
+    #[test]
+    fn read_reflects_cross_node_coupling_without_receiver_apply() {
+        // Regression: get_status must recompute, not return a stored
+        // snapshot. Sender a applies param 100 (np=1) -> a.obj0 = 1.0;
+        // coupled b.obj0 must read 0.7 WITHOUT b being re-applied
+        // (b's own base is 0: its param defaults to lower).
+        // The stale-read bug returned 0.0 here.
+        let mut sim = two_node_sim();
+        sim.apply("a", &[100.0]);
+        let b = sim.get_status("b").expect("node b exists");
+        assert!((b[0] - 0.7).abs() < 1e-9, "b should read coupled 0.7, got {}", b[0]);
+    }
+
+    #[test]
+    fn reads_advance_coupling_when_sender_changes() {
+        let mut sim = two_node_sim();
+        sim.apply("a", &[100.0]);
+        let first = sim.get_status("b").unwrap()[0];
+        sim.apply("a", &[0.0]); // a.obj back to 0
+        let second = sim.get_status("b").unwrap()[0];
+        assert!((first - 0.7).abs() < 1e-9);
+        assert!((second - 0.0).abs() < 1e-9, "b should track sender, got {}", second);
+    }
+
+    #[test]
+    fn unknown_node_returns_none() {
+        let mut sim = two_node_sim();
+        assert!(sim.get_status("nope").is_none());
+    }
 }
