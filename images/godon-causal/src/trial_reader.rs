@@ -82,7 +82,7 @@ impl TrialReader {
         sender_id: &str,
         start_epoch: f64,
         end_epoch: f64,
-    ) -> Result<Vec<f64>, Error> {
+    ) -> Result<std::collections::HashMap<String, Vec<f64>>, Error> {
         let client = self.connect("archive_db").await?;
 
         // Receiver rows only: same group, not the sender's own self-reads,
@@ -122,7 +122,7 @@ impl TrialReader {
         }
 
         debug!(
-            "read_receiver_observations: group={} window=[{:.0}, {:.0}] -> {} obs",
+            "read_receiver_observations: group={} window=[{:.0}, {:.0}] -> {} channels",
             group_id,
             start_epoch,
             end_epoch,

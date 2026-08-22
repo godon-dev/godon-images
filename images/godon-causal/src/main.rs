@@ -576,6 +576,7 @@ async fn probe_result(
     }
     channels.sort();
 
+    #[derive(Clone)]
     struct ChannelResult {
         shift: f64,
         shift_bar: f64,
