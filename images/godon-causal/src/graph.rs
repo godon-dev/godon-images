@@ -634,6 +634,7 @@ mod tests {
                     num_points: 3,
                     last_delta: 0.01,
                     converged: true,
+                    gaps: Vec::new(),
                     points: vec![(20.0, 0.1, 0.02), (40.0, 0.25, 0.02), (60.0, 0.3, 0.02)],
                 },
             }],
