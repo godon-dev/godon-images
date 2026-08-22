@@ -508,6 +508,9 @@ struct ProbeResultRequest {
     push_start: String,
     pause_end: String,
     convergence_threshold: f64,
+    /// Declared parameter range (upper - lower) from the breeder.
+    /// Scales gap ignorance; absent → observed level span.
+    param_range: Option<f64>,
 }
 
 async fn probe_result(
@@ -586,6 +589,7 @@ async fn probe_result(
             shift,
             shift_bar,
             req.convergence_threshold,
+            req.param_range,
         )
     };
     let delta = outcome.delta;
@@ -625,6 +629,16 @@ async fn probe_result(
         serde_json::Value::from(delta)
     };
 
+    // Standing gap facts for this curve — the priced-stop input.
+    let gaps = state
+        .curves
+        .read()
+        .await
+        .get_curve(&req.sender_id, &req.probe_param)
+        .map(|c| c.gaps())
+        .unwrap_or_default();
+    let unresolved = gaps.iter().filter(|g| g.unresolved).count();
+
     Ok(Json(serde_json::json!({
         "sender_id": req.sender_id,
         "probe_param": req.probe_param,
@@ -635,6 +649,8 @@ async fn probe_result(
         "drift": outcome.drift,
         "delta": delta_json,
         "converged": converged,
+        "gaps": gaps,
+        "unresolved_gaps": unresolved,
         "push_median": push_median,
         "pause_median": pause_median,
         "push_samples": push_obs.len(),
@@ -705,6 +721,7 @@ async fn main() {
                             r.shift,
                             r.bar,
                             r.convergence_threshold,
+                            None,
                         );
                     }
                     info!("loaded {} persisted curve points into registry", n);

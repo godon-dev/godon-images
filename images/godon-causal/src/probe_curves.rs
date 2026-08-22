@@ -23,12 +23,33 @@ struct Point {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct GapInfo {
+    pub from_level: f64,
+    pub to_level: f64,
+    /// |response(to) - response(from)| — the jump across the gap.
+    pub jump: f64,
+    /// bar(from) + bar(to) — the agreement threshold.
+    pub bars_sum: f64,
+    /// to_level - from_level, in parameter units.
+    pub width: f64,
+    /// jump > bars_sum: adjacent points disagree beyond their combined
+    /// blur — unresolved shape sits in this interval.
+    pub unresolved: bool,
+    /// Priced remaining ignorance: jump × width / range. Response units
+    /// (area scaled onto the axis). ≤ local bar means one more probe
+    /// cannot see anything — the priced stop.
+    pub ignorance: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct CurveState {
     pub num_points: usize,
     pub last_delta: f64,
     pub converged: bool,
     /// (level, response, bar) — bar = measurement uncertainty.
     pub points: Vec<(f64, f64, f64)>,
+    /// Adjacent-point gaps with priced ignorance (see GapInfo).
+    pub gaps: Vec<GapInfo>,
 }
 
 /// Serializable registry entry: identity + full curve state.
@@ -46,6 +67,9 @@ pub struct ResponseCurve {
     points: Vec<Point>,
     prev_grid: Option<Vec<(f64, f64)>>,
     delta_history: Vec<f64>,
+    /// Declared parameter range (upper - lower) from the breeder, used
+    /// to scale gap ignorance. None → observed level span.
+    param_range: Option<f64>,
 }
 
 impl ResponseCurve {
@@ -56,7 +80,42 @@ impl ResponseCurve {
             points: Vec::new(),
             prev_grid: None,
             delta_history: Vec::new(),
+            param_range: None,
         }
+    }
+
+    /// Adjacent-point gaps with priced ignorance (sorted by level).
+    /// Standing fact, recomputed on read — eligibility consults it
+    /// like it consults `converged`.
+    pub fn gaps(&self) -> Vec<GapInfo> {
+        let mut pts: Vec<&Point> = self.points.iter().collect();
+        pts.sort_by(|a, b| a.level.partial_cmp(&b.level).unwrap());
+        let range = self.param_range
+            .or_else(|| {
+                let lo = pts.first().map(|p| p.level)?;
+                let hi = pts.last().map(|p| p.level)?;
+                Some(hi - lo)
+            })
+            .filter(|r| *r > 1e-9)
+            .unwrap_or(1.0);
+        let mut out = Vec::new();
+        for w in pts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let jump = (b.response - a.response).abs();
+            // bars are floored at probe() entry — safe to sum directly
+            let bars_sum = a.bar + b.bar;
+            let width = b.level - a.level;
+            out.push(GapInfo {
+                from_level: a.level,
+                to_level: b.level,
+                jump,
+                bars_sum,
+                width,
+                unresolved: jump > bars_sum,
+                ignorance: jump * width / range,
+            });
+        }
+        out
     }
 
     pub fn add_point(&mut self, level: f64, response: f64) -> f64 {
@@ -169,6 +228,7 @@ impl ResponseCurve {
             // /characterize handler. Consumers treat >1e10 as "no prior".
             last_delta: if ld.is_infinite() { f64::MAX / 2.0 } else { ld },
             converged: self.is_converged(),
+            gaps: self.gaps(),
             points: self
                 .points
                 .iter()
@@ -259,11 +319,15 @@ impl CurveRegistry {
     /// Uncertainty-aware probe (the /characterize path).
     pub fn probe(&mut self, sender_id: &str, param: &str,
                  level: f64, shift: f64, bar: f64,
-                 threshold: f64) -> ProbeOutcome {
+                 threshold: f64,
+                 param_range: Option<f64>) -> ProbeOutcome {
         let key = (sender_id.to_string(), param.to_string());
         let curve = self.curves
             .entry(key)
             .or_insert_with(|| ResponseCurve::new(threshold));
+        if param_range.is_some() {
+            curve.param_range = param_range;
+        }
         curve.probe(level, shift, bar)
     }
 
@@ -578,5 +642,112 @@ mod tests {
         // Third point — now prev_grid exists, delta should be finite
         let d3 = registry.add_point("sender_a", "param_0", 50.0, 0.5, 0.02);
         assert!(d3.is_finite(), "third point on same curve should produce finite delta");
+    }
+}
+
+#[cfg(test)]
+mod gap_tests {
+    use super::*;
+
+    fn curve_from(points: &[(f64, f64, f64)], range: Option<f64>) -> ResponseCurve {
+        let mut c = ResponseCurve::new(0.02);
+        c.param_range = range;
+        for &(l, r, b) in points {
+            c.probe(l, r, b);
+        }
+        c
+    }
+
+    #[test]
+    fn gaps_match_run25_carrier() {
+        // Run 25's measured saturation carrier (levels 0/50/75/100),
+        // param range 100. Expected gap classification from the run's
+        // own analysis: (0,50) unresolved, (50,75) unresolved-marginal,
+        // (75,100) resolved by agreement.
+        let c = curve_from(
+            &[(0.0, -0.352, 0.020), (50.0, -0.002, 0.020),
+              (75.0, -0.074, 0.032), (100.0, -0.105, 0.018)],
+            Some(100.0),
+        );
+        let g = c.gaps();
+        assert_eq!(g.len(), 3);
+        assert!(g[0].unresolved, "(0,50): jump 0.350 vs bars 0.040");
+        assert!((g[0].ignorance - 0.35 * 50.0 / 100.0).abs() < 1e-9);
+        assert!(g[1].unresolved, "(50,75): jump 0.073 vs bars 0.052");
+        assert!(!g[2].unresolved, "(75,100): jump 0.031 vs bars 0.050");
+        // Priced stop arithmetic on the marginal shoulder: ignorance
+        // 0.073*25/100 = 0.018 <= local bar ~0.05 → priced out.
+        assert!((g[1].ignorance - 0.0728 * 25.0 / 100.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn gaps_empty_for_fewer_than_two_points() {
+        let c = curve_from(&[(50.0, 0.0, 0.01)], Some(100.0));
+        assert!(c.gaps().is_empty());
+    }
+
+    #[test]
+    fn gaps_use_observed_span_without_declared_range() {
+        // No declared range: ignorance scaled by observed span (50), not 100.
+        let c = curve_from(&[(0.0, 0.0, 0.01), (50.0, 0.5, 0.01)], None);
+        let g = c.gaps();
+        assert!((g[0].ignorance - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn state_carries_gaps() {
+        let c = curve_from(&[(0.0, 0.0, 0.01), (100.0, 0.9, 0.01)], Some(100.0));
+        assert_eq!(c.state().gaps.len(), 1);
+        assert!(c.state().gaps[0].unresolved);
+    }
+}
+
+#[cfg(test)]
+mod gap_tests {
+    use super::*;
+
+    fn curve_from(points: &[(f64, f64, f64)], range: Option<f64>) -> ResponseCurve {
+        let mut c = ResponseCurve::new(0.02);
+        c.param_range = range;
+        for &(l, r, b) in points {
+            c.probe(l, r, b);
+        }
+        c
+    }
+
+    #[test]
+    fn gaps_match_run25_carrier() {
+        let c = curve_from(
+            &[(0.0, -0.352, 0.020), (50.0, -0.002, 0.020),
+              (75.0, -0.074, 0.032), (100.0, -0.105, 0.018)],
+            Some(100.0),
+        );
+        let g = c.gaps();
+        assert_eq!(g.len(), 3);
+        assert!(g[0].unresolved, "(0,50): jump 0.350 vs bars 0.040");
+        assert!((g[0].ignorance - 0.35 * 50.0 / 100.0).abs() < 1e-9);
+        assert!(g[1].unresolved, "(50,75): jump 0.073 vs bars 0.052");
+        assert!(!g[2].unresolved, "(75,100): jump 0.031 vs bars 0.050");
+        assert!((g[1].ignorance - 0.0728 * 25.0 / 100.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn gaps_empty_for_fewer_than_two_points() {
+        let c = curve_from(&[(50.0, 0.0, 0.01)], Some(100.0));
+        assert!(c.gaps().is_empty());
+    }
+
+    #[test]
+    fn gaps_use_observed_span_without_declared_range() {
+        let c = curve_from(&[(0.0, 0.0, 0.01), (50.0, 0.5, 0.01)], None);
+        let g = c.gaps();
+        assert!((g[0].ignorance - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn state_carries_gaps() {
+        let c = curve_from(&[(0.0, 0.0, 0.01), (100.0, 0.9, 0.01)], Some(100.0));
+        assert_eq!(c.state().gaps.len(), 1);
+        assert!(c.state().gaps[0].unresolved);
     }
 }
