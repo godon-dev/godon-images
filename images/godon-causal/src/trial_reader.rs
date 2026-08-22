@@ -103,12 +103,20 @@ impl TrialReader {
             )
             .await?;
 
-        let mut values = Vec::new();
+        // Per-channel series: channel name -> ordered readings.
+        // Every configured objective key in the row becomes a channel —
+        // no hardcoded objective_0.
+        let mut values: std::collections::HashMap<String, Vec<f64>> =
+            std::collections::HashMap::new();
         for row in &rows {
             let json_str: String = row.get(0);
             if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                if let Some(v) = obj.get("objective_0").and_then(|vv| vv.as_f64()) {
-                    values.push(v);
+                if let Some(map) = obj.as_object() {
+                    for (ch, vv) in map {
+                        if let Some(v) = vv.as_f64() {
+                            values.entry(ch.clone()).or_default().push(v);
+                        }
+                    }
                 }
             }
         }
