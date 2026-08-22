@@ -283,6 +283,15 @@ impl CurveRegistry {
         self.curves.get(&(sender_id.to_string(), param.to_string()))
     }
 
+    /// Drop every curve owned by a sender (breeder purged). Returns the
+    /// number of (param) curves removed. Curves follow the breeder
+    /// lifecycle: kept across restarts, deleted on explicit purge.
+    pub fn delete_sender(&mut self, sender_id: &str) -> usize {
+        let before = self.curves.len();
+        self.curves.retain(|(sender, _), _| sender != sender_id);
+        before - self.curves.len()
+    }
+
     pub fn all_curves(&self) -> Vec<(String, String, CurveState)> {
         self.curves
             .iter()
@@ -317,6 +326,21 @@ mod tests {
     fn test_snapshot_empty_registry() {
         let reg = CurveRegistry::new();
         assert!(reg.snapshot().is_empty());
+    }
+
+    #[test]
+    fn test_delete_sender_removes_only_that_sender() {
+        let mut reg = CurveRegistry::new();
+        reg.add_point("s1", "param_0", 50.0, 0.1, 0.02);
+        reg.add_point("s1", "param_1", 50.0, 0.2, 0.02);
+        reg.add_point("s2", "param_0", 50.0, 0.3, 0.02);
+        let removed = reg.delete_sender("s1");
+        assert_eq!(removed, 2);
+        let senders: Vec<String> =
+            reg.snapshot().iter().map(|e| e.sender_id.clone()).collect();
+        assert_eq!(senders, vec!["s2".to_string()]);
+        // Idempotent: purging again removes nothing.
+        assert_eq!(reg.delete_sender("s1"), 0);
     }
 
     #[test]

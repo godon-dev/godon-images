@@ -11,7 +11,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::Json,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use log::info;
@@ -158,6 +158,36 @@ async fn build_status(State(state): State<Arc<AppState>>) -> Json<BuildStatus> {
 async fn get_curves(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let curves = state.curves.read().await.snapshot();
     Json(serde_json::json!({ "curves": curves }))
+}
+
+async fn delete_curves_for_sender(
+    State(state): State<Arc<AppState>>,
+    Path(sender_id): Path<String>,
+) -> Json<serde_json::Value> {
+    // Breeder purged: its curves die with it — memory and persisted rows.
+    // Restart replay must not resurrect them.
+    let removed = state.curves.write().await.delete_sender(&sender_id);
+    let mut rows_deleted: u64 = 0;
+    let mut db_error: Option<String> = None;
+    match state.reader.connect_archive().await {
+        Ok(client) => match curve_store::delete_curve_points(&client, &sender_id).await {
+            Ok(n) => rows_deleted = n,
+            Err(e) => db_error = Some(e.to_string()),
+        },
+        Err(e) => db_error = Some(e.to_string()),
+    }
+    if let Some(e) = &db_error {
+        log::error!(
+            "curve row deletion failed for sender {} (registry cleared, rows may replay on restart): {}",
+            sender_id, e
+        );
+    }
+    Json(serde_json::json!({
+        "sender_id": sender_id,
+        "curves_removed": removed,
+        "rows_deleted": rows_deleted,
+        "db_error": db_error,
+    }))
 }
 
 async fn get_graph(
@@ -700,6 +730,7 @@ async fn main() {
         .route("/graph", get(get_graph))
         .route("/artifact", get(get_artifact))
         .route("/curves", get(get_curves))
+        .route("/curves/{sender_id}", delete(delete_curves_for_sender))
         .route("/predict", post(predict))
         .route("/predict/multihop", post(predict_multihop))
         .route("/impact/{breeder_id}", get(impact))
