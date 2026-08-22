@@ -79,18 +79,27 @@ impl TrialReader {
     pub async fn read_receiver_observations(
         &self,
         group_id: &str,
+        sender_id: &str,
         start_epoch: f64,
         end_epoch: f64,
     ) -> Result<Vec<f64>, Error> {
         let client = self.connect("archive_db").await?;
 
+        // Receiver rows only: same group, not the sender's own self-reads,
+        // and phase-tagged (receiver HOLD trials carry the observed lease
+        // phase; the sender's pause trials write untagged rows with
+        // mode 'hold', which poisoned shift medians before this filter —
+        // the run-23 +0.339 phantom on a dead param).
         let rows = client
             .query(
                 "SELECT CAST(objective_values AS TEXT) FROM receiver_observations \
-                 WHERE EXTRACT(EPOCH FROM written_at) >= $1::double precision \
+                 WHERE group_id = $3::varchar \
+                 AND receiver_id != $4::varchar \
+                 AND lease_phase IS NOT NULL \
+                 AND EXTRACT(EPOCH FROM written_at) >= $1::double precision \
                  AND EXTRACT(EPOCH FROM written_at) <= $2::double precision \
                  ORDER BY written_at",
-                &[&start_epoch, &end_epoch],
+                &[&start_epoch, &end_epoch, &group_id, &sender_id],
             )
             .await?;
 

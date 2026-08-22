@@ -539,7 +539,7 @@ async fn probe_result(
 
     let push_obs = state
         .reader
-        .read_receiver_observations(&req.group_id, push_start, midpoint)
+        .read_receiver_observations(&req.group_id, &req.sender_id, push_start, midpoint)
         .await
         .map_err(|e| {
             (
@@ -552,7 +552,7 @@ async fn probe_result(
 
     let pause_obs = state
         .reader
-        .read_receiver_observations(&req.group_id, midpoint, pause_end)
+        .read_receiver_observations(&req.group_id, &req.sender_id, midpoint, pause_end)
         .await
         .map_err(|e| {
             (
