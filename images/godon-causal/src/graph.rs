@@ -630,6 +630,7 @@ mod tests {
             curves: vec![CurveEntry {
                 sender_id: "A".to_string(),
                 param: "param_1".to_string(),
+                channel: "objective_0".to_string(),
                 state: CurveState {
                     num_points: 3,
                     last_delta: 0.01,

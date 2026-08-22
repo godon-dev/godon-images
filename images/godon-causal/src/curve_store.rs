@@ -16,6 +16,7 @@ pub struct CurvePointRow {
     pub group_id: String,
     pub sender_id: String,
     pub probe_param: String,
+    pub channel: String,
     pub probe_level: f64,
     pub shift: f64,
     pub bar: f64,
@@ -33,6 +34,7 @@ pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), E
                  probe_level DOUBLE PRECISION NOT NULL, \
                  shift DOUBLE PRECISION NOT NULL, \
                  bar DOUBLE PRECISION NOT NULL DEFAULT 0, \
+             channel TEXT NOT NULL DEFAULT 'objective_0', \
                  convergence_threshold DOUBLE PRECISION NOT NULL, \
                  written_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
             &[],
@@ -45,6 +47,13 @@ pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), E
              ADD COLUMN IF NOT EXISTS bar DOUBLE PRECISION NOT NULL DEFAULT 0",
             &[],
         )
+        .await?;
+    client
+        .execute(
+            "ALTER TABLE curve_points \
+             ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'objective_0'",
+            &[],
+        )
         .await
         .map(|_| ())
 }
@@ -54,6 +63,7 @@ pub async fn insert_curve_point(
     group_id: &str,
     sender_id: &str,
     probe_param: &str,
+    channel: &str,
     probe_level: f64,
     shift: f64,
     bar: f64,
@@ -62,12 +72,13 @@ pub async fn insert_curve_point(
     client
         .execute(
             "INSERT INTO curve_points \
-             (group_id, sender_id, probe_param, probe_level, shift, bar, convergence_threshold) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             (group_id, sender_id, probe_param, channel, probe_level, shift, bar, convergence_threshold) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             &[
                 &group_id,
                 &sender_id,
                 &probe_param,
+                &channel,
                 &probe_level,
                 &shift,
                 &bar,
@@ -83,7 +94,7 @@ pub async fn load_curve_points(
 ) -> Result<Vec<CurvePointRow>, Error> {
     let rows = client
         .query(
-            "SELECT group_id, sender_id, probe_param, probe_level, shift, bar, \
+            "SELECT group_id, sender_id, probe_param, channel, probe_level, shift, bar, \
              convergence_threshold FROM curve_points ORDER BY id",
             &[],
         )
@@ -95,10 +106,11 @@ pub async fn load_curve_points(
             group_id: row.get(0),
             sender_id: row.get(1),
             probe_param: row.get(2),
-            probe_level: row.get(3),
-            shift: row.get(4),
-            bar: row.get(5),
-            convergence_threshold: row.get(6),
+            channel: row.get(3),
+            probe_level: row.get(4),
+            shift: row.get(5),
+            bar: row.get(6),
+            convergence_threshold: row.get(7),
         })
         .collect())
 }
@@ -110,6 +122,7 @@ pub async fn persist_point(
     group_id: &str,
     sender_id: &str,
     probe_param: &str,
+    channel: &str,
     probe_level: f64,
     shift: f64,
     bar: f64,
@@ -120,6 +133,7 @@ pub async fn persist_point(
         group_id,
         sender_id,
         probe_param,
+        channel,
         probe_level,
         shift,
         bar,
