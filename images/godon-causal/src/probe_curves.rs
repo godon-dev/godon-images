@@ -423,7 +423,7 @@ mod tests {
     fn test_snapshot_entries_sorted_with_points() {
         let mut reg = CurveRegistry::new();
         reg.add_point("b1", "param_1", "objective_0", 20.0, 0.1, 0.02);
-        reg.add_point("b1", "param_1", 40.0, 0.25, 0.02);
+        reg.add_point("b1", "param_1", "objective_0", 40.0, 0.25, 0.02);
         reg.add_point("b1", "param_0", "objective_0", 10.0, 0.01, 0.02);
         let snap = reg.snapshot();
         assert_eq!(snap.len(), 2, "one entry per (sender, param)");
@@ -454,7 +454,7 @@ mod tests {
     fn test_curve_entry_serde_roundtrip() {
         let mut reg = CurveRegistry::new();
         reg.add_point("b1", "param_1", "objective_0", 20.0, 0.1, 0.02);
-        reg.add_point("b1", "param_1", 40.0, 0.25, 0.02);
+        reg.add_point("b1", "param_1", "objective_0", 40.0, 0.25, 0.02);
         let entry = reg.snapshot().pop().unwrap();
         let json = serde_json::to_string(&entry).unwrap();
         assert!(json.contains("\"sender_id\""));
@@ -470,13 +470,13 @@ mod tests {
         // The persistence contract: replaying the same points through
         // add_point reconstructs the same snapshot (restart recovery).
         let mut live = CurveRegistry::new();
-        live.add_point("b1", "param_1", 20.0, 0.1, 0.02);
-        live.add_point("b1", "param_1", 40.0, 0.25, 0.02);
-        live.add_point("b1", "param_1", 20.0, 0.12, 0.02); // re-measure
+        live.add_point("b1", "param_1", "objective_0", 20.0, 0.1, 0.02);
+        live.add_point("b1", "param_1", "objective_0", 40.0, 0.25, 0.02);
+        live.add_point("b1", "param_1", "objective_0", 20.0, 0.12, 0.02); // re-measure
         let mut replayed = CurveRegistry::new();
-        replayed.add_point("b1", "param_1", 20.0, 0.1, 0.02);
-        replayed.add_point("b1", "param_1", 40.0, 0.25, 0.02);
-        replayed.add_point("b1", "param_1", 20.0, 0.12, 0.02);
+        replayed.add_point("b1", "param_1", "objective_0", 20.0, 0.1, 0.02);
+        replayed.add_point("b1", "param_1", "objective_0", 40.0, 0.25, 0.02);
+        replayed.add_point("b1", "param_1", "objective_0", 20.0, 0.12, 0.02);
         assert_eq!(live.snapshot(), replayed.snapshot());
     }
 
