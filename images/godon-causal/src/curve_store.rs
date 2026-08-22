@@ -156,3 +156,18 @@ pub async fn persist_point(
         }
     }
 }
+
+/// Delete every persisted curve point owned by a sender (breeder purge).
+/// Without this, startup replay resurrects purged breeders' curves as
+/// ghosts in /curves and the graph artifact. Returns rows deleted.
+pub async fn delete_curve_points(
+    client: &tokio_postgres::Client,
+    sender_id: &str,
+) -> Result<u64, Error> {
+    client
+        .execute(
+            "DELETE FROM curve_points WHERE sender_id = $1",
+            &[&sender_id],
+        )
+        .await
+}
