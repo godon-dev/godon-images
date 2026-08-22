@@ -135,7 +135,7 @@ async fn metrics_json(
     State(state): State<Arc<AppState>>,
     Path(node_id): Path<String>,
 ) -> Json<serde_json::Value> {
-    let sim = state.sim.lock().unwrap();
+    let mut sim = state.sim.lock().unwrap();
     let objectives = sim.get_status(&node_id).unwrap_or_default();
     let tick = sim.nodes.get(&node_id).map(|n| n.tick).unwrap_or(0);
     Json(build_metrics_response(&node_id, tick, &objectives))
@@ -145,7 +145,7 @@ async fn status(
     State(state): State<Arc<AppState>>,
     Path(node_id): Path<String>,
 ) -> Json<serde_json::Value> {
-    let sim = state.sim.lock().unwrap();
+    let mut sim = state.sim.lock().unwrap();
     let objectives = sim.get_status(&node_id).unwrap_or_default();
     let tick = sim.nodes.get(&node_id).map(|n| n.tick).unwrap_or(0);
     Json(build_metrics_response(&node_id, tick, &objectives))
