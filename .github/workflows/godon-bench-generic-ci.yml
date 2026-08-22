@@ -67,6 +67,19 @@ jobs:
     - name: Test /node-1/status endpoint
       run: curl -sf http://localhost:8090/node-1/status | grep -q "node-1" || { echo "/status failed"; exit 1; }
 
+    - name: Test cross-node coupling visible on read
+      run: |
+        # Sender applies params; receiver (never re-applied) must read the
+        # coupled value on GET. Regression guard for stale stored reads:
+        # node-1 obj0 at params 100,100,100 = 0.3+0.5+0.2 = 1.0;
+        # node-2 objective_0 must then read ~0.7 (edge 0.7), NOT ~0.
+        curl -sf -X POST http://localhost:8090/node-1/apply \
+          -H "Content-Type: application/json" \
+          -d '{"param_0": 100.0, "param_1": 100.0, "param_2": 100.0}' > /dev/null
+        V=$(curl -sf http://localhost:8090/node-2/metrics/json | jq -r '.objective_0')
+        echo "node-2 objective_0 after node-1 apply: ${V}"
+        awk -v v="${V}" 'BEGIN { if (v > 0.5) exit 0; print "FAIL: expected ~0.7 (coupled), got " v; exit 1 }'
+
     - name: Container cleanup
       if: always()
       run: |
