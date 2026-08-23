@@ -629,6 +629,7 @@ mod tests {
             edges: vec![edge],
             curves: vec![CurveEntry {
                 sender_id: "A".to_string(),
+                receiver_id: "B".to_string(),
                 param: "param_1".to_string(),
                 channel: "objective_0".to_string(),
                 state: CurveState {

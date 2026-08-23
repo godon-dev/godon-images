@@ -76,13 +76,17 @@ impl TrialReader {
 
     // ─── Read receiver observations within a time window ────────────
 
+    /// Per-receiver, per-channel series: receiver_id -> channel -> ordered
+    /// readings. The probe window holds rows from EVERY holding receiver;
+    /// grouping by receiver keeps each listener's response its own — the
+    /// shift of B must never mix into C's medians (multi-receiver mingling).
     pub async fn read_receiver_observations(
         &self,
         group_id: &str,
         sender_id: &str,
         start_epoch: f64,
         end_epoch: f64,
-    ) -> Result<std::collections::HashMap<String, Vec<f64>>, Error> {
+    ) -> Result<std::collections::HashMap<String, std::collections::HashMap<String, Vec<f64>>>, Error> {
         let client = self.connect("archive_db").await?;
 
         // Receiver rows only: same group, not the sender's own self-reads,
@@ -92,7 +96,7 @@ impl TrialReader {
         // the run-23 +0.339 phantom on a dead param).
         let rows = client
             .query(
-                "SELECT CAST(objective_values AS TEXT) FROM receiver_observations \
+                "SELECT receiver_id, CAST(objective_values AS TEXT) FROM receiver_observations \
                  WHERE group_id = $3::varchar \
                  AND receiver_id != $4::varchar \
                  AND lease_phase IS NOT NULL \
@@ -103,18 +107,21 @@ impl TrialReader {
             )
             .await?;
 
-        // Per-channel series: channel name -> ordered readings.
-        // Every configured objective key in the row becomes a channel —
-        // no hardcoded objective_0.
-        let mut values: std::collections::HashMap<String, Vec<f64>> =
-            std::collections::HashMap::new();
+        // Per-receiver per-channel series. Every configured objective key
+        // in the row becomes a channel — no hardcoded objective_0.
+        let mut values: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, Vec<f64>>,
+        > = std::collections::HashMap::new();
         for row in &rows {
-            let json_str: String = row.get(0);
+            let receiver_id: String = row.get(0);
+            let json_str: String = row.get(1);
             if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&json_str) {
                 if let Some(map) = obj.as_object() {
+                    let per_recv = values.entry(receiver_id).or_default();
                     for (ch, vv) in map {
                         if let Some(v) = vv.as_f64() {
-                            values.entry(ch.clone()).or_default().push(v);
+                            per_recv.entry(ch.clone()).or_default().push(v);
                         }
                     }
                 }
@@ -122,7 +129,7 @@ impl TrialReader {
         }
 
         debug!(
-            "read_receiver_observations: group={} window=[{:.0}, {:.0}] -> {} channels",
+            "read_receiver_observations: group={} window=[{:.0}, {:.0}] -> {} receivers",
             group_id,
             start_epoch,
             end_epoch,

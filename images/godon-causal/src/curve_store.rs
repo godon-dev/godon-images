@@ -15,6 +15,9 @@ use tokio_postgres::Error;
 pub struct CurvePointRow {
     pub group_id: String,
     pub sender_id: String,
+    /// Breeder whose readout this point measured. Rows persisted before
+    /// the column existed replay as "unknown".
+    pub receiver_id: String,
     pub probe_param: String,
     pub channel: String,
     pub probe_level: f64,
@@ -54,6 +57,15 @@ pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), E
              ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'objective_0'",
             &[],
         )
+        .await?;
+    // Tables created before the receiver column existed (causal <= 0.15.x,
+    // 2-breeder era: one implicit receiver per window).
+    client
+        .execute(
+            "ALTER TABLE curve_points \
+             ADD COLUMN IF NOT EXISTS receiver_id TEXT NOT NULL DEFAULT 'unknown'",
+            &[],
+        )
         .await
         .map(|_| ())
 }
@@ -62,6 +74,7 @@ pub async fn insert_curve_point(
     client: &tokio_postgres::Client,
     group_id: &str,
     sender_id: &str,
+    receiver_id: &str,
     probe_param: &str,
     channel: &str,
     probe_level: f64,
@@ -72,11 +85,12 @@ pub async fn insert_curve_point(
     client
         .execute(
             "INSERT INTO curve_points \
-             (group_id, sender_id, probe_param, channel, probe_level, shift, bar, convergence_threshold) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+             (group_id, sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, convergence_threshold) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
             &[
                 &group_id,
                 &sender_id,
+                &receiver_id,
                 &probe_param,
                 &channel,
                 &probe_level,
@@ -94,7 +108,7 @@ pub async fn load_curve_points(
 ) -> Result<Vec<CurvePointRow>, Error> {
     let rows = client
         .query(
-            "SELECT group_id, sender_id, probe_param, channel, probe_level, shift, bar, \
+            "SELECT group_id, sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, \
              convergence_threshold FROM curve_points ORDER BY id",
             &[],
         )
@@ -105,12 +119,13 @@ pub async fn load_curve_points(
         .map(|row| CurvePointRow {
             group_id: row.get(0),
             sender_id: row.get(1),
-            probe_param: row.get(2),
-            channel: row.get(3),
-            probe_level: row.get(4),
-            shift: row.get(5),
-            bar: row.get(6),
-            convergence_threshold: row.get(7),
+            receiver_id: row.get(2),
+            probe_param: row.get(3),
+            channel: row.get(4),
+            probe_level: row.get(5),
+            shift: row.get(6),
+            bar: row.get(7),
+            convergence_threshold: row.get(8),
         })
         .collect())
 }
@@ -121,6 +136,7 @@ pub async fn persist_point(
     client: &tokio_postgres::Client,
     group_id: &str,
     sender_id: &str,
+    receiver_id: &str,
     probe_param: &str,
     channel: &str,
     probe_level: f64,
@@ -132,6 +148,7 @@ pub async fn persist_point(
         client,
         group_id,
         sender_id,
+        receiver_id,
         probe_param,
         channel,
         probe_level,
@@ -155,6 +172,7 @@ pub async fn persist_point(
             client,
             group_id,
             sender_id,
+            receiver_id,
             probe_param,
             channel,
             probe_level,
