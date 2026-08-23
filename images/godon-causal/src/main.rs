@@ -815,63 +815,64 @@ async fn probe_result(
 
     // Full per-receiver map: every listener's channels, its aggregate
     // convergence, its gaps union, and its primary channel's delta.
-    let receivers_json: serde_json::Map<String, serde_json::Value> = per_receiver
-        .iter()
-        .map(|(recv, rr)| {
-            let p = rr.primary();
-            let recv_delta = state
-                .curves
-                .read()
-                .await
-                .get_curve(&req.sender_id, recv, &req.probe_param, &p.0)
-                .map(|c| c.last_delta())
-                .unwrap_or(f64::MAX / 2.0);
-            let recv_delta_json = if recv_delta.is_infinite() {
-                serde_json::Value::from(f64::MAX / 2.0)
-            } else {
-                serde_json::Value::from(recv_delta)
-            };
-            let mut recv_gaps: Vec<crate::probe_curves::GapInfo> = Vec::new();
-            for (_, c) in rr.channels.iter() {
-                recv_gaps.extend(c.gaps.iter().cloned());
-            }
-            recv_gaps.dedup_by(|a, b| {
-                a.from_level == b.from_level && a.to_level == b.to_level && a.jump == b.jump
-            });
-            let recv_channels: serde_json::Map<String, serde_json::Value> = rr
-                .channels
-                .iter()
-                .map(|(name, c)| {
-                    (
-                        name.clone(),
-                        serde_json::json!({
-                            "shift": c.shift,
-                            "shift_bar": c.shift_bar,
-                            "z": c.z,
-                            "drift": c.drift,
-                            "converged": c.converged,
-                            "gaps": c.gaps,
-                        }),
-                    )
-                })
-                .collect();
-            (
-                recv.clone(),
-                serde_json::json!({
-                    "primary_channel": p.0,
-                    "shift": p.1.shift,
-                    "shift_bar": p.1.shift_bar,
-                    "z": p.1.z,
-                    "drift": rr.channels.iter().any(|(_, c)| c.drift),
-                    "delta": recv_delta_json,
-                    "converged": rr.all_converged(),
-                    "gaps": recv_gaps,
-                    "unresolved_gaps": recv_gaps.iter().filter(|g| g.unresolved).count(),
-                    "channels": recv_channels,
-                }),
-            )
-        })
-        .collect();
+    // Built with a plain loop — the per-receiver delta reads need .await,
+    // which iterator closures cannot hold.
+    let mut receivers_json: serde_json::Map<String, serde_json::Value> =
+        serde_json::Map::new();
+    for (recv, rr) in per_receiver.iter() {
+        let p = rr.primary();
+        let recv_delta = state
+            .curves
+            .read()
+            .await
+            .get_curve(&req.sender_id, recv, &req.probe_param, &p.0)
+            .map(|c| c.last_delta())
+            .unwrap_or(f64::MAX / 2.0);
+        let recv_delta_json = if recv_delta.is_infinite() {
+            serde_json::Value::from(f64::MAX / 2.0)
+        } else {
+            serde_json::Value::from(recv_delta)
+        };
+        let mut recv_gaps: Vec<crate::probe_curves::GapInfo> = Vec::new();
+        for (_, c) in rr.channels.iter() {
+            recv_gaps.extend(c.gaps.iter().cloned());
+        }
+        recv_gaps.dedup_by(|a, b| {
+            a.from_level == b.from_level && a.to_level == b.to_level && a.jump == b.jump
+        });
+        let recv_channels: serde_json::Map<String, serde_json::Value> = rr
+            .channels
+            .iter()
+            .map(|(name, c)| {
+                (
+                    name.clone(),
+                    serde_json::json!({
+                        "shift": c.shift,
+                        "shift_bar": c.shift_bar,
+                        "z": c.z,
+                        "drift": c.drift,
+                        "converged": c.converged,
+                        "gaps": c.gaps,
+                    }),
+                )
+            })
+            .collect();
+        receivers_json.insert(
+            recv.clone(),
+            serde_json::json!({
+                "primary_channel": p.0,
+                "shift": p.1.shift,
+                "shift_bar": p.1.shift_bar,
+                "z": p.1.z,
+                "drift": rr.channels.iter().any(|(_, c)| c.drift),
+                "delta": recv_delta_json,
+                "converged": rr.all_converged(),
+                "gaps": recv_gaps,
+                "unresolved_gaps": recv_gaps.iter().filter(|g| g.unresolved).count(),
+                "channels": recv_channels,
+            }),
+        );
+    }
 
     Ok(Json(serde_json::json!({
         "sender_id": req.sender_id,
