@@ -24,6 +24,13 @@ pub struct NodeConfig {
     pub objectives: usize,
     #[serde(default = "default_base")]
     pub base: String,
+    /// Where incoming coupling enters:
+    ///   "post"    (default) added to the output channel after this
+    ///             node's own map — legacy behavior
+    ///   "through" joins the channel state; the base map acts on the
+    ///             combined level (own weighted input + incoming)
+    #[serde(default = "default_intake")]
+    pub intake: String,
     #[serde(default)]
     pub weights: Vec<Vec<f64>>,
     #[serde(default)]
@@ -36,6 +43,10 @@ pub struct NodeConfig {
 
 fn default_base() -> String {
     "linear".to_string()
+}
+
+fn default_intake() -> String {
+    "post".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,6 +168,71 @@ impl NodeState {
 
         result
     }
+
+    /// Weighted own contributions per objective, unshaped — the node's
+    /// input into each channel before any map runs.
+    pub fn compute_channel_inputs(&self) -> Vec<f64> {
+        let n_obj = self.config.objectives;
+        let mut result = vec![0.0; n_obj];
+        let normalized: Vec<f64> = self.params.iter()
+            .map(|p| normalize(*p, self.config.param_lower, self.config.param_upper))
+            .collect();
+        for obj_idx in 0..n_obj {
+            if let Some(row) = self.config.weights.get(obj_idx) {
+                for (param_idx, w) in row.iter().enumerate() {
+                    if let Some(np) = normalized.get(param_idx) {
+                        result[obj_idx] += w * np;
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// The base map applied to a single channel-input value.
+    fn shape_value(&self, v: f64) -> f64 {
+        match self.config.base.as_str() {
+            "polynomial" => v * v,
+            "threshold" => if v > 0.5 { 1.0 } else { 0.0 },
+            "saturation" => v / (1.0 + (v - 0.5).abs() * 4.0),
+            _ => v, // linear + default
+        }
+    }
+
+    /// Cross-parameter interaction terms, one per objective.
+    fn interaction_terms(&self) -> Vec<f64> {
+        let mut result = vec![0.0; self.config.objectives];
+        let normalized: Vec<f64> = self.params.iter()
+            .map(|p| normalize(*p, self.config.param_lower, self.config.param_upper))
+            .collect();
+        for inter in &self.config.interactions {
+            if let Some(slot) = result.get_mut(inter.objective) {
+                let product: f64 = inter.params.iter()
+                    .filter_map(|&pi| normalized.get(pi))
+                    .product();
+                *slot += inter.weight * product;
+            }
+        }
+        result
+    }
+
+    /// intake "through": the door — the channel state (own weighted
+    /// input + incoming coupling) meets the base map once; interaction
+    /// terms stay additive after it.
+    pub fn map_channel_inputs(&self, incoming: &[f64]) -> Vec<f64> {
+        let mut u = self.compute_channel_inputs();
+        for (ch, inc) in incoming.iter().enumerate() {
+            if ch < u.len() {
+                u[ch] += inc;
+            }
+        }
+        let terms = self.interaction_terms();
+        u.iter()
+            .map(|&v| self.shape_value(v))
+            .zip(terms.iter())
+            .map(|(shaped, term)| shaped + term)
+            .collect()
+    }
 }
 
 fn normalize(val: f64, lower: f64, upper: f64) -> f64 {
@@ -243,10 +319,13 @@ impl Simulator {
             let mut converged = true;
 
             for (id, coupled_vals) in coupled.iter_mut() {
-                let mut updated = self.nodes[id].compute_base();
+                let node = &self.nodes[id];
 
+                // Incoming coupling into this node's channels, from the
+                // previous relaxation pass.
+                let mut incoming = vec![0.0; node.config.objectives];
                 for edge in &self.edges {
-                    if edge.to == *id && edge.to_channel < updated.len() {
+                    if edge.to == *id && edge.to_channel < incoming.len() {
                         let effective_strength = if edge.drift_rate > 0.0 {
                             edge.strength * (1.0 + edge.drift_rate * self.total_ticks as f64)
                         } else {
@@ -254,12 +333,28 @@ impl Simulator {
                         };
                         if let Some(source) = prev.get(&edge.from) {
                             if edge.from_channel < source.len() {
-                                updated[edge.to_channel] +=
+                                incoming[edge.to_channel] +=
                                     effective_strength * source[edge.from_channel];
                             }
                         }
                     }
                 }
+
+                let mut updated = if node.config.intake == "through" {
+                    // The door: incoming joins the channel state; the base
+                    // map acts on the combined level.
+                    node.map_channel_inputs(&incoming)
+                } else {
+                    // Legacy: coupling added to the output channel after
+                    // this node's own map.
+                    let mut u = node.compute_base();
+                    for (ch, inc) in incoming.iter().enumerate() {
+                        if ch < u.len() {
+                            u[ch] += inc;
+                        }
+                    }
+                    u
+                };
 
                 for (i, &new_v) in updated.iter().enumerate() {
                     if let Some(&old_v) = coupled_vals.get(i) {
@@ -403,5 +498,105 @@ mod tests {
     fn unknown_node_returns_none() {
         let mut sim = two_node_sim();
         assert!(sim.get_status("nope").is_none());
+    }
+
+    // ─── intake "through" (the door) ───────────────────────────────
+
+    fn door_saturation_sim() -> Simulator {
+        let config: serde_json::Value = serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0]]},
+                {"id": "b", "params": 1, "objectives": 1, "base": "saturation",
+                 "intake": "through",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0]]}
+            ],
+            "edges": [
+                {"from": "a", "from_channel": 0, "to": "b", "to_channel": 0,
+                 "strength": 1.0}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        });
+        let bench: BenchConfig = serde_json::from_value(config).unwrap();
+        Simulator::from_config(bench)
+    }
+
+    #[test]
+    fn through_intake_door_bends_incoming_signal() {
+        // a at full -> out 1.0. b's door is saturation over the combined
+        // channel state (own parked at lower): saturation(1.0) = 1/3.
+        // Legacy post intake would deliver the incoming 1.0 untouched.
+        let mut sim = door_saturation_sim();
+        sim.apply("a", &[100.0]);
+        let b = sim.get_status("b").unwrap();
+        assert!((b[0] - 1.0 / 3.0).abs() < 1e-9,
+            "door should bend incoming to 1/3, got {}", b[0]);
+    }
+
+    #[test]
+    fn through_intake_combines_own_and_incoming_before_map() {
+        // b own param 50 (np 0.5 -> own input 0.5) + incoming 0.3 =
+        // channel state 0.8; the threshold door fires -> 1.0.
+        // Legacy would give threshold(0.5)=0 + 0.3 = 0.3.
+        let config_json = serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0]]},
+                {"id": "b", "params": 1, "objectives": 1, "base": "threshold",
+                 "intake": "through",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0]]}
+            ],
+            "edges": [
+                {"from": "a", "from_channel": 0, "to": "b", "to_channel": 0,
+                 "strength": 0.3}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        });
+        // a at full sends 1.0; edge gain 0.3 -> incoming 0.3
+        let mut sim = Simulator::from_config(serde_json::from_value(config_json).unwrap());
+        sim.apply("b", &[50.0]);
+        sim.apply("a", &[100.0]);
+        let b = sim.get_status("b").unwrap();
+        assert!((b[0] - 1.0).abs() < 1e-9,
+            "door fires on combined level 0.8, expected 1.0, got {}", b[0]);
+    }
+
+    #[test]
+    fn through_intake_three_node_nested_arithmetic() {
+        // a linear -> a. Edge 0.7 into b (saturation door, own parked).
+        // Edge 0.5 into c (linear door, own parked).
+        // a = 0.8: b state 0.56, sat(0.56) = 0.56/1.24; c = 0.5 * 0.56/1.24.
+        let config: serde_json::Value = serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0]]},
+                {"id": "b", "params": 1, "objectives": 1, "base": "saturation",
+                 "intake": "through",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0]]},
+                {"id": "c", "params": 1, "objectives": 1, "base": "linear",
+                 "intake": "through",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0]]}
+            ],
+            "edges": [
+                {"from": "a", "from_channel": 0, "to": "b", "to_channel": 0,
+                 "strength": 0.7},
+                {"from": "b", "from_channel": 0, "to": "c", "to_channel": 0,
+                 "strength": 0.5}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        });
+        let mut sim = Simulator::from_config(serde_json::from_value(config).unwrap());
+        sim.apply("a", &[80.0]);
+        let c = sim.get_status("c").unwrap();
+        let expected = 0.5 * 0.56 / 1.24;
+        assert!((c[0] - expected).abs() < 1e-9,
+            "nested chain should give {}, got {}", expected, c[0]);
     }
 }
