@@ -157,7 +157,9 @@ async fn build_status(State(state): State<Arc<AppState>>) -> Json<BuildStatus> {
 
 async fn get_curves(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let curves = state.curves.read().await.snapshot();
-    Json(serde_json::json!({ "curves": curves }))
+    // k_retire rides the export so every banked curve states which
+    // tolerance measured it — no archaeology of image versions.
+    Json(serde_json::json!({ "curves": curves, "k_retire": crate::probe_curves::k_retire() }))
 }
 
 async fn delete_curves_for_sender(
@@ -987,6 +989,7 @@ async fn probe_result(
         "receivers": receivers_json,
         "self": self_json,
         "ambient": ambient,
+        "k_retire": crate::probe_curves::k_retire(),
     })))
 }
 
