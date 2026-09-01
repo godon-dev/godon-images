@@ -79,12 +79,46 @@ fn default_receiver() -> String {
     "unknown".to_string()
 }
 
+/// Declared retirement tolerance. A curve counts as stopped when its
+/// surface moves less than this many times its own freshest blur —
+/// "two wobbles of the ruler": a change smaller than two blurs is
+/// indistinguishable from instrument jitter.
+///
+/// This is a policy choice, not a derived constant. We err toward
+/// walking because the one retirement receipt on record was a false
+/// "done" (G retired thin at 6 levels under the absolute rule), never
+/// a walk that dragged. Move it only with a receipt that walks
+/// misbehave: tighten toward 1.5 if curves retire with visible
+/// unresolved structure; loosen toward 3 if walks burn budget on
+/// pure jitter.
+///
+/// Deployment-level override: GODON_K_RETIRE — engine-wide, one
+/// value per deployment; scenarios never see it. The value in force
+/// is echoed in /curves and every /characterize response, so each
+/// banked curve states which tolerance measured it.
+pub fn k_retire() -> f64 {
+    static K: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *K.get_or_init(|| parse_k(std::env::var("GODON_K_RETIRE").ok().as_deref()))
+}
+
+fn parse_k(raw: Option<&str>) -> f64 {
+    raw.and_then(|v| v.parse::<f64>().ok())
+        .filter(|k: &f64| k.is_finite() && *k > 0.0)
+        .unwrap_or(2.0)
+}
+
 pub struct ResponseCurve {
+    /// Run provenance only — no longer a stop rule. Kept because it
+    /// flows through the characterize payload and the persisted
+    /// curve_points column (what the operator asked for that run).
     convergence_threshold: f64,
     min_points: usize,
     points: Vec<Point>,
     prev_grid: Option<Vec<(f64, f64)>>,
     delta_history: Vec<f64>,
+    /// Freshest blur on this curve: the (blended) bar of the last
+    /// probed point. The scale is_converged() compares against.
+    last_bar: f64,
     /// Declared parameter range (upper - lower) from the breeder, used
     /// to scale gap ignorance. None → observed level span.
     param_range: Option<f64>,
@@ -98,6 +132,7 @@ impl ResponseCurve {
             points: Vec::new(),
             prev_grid: None,
             delta_history: Vec::new(),
+            last_bar: 0.0,
             param_range: None,
         }
     }
@@ -162,8 +197,10 @@ impl ResponseCurve {
         } else {
             Some(Self::interp_at(level, &self.points))
         };
-
         let mut drift = false;
+        // The (blended) bar of the point this probe touched — the
+        // freshest estimate of this curve's measurement fuzz.
+        let touched_bar: f64;
         match self
             .points
             .iter_mut()
@@ -184,6 +221,7 @@ impl ResponseCurve {
                     );
                     p.response = blended;
                     p.bar = blended_bar;
+                    touched_bar = blended_bar;
                 } else {
                     log::warn!(
                         "ResponseCurve: DRIFT level {:.1}: {:.4} → {:.4} (beyond bars ±{:.4}/±{:.4})",
@@ -192,12 +230,15 @@ impl ResponseCurve {
                     drift = true;
                     p.response = response;
                     p.bar = bar;
+                    touched_bar = bar;
                 }
             }
             None => {
                 self.points.push(Point { level, response, bar });
+                touched_bar = bar;
             }
         }
+        self.last_bar = touched_bar;
 
         self.points
             .sort_by(|a, b| a.level.partial_cmp(&b.level).unwrap_or(std::cmp::Ordering::Equal));
@@ -226,11 +267,27 @@ impl ResponseCurve {
         ProbeOutcome { delta, z, drift }
     }
 
+    /// Scale-relative retirement: the surface stops moving by less
+    /// than the declared tolerance (k_retire()) times the curve's
+    /// own freshest blur. Replaces the absolute
+    /// `delta < convergence_threshold` rule — a fixed 0.005 that
+    /// meant different things on quiet and loud substrates and had
+    /// to be hand-tuned per regime. The threshold field remains run
+    /// provenance only.
+    ///
+    /// Consequences (by design): a curve whose readings are exactly
+    /// repeatable (delta 0.0) still retires; a curve that moved more
+    /// than its own fuzz does not, however small the absolute
+    /// movement — and a noise-dominated curve retires at no blur,
+    /// which is the refusal the criterion exists to produce. Walks
+    /// that keep learning run to their budgets, ending as cost
+    /// ceilings rather than truth claims.
     pub fn is_converged(&self) -> bool {
         if self.delta_history.is_empty() || self.points.len() < self.min_points {
             return false;
         }
-        self.delta_history.last().copied().unwrap_or(f64::INFINITY) < self.convergence_threshold
+        let delta = self.delta_history.last().copied().unwrap_or(f64::INFINITY);
+        delta < k_retire() * self.last_bar
     }
 
     pub fn last_delta(&self) -> f64 {
@@ -705,6 +762,55 @@ mod tests {
         let delta = curve.add_point(50.0, 0.8);
         assert!(delta.is_finite());
         assert!(delta > 0.0, "drift should produce positive delta");
+    }
+
+    #[test]
+    fn scale_relative_refuses_old_false_done() {
+        // The receipt behind the rule: absolute movement tiny (would
+        // pass any hand-tuned threshold) but far beyond the curve's
+        // own blur. delta is the MEAN surface movement over the
+        // grid, so a single point must move ~gridsize x tolerance
+        // before the refusal trips — that dilution is the metric's
+        // semantics, not a bug.
+        let mut c = ResponseCurve::new(0.02);
+        c.probe(0.0, 0.0, 0.0001);
+        c.probe(100.0, 1.0, 0.0001);
+        c.probe(50.0, 0.5, 0.0001);
+        // relocate the midpoint beyond agreement: 0.002 off = 20x
+        // the 1e-4 blur, ~6.7x even after 3-point grid averaging
+        c.probe(50.0, 0.502, 0.0001);
+        assert!(
+            !c.is_converged(),
+            "movement beyond own blur must not retire, however small absolutely"
+        );
+    }
+
+    #[test]
+    fn scale_relative_converges_loud_curves_without_tuning() {
+        // The mirror case: absolute movement 0.05 fails the old 0.02
+        // threshold, but this curve's blur is 0.03 — the movement is
+        // within its own fuzz. Done. No per-substrate threshold can
+        // express this; comparing to itself does.
+        let mut c = ResponseCurve::new(0.02);
+        c.probe(0.0, 0.0, 0.03);
+        c.probe(100.0, 1.0, 0.03);
+        c.probe(50.0, 0.55, 0.03); // midpoint 0.05 off the line
+        assert!(
+            c.is_converged(),
+            "movement within own fuzz retires, however large absolutely"
+        );
+    }
+
+    #[test]
+    fn exact_repeatable_readings_retire() {
+        // delta exactly 0 retires regardless of blur — the floor case.
+        let mut c = ResponseCurve::new(0.02);
+        c.probe(0.0, 0.0, 0.001);
+        c.probe(100.0, 1.0, 0.001);
+        c.probe(50.0, 0.5, 0.001);
+        let out = c.probe(50.0, 0.5, 0.001); // exact agreement, no move
+        assert_eq!(out.delta, 0.0);
+        assert!(c.is_converged(), "zero movement retires");
     }
 
     #[test]
