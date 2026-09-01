@@ -753,6 +753,74 @@ async fn probe_result(
         .map(|c| c.last_delta())
         .unwrap_or(f64::MAX / 2.0);
 
+    // Regime stamp: the group's standing dials at measurement time —
+    // the ambient this round was measured under. Assembled from
+    // purely local publications; None on failure (regime unrecorded,
+    // the same honesty legacy rows carry).
+    let ambient: Option<String> = state
+        .reader
+        .read_standing_params(&req.group_id)
+        .await
+        .ok()
+        .map(|v| v.to_string());
+
+    // Self-curve: the sender's own node readings in the same windows
+    // (its push/pause trials publish them). The pause window is the
+    // sender at neutral — its median is the join baseline, banked
+    // instead of excavated. Probed into the registry like any curve
+    // (receiver_id = the sender); never an edge — the graph builds
+    // from detection trials, not the curve registry.
+    let self_push = state
+        .reader
+        .read_self_observations(&req.group_id, &req.sender_id, push_start, midpoint)
+        .await
+        .unwrap_or_default();
+    let self_pause = state
+        .reader
+        .read_self_observations(&req.group_id, &req.sender_id, midpoint, pause_end)
+        .await
+        .unwrap_or_default();
+
+    let mut self_channels: Vec<(String, f64, f64)> = Vec::new();
+    {
+        let mut channels: Vec<String> = self_push.keys().cloned().collect();
+        for ch in self_pause.keys() {
+            if !channels.contains(ch) {
+                channels.push(ch.clone());
+            }
+        }
+        channels.sort();
+        for ch in channels {
+            let p = self_push.get(&ch).cloned().unwrap_or_default();
+            let q = self_pause.get(&ch).cloned().unwrap_or_default();
+            // A self delta needs both windows: the level reading and
+            // the neutral baseline.
+            if p.is_empty() || q.is_empty() {
+                continue;
+            }
+            let shift = median_f64(&p) - median_f64(&q);
+            let p_mad = mad(&p);
+            let q_mad = mad(&q);
+            let bar = (p_mad * p_mad + q_mad * q_mad).sqrt();
+            state
+                .curves
+                .write()
+                .await
+                .probe(
+                    &req.sender_id,
+                    &req.sender_id,
+                    &req.probe_param,
+                    &ch,
+                    req.probe_level,
+                    shift,
+                    bar,
+                    req.convergence_threshold,
+                    req.param_range,
+                );
+            self_channels.push((ch, shift, bar));
+        }
+    }
+
     // Write-through persistence per receiver × channel (best-effort,
     // failure only logs).
     if let Ok(client) = state.reader.connect_archive().await {
@@ -769,9 +837,26 @@ async fn probe_result(
                     c.shift,
                     c.shift_bar,
                     req.convergence_threshold,
+                    ambient.as_deref(),
                 )
                 .await;
             }
+        }
+        for (name, shift, bar) in self_channels.iter() {
+            curve_store::persist_point(
+                &client,
+                &req.group_id,
+                &req.sender_id,
+                &req.sender_id,
+                &req.probe_param,
+                name,
+                req.probe_level,
+                *shift,
+                *bar,
+                req.convergence_threshold,
+                ambient.as_deref(),
+            )
+            .await;
         }
     } else {
         log::error!(
@@ -874,6 +959,16 @@ async fn probe_result(
         );
     }
 
+    let self_json: serde_json::Map<String, serde_json::Value> = self_channels
+        .iter()
+        .map(|(name, shift, bar)| {
+            (
+                name.clone(),
+                serde_json::json!({"shift": shift, "shift_bar": bar}),
+            )
+        })
+        .collect();
+
     Ok(Json(serde_json::json!({
         "sender_id": req.sender_id,
         "probe_param": req.probe_param,
@@ -890,6 +985,8 @@ async fn probe_result(
         "unresolved_gaps": unresolved,
         "channels": channels_json,
         "receivers": receivers_json,
+        "self": self_json,
+        "ambient": ambient,
     })))
 }
 

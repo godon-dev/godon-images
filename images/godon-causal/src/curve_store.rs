@@ -24,6 +24,10 @@ pub struct CurvePointRow {
     pub shift: f64,
     pub bar: f64,
     pub convergence_threshold: f64,
+    /// Standing dials of the group at measurement time — the regime
+    /// this point was measured under. Rows persisted before the
+    /// column existed replay as NULL (regime unrecorded).
+    pub ambient: Option<String>,
 }
 
 pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), Error> {
@@ -66,6 +70,14 @@ pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), E
              ADD COLUMN IF NOT EXISTS receiver_id TEXT NOT NULL DEFAULT 'unknown'",
             &[],
         )
+        .await?;
+    // Regime stamp: the group's standing dials at measurement time.
+    client
+        .execute(
+            "ALTER TABLE curve_points \
+             ADD COLUMN IF NOT EXISTS ambient JSONB",
+            &[],
+        )
         .await
         .map(|_| ())
 }
@@ -81,12 +93,13 @@ pub async fn insert_curve_point(
     shift: f64,
     bar: f64,
     convergence_threshold: f64,
+    ambient: Option<&str>,
 ) -> Result<(), Error> {
     client
         .execute(
             "INSERT INTO curve_points \
-             (group_id, sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, convergence_threshold) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+             (group_id, sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, convergence_threshold, ambient) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
             &[
                 &group_id,
                 &sender_id,
@@ -97,6 +110,7 @@ pub async fn insert_curve_point(
                 &shift,
                 &bar,
                 &convergence_threshold,
+                &ambient,
             ],
         )
         .await
@@ -109,7 +123,7 @@ pub async fn load_curve_points(
     let rows = client
         .query(
             "SELECT group_id, sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, \
-             convergence_threshold FROM curve_points ORDER BY id",
+             convergence_threshold, CAST(ambient AS TEXT) FROM curve_points ORDER BY id",
             &[],
         )
         .await?;
@@ -126,6 +140,7 @@ pub async fn load_curve_points(
             shift: row.get(6),
             bar: row.get(7),
             convergence_threshold: row.get(8),
+            ambient: row.get(9),
         })
         .collect())
 }
@@ -143,6 +158,7 @@ pub async fn persist_point(
     shift: f64,
     bar: f64,
     convergence_threshold: f64,
+    ambient: Option<&str>,
 ) {
     if let Err(e) = insert_curve_point(
         client,
@@ -155,6 +171,7 @@ pub async fn persist_point(
         shift,
         bar,
         convergence_threshold,
+        ambient,
     )
     .await
     {
@@ -179,6 +196,7 @@ pub async fn persist_point(
             shift,
             bar,
             convergence_threshold,
+            ambient,
         )
         .await
         {
