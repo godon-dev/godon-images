@@ -138,6 +138,81 @@ impl TrialReader {
         Ok(values)
     }
 
+    /// The sender's own node readings in a window — self-rows the
+    /// breeder publishes during its push and pause trials
+    /// (receiver_id = the walking sender). Per-channel series; these
+    /// bank the self-curve and its baseline (pause window = the
+    /// sender at neutral).
+    pub async fn read_self_observations(
+        &self,
+        group_id: &str,
+        sender_id: &str,
+        start_epoch: f64,
+        end_epoch: f64,
+    ) -> Result<std::collections::HashMap<String, Vec<f64>>, Error> {
+        let client = self.connect("archive_db").await?;
+
+        let rows = client
+            .query(
+                "SELECT CAST(objective_values AS TEXT) FROM receiver_observations \
+                 WHERE group_id = $3::varchar \
+                 AND receiver_id = $4::varchar \
+                 AND lease_phase IS NOT NULL \
+                 AND EXTRACT(EPOCH FROM written_at) >= $1::double precision \
+                 AND EXTRACT(EPOCH FROM written_at) <= $2::double precision \
+                 ORDER BY written_at",
+                &[&start_epoch, &end_epoch, &group_id, &sender_id],
+            )
+            .await?;
+
+        let mut values: std::collections::HashMap<String, Vec<f64>> =
+            std::collections::HashMap::new();
+        for row in &rows {
+            let json_str: String = row.get(0);
+            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                if let Some(map) = obj.as_object() {
+                    for (ch, vv) in map {
+                        if let Some(v) = vv.as_f64() {
+                            values.entry(ch.clone()).or_default().push(v);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(values)
+    }
+
+    /// The group's standing dials — each breeder's applied params,
+    /// refreshed per trial in the heartbeat table. This IS the
+    /// constellation, assembled from purely local publications.
+    /// Returns {breeder_id: params} as a JSON value.
+    pub async fn read_standing_params(
+        &self,
+        group_id: &str,
+    ) -> Result<serde_json::Value, Error> {
+        let client = self.connect("archive_db").await?;
+
+        let rows = client
+            .query(
+                "SELECT breeder_id, CAST(params AS TEXT) \
+                 FROM interference_active_breeders \
+                 WHERE group_id = $1::varchar AND params IS NOT NULL \
+                 AND last_seen > NOW() - INTERVAL '600 seconds'",
+                &[&group_id],
+            )
+            .await?;
+
+        let mut map = serde_json::Map::new();
+        for row in &rows {
+            let breeder_id: String = row.get(0);
+            let params_str: String = row.get(1);
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&params_str) {
+                map.insert(breeder_id, v);
+            }
+        }
+        Ok(serde_json::Value::Object(map))
+    }
+
     // ─── List all breeder IDs ────────────────────────────────────────
 
     pub async fn list_breeders(&self) -> Result<Vec<String>, Error> {

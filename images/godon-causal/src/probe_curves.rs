@@ -832,4 +832,24 @@ mod multichannel_tests {
         assert!(influences("objective_0"));
         assert!(!influences("objective_1"));
     }
+
+    #[test]
+    fn self_curves_are_first_class_but_sender_scoped() {
+        // The self-curve (receiver_id = sender_id) probes like any curve,
+        // appears in the snapshot/export, and dies with the sender's purge —
+        // but never collides with a receiver curve of the same pair-walk.
+        let mut reg = CurveRegistry::new();
+        reg.probe("A", "A", "param_0", "objective_0", 0.0, -0.34, 0.02, 0.02, Some(100.0));
+        reg.probe("A", "A", "param_0", "objective_0", 100.0, 0.31, 0.02, 0.02, Some(100.0));
+        reg.probe("A", "B", "param_0", "objective_0", 100.0, 0.18, 0.02, 0.02, Some(100.0));
+
+        let snap = reg.snapshot();
+        assert_eq!(snap.len(), 2, "self curve and receiver curve are distinct entries");
+        assert!(snap.iter().any(|e| e.sender_id == "A" && e.receiver_id == "A"));
+        assert!(snap.iter().any(|e| e.sender_id == "A" && e.receiver_id == "B"));
+
+        let removed = reg.delete_sender("A");
+        assert_eq!(removed, 2, "purge takes the self-curve with the sender");
+        assert!(reg.snapshot().is_empty());
+    }
 }
