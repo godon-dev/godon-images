@@ -729,7 +729,7 @@ async fn probe_result(
     let shift_bar = primary.1.shift_bar;
 
     // Retirement signal: every receiver, every channel converged.
-    let converged = per_receiver.iter().all(|(_, rr)| rr.all_converged());
+    let mut converged = per_receiver.iter().all(|(_, rr)| rr.all_converged());
     // Gaps: union across all receivers and channels (eligibility consults
     // the union — one fat bracket anywhere keeps the param in rotation).
     let mut gaps: Vec<crate::probe_curves::GapInfo> = Vec::new();
@@ -822,6 +822,30 @@ async fn probe_result(
             self_channels.push((ch, shift, bar));
         }
     }
+
+    // Walker fix: the self-curve enters the retirement verdict — for a
+    // self-walk the curve under study IS the walker's own. Enumerate it
+    // with the listeners; empty self reads stay neutral (no rows yet).
+    let mut self_out: Vec<SelfChannelOut> = Vec::new();
+    {
+        let curves = state.curves.read().await;
+        for (name, shift, bar) in self_channels.iter() {
+            let sc_converged = curves.is_converged(
+                &req.sender_id, &req.sender_id, &req.probe_param, name);
+            let sc_gaps = curves
+                .get_curve(&req.sender_id, &req.sender_id, &req.probe_param, name)
+                .map(|c| c.gaps())
+                .unwrap_or_default();
+            self_out.push(SelfChannelOut {
+                name: name.clone(),
+                shift: *shift,
+                bar: *bar,
+                converged: sc_converged,
+                gaps: sc_gaps,
+            });
+        }
+    }
+    converged = fold_self_verdict(converged, &mut gaps, &self_out);
 
     // Write-through persistence per receiver × channel (best-effort,
     // failure only logs).
@@ -961,6 +985,36 @@ async fn probe_result(
         );
     }
 
+    let self_primary = self_out
+        .iter()
+        .max_by(|a, b| {
+            a.shift.abs()
+                .partial_cmp(&b.shift.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|p| p.name.clone());
+    let self_delta_json = match &self_primary {
+        Some(name) => {
+            let d = state
+                .curves
+                .read()
+                .await
+                .get_curve(&req.sender_id, &req.sender_id, &req.probe_param, name)
+                .map(|c| c.last_delta())
+                .unwrap_or(f64::MAX / 2.0);
+            if d.is_infinite() {
+                serde_json::Value::from(f64::MAX / 2.0)
+            } else {
+                serde_json::Value::from(d)
+            }
+        }
+        None => serde_json::Value::from(f64::MAX / 2.0),
+    };
+    receivers_json.insert(
+        "self".to_string(),
+        self_receiver_entry(&self_out, self_delta_json),
+    );
+
     let self_json: serde_json::Map<String, serde_json::Value> = self_channels
         .iter()
         .map(|(name, shift, bar)| {
@@ -991,6 +1045,118 @@ async fn probe_result(
         "ambient": ambient,
         "k_retire": crate::probe_curves::k_retire(),
     })))
+}
+
+/// One self-channel's verdict inputs, gathered by the caller (which holds
+/// the registry read guard) and folded by `fold_self_verdict` /
+/// `self_receiver_entry`.
+pub(crate) struct SelfChannelOut {
+    pub name: String,
+    pub shift: f64,
+    pub bar: f64,
+    pub converged: bool,
+    pub gaps: Vec<crate::probe_curves::GapInfo>,
+}
+
+/// Fold the self-curve into the retirement verdict. For a self-walk the
+/// curve under study IS the walker's own — enumerate it with the
+/// listeners: converged ANDs in, its gaps join the union (deduped).
+/// Empty self reads are neutral: convergence cannot be demanded from a
+/// curve with no banked rows yet.
+pub(crate) fn fold_self_verdict(
+    converged: bool,
+    gaps: &mut Vec<crate::probe_curves::GapInfo>,
+    self_out: &[SelfChannelOut],
+) -> bool {
+    let mut self_all = true;
+    for sc in self_out {
+        self_all &= sc.converged;
+        gaps.extend(sc.gaps.iter().cloned());
+    }
+    gaps.dedup_by(|a, b| {
+        a.from_level == b.from_level && a.to_level == b.to_level && a.jump == b.jump
+    });
+    converged && self_all
+}
+
+/// The `self` entry of the response's receivers map — same shape as a
+/// listener entry so the coordinator's per-listener paper trail logs it.
+/// z stays 0.0 (honest: no z is computed for the self read) and the
+/// primary is never the marker star — reporting semantics unchanged.
+pub(crate) fn self_receiver_entry(
+    self_out: &[SelfChannelOut],
+    delta_json: serde_json::Value,
+) -> serde_json::Value {
+    let primary = self_out
+        .iter()
+        .max_by(|a, b| {
+            a.shift.abs()
+                .partial_cmp(&b.shift.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    let mut union: Vec<crate::probe_curves::GapInfo> = Vec::new();
+    for sc in self_out {
+        union.extend(sc.gaps.iter().cloned());
+    }
+    union.dedup_by(|a, b| {
+        a.from_level == b.from_level && a.to_level == b.to_level && a.jump == b.jump
+    });
+    let channels: serde_json::Map<String, serde_json::Value> = self_out
+        .iter()
+        .map(|sc| {
+            (
+                sc.name.clone(),
+                serde_json::json!({
+                    "shift": sc.shift,
+                    "shift_bar": sc.bar,
+                    "converged": sc.converged,
+                    "gaps": sc.gaps,
+                }),
+            )
+        })
+        .collect();
+    serde_json::json!({
+        "primary_channel": primary.map(|p| p.name.clone()).unwrap_or_default(),
+        "shift": primary.map(|p| p.shift).unwrap_or(0.0),
+        "shift_bar": primary.map(|p| p.bar).unwrap_or(0.0),
+        "z": 0.0,
+        "drift": false,
+        "delta": delta_json,
+        "converged": self_out.iter().all(|sc| sc.converged),
+        "gaps": union,
+        "unresolved_gaps": union.iter().filter(|g| g.unresolved).count(),
+        "channels": channels,
+    })
+}
+
+/// The notebook page: every banked curve of this sender's param, with its
+/// levels, gaps (carrying each gap's own bars_sum), and convergence. The
+/// walker is a pure function of this view — no RAM state to lose.
+pub(crate) fn assemble_walk_view(
+    sender_id: &str,
+    param: &str,
+    refinement_level: u32,
+    entries: &[crate::probe_curves::CurveEntry],
+) -> serde_json::Value {
+    let curves: Vec<serde_json::Value> = entries
+        .iter()
+        .filter(|e| e.sender_id == sender_id && e.param == param)
+        .map(|e| {
+            serde_json::json!({
+                "receiver_id": e.receiver_id,
+                "channel": e.channel,
+                "converged": e.state.converged,
+                "levels": e.state.points.iter().map(|p| p.0).collect::<Vec<f64>>(),
+                "gaps": e.state.gaps,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "sender_id": sender_id,
+        "param": param,
+        "refinement_level": refinement_level,
+        "curves": curves,
+    })
 }
 
 /// Median of a slice of f64 (0.0 for empty slices).
@@ -1217,5 +1383,116 @@ mod tests {
         let json = serde_json::to_string(&serde_json::json!({"delta": delta})).unwrap();
         assert!(json.contains("0.015"));
         assert!(!json.contains("null"));
+    }
+
+    // ─── walker fix: self-curve enters the retirement verdict ────
+
+    use crate::probe_curves::GapInfo;
+
+    fn gap(from: f64, to: f64, jump: f64, bars: f64, unresolved: bool, ign: f64) -> GapInfo {
+        GapInfo {
+            from_level: from,
+            to_level: to,
+            jump,
+            bars_sum: bars,
+            width: to - from,
+            unresolved,
+            ignorance: ign,
+        }
+    }
+
+    fn self_out(name: &str, shift: f64, converged: bool, gaps: Vec<GapInfo>) -> SelfChannelOut {
+        SelfChannelOut {
+            name: name.to_string(),
+            shift,
+            bar: 0.02,
+            converged,
+            gaps,
+        }
+    }
+
+    #[test]
+    fn test_fold_self_bracket_joins_union_and_unstable_self_flips_key() {
+        // Seed-48 tail defect: a stable-but-unresolved self curve (the
+        // +0.996 step at L=100) must join the gap union so the breeder's
+        // blocking check sees it — retirement blocked via key 2.
+        let mut gaps = vec![gap(0.0, 50.0, 0.006, 0.037, false, 0.003)];
+        let self_o = vec![self_out(
+            "objective_1",
+            0.996,
+            true,
+            vec![gap(50.0, 100.0, 1.004, 0.041, true, 0.502)],
+        )];
+        let converged = fold_self_verdict(true, &mut gaps, &self_o);
+        assert!(converged, "self stability alone does not flip key 1");
+        assert!(
+            gaps.iter().any(|g| g.unresolved && g.ignorance > 0.5),
+            "the self bracket joins the union — key 2 now sees it"
+        );
+
+        // An UNSTABLE self curve flips key 1 — the room-stillness AND.
+        let mut gaps2 = vec![];
+        let self_unstable = vec![self_out("objective_0", 0.3, false, vec![])];
+        assert!(!fold_self_verdict(true, &mut gaps2, &self_unstable));
+    }
+
+    #[test]
+    fn test_fold_self_dedups_and_keeps_neutral_on_empty() {
+        let g = gap(0.0, 50.0, 0.006, 0.037, false, 0.003);
+        let mut gaps = vec![g.clone()];
+        let self_o = vec![self_out("objective_0", 0.01, true, vec![g.clone()])];
+        let converged = fold_self_verdict(true, &mut gaps, &self_o);
+        assert!(converged);
+        assert_eq!(gaps.len(), 1, "identical gaps dedup across the fold");
+
+        let mut untouched = vec![g.clone()];
+        assert!(fold_self_verdict(true, &mut untouched, &[]), "empty self reads are neutral — cannot demand convergence from a curve with no rows");
+        assert_eq!(untouched.len(), 1);
+    }
+
+    #[test]
+    fn test_self_receiver_entry_primary_and_union() {
+        let self_o = vec![
+            self_out("objective_0", 0.01, true, vec![gap(0.0, 50.0, 0.1, 0.04, true, 0.05)]),
+            self_out("objective_1", -0.996, false, vec![gap(50.0, 100.0, 1.004, 0.041, true, 0.502)]),
+        ];
+        let entry = self_receiver_entry(&self_o, serde_json::json!(0.25));
+        assert_eq!(entry["primary_channel"], "objective_1", "primary = largest |shift|");
+        assert_eq!(entry["converged"], false);
+        assert_eq!(entry["unresolved_gaps"], 2);
+        assert_eq!(entry["z"], 0.0, "self has no z — keep the TELL line parseable");
+        let union = entry["gaps"].as_array().unwrap();
+        assert_eq!(union.len(), 2, "per-channel gaps union, deduped");
+    }
+
+    #[test]
+    fn test_assemble_walk_view_filters_and_carries_refinement() {
+        let mk_entry = |sender: &str, recv: &str, param: &str, ch: &str, levels: Vec<f64>| {
+            crate::probe_curves::CurveEntry {
+                sender_id: sender.to_string(),
+                receiver_id: recv.to_string(),
+                param: param.to_string(),
+                channel: ch.to_string(),
+                state: crate::probe_curves::CurveState {
+                    num_points: levels.len(),
+                    last_delta: 0.0,
+                    converged: false,
+                    gaps: vec![],
+                    points: levels.iter().map(|l| (*l, 0.0, 0.02)).collect(),
+                },
+            }
+        };
+        let entries = vec![
+            mk_entry("S", "R1", "param_0", "objective_0", vec![0.0, 50.0]),
+            mk_entry("S", "S", "param_0", "objective_0", vec![0.0, 50.0, 100.0]),
+            mk_entry("S", "R1", "param_1", "objective_0", vec![50.0]),
+            mk_entry("OTHER", "R1", "param_0", "objective_0", vec![0.0]),
+        ];
+        let view = assemble_walk_view("S", "param_0", 2, &entries);
+        assert_eq!(view["refinement_level"], 2);
+        let curves = view["curves"].as_array().unwrap();
+        assert_eq!(curves.len(), 2, "only this sender's this-param curves");
+        let self_curve = curves.iter().find(|c| c["receiver_id"] == "S").unwrap();
+        assert_eq!(self_curve["levels"].as_array().unwrap().len(), 3);
     }
 }
