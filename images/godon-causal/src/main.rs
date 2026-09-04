@@ -8,7 +8,9 @@ mod query;
 mod trial_reader;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, State,
+    Query,
+},
     http::StatusCode,
     response::Json,
     routing::{delete, get, post},
@@ -1159,6 +1161,78 @@ pub(crate) fn assemble_walk_view(
     })
 }
 
+
+#[derive(serde::Deserialize)]
+struct WalkViewParams {
+    param: String,
+    group: Option<String>,
+}
+
+/// The notebook page for one sender's param: every banked curve with
+/// levels, gaps (each carrying its own bars_sum), convergence — plus the
+/// persisted refinement level. The walker is a pure function of this.
+async fn walk_view(
+    State(state): State<Arc<AppState>>,
+    Path(sender_id): Path<String>,
+    Query(params): Query<WalkViewParams>,
+) -> Json<serde_json::Value> {
+    let entries = state.curves.read().await.snapshot();
+    let group = params.group.unwrap_or_else(|| "default".to_string());
+    let mut refinement_level = 0u32;
+    if let Ok(client) = state.reader.connect_archive().await {
+        match curve_store::ensure_walker_state_table(&client).await {
+            Ok(()) => {
+                if let Ok(n) =
+                    curve_store::load_refinement_level(&client, &group, &sender_id, &params.param)
+                        .await
+                {
+                    refinement_level = n;
+                }
+            }
+            Err(e) => log::error!("walker_state setup failed: {} (level defaults to 0)", e),
+        }
+    }
+    Json(assemble_walk_view(&sender_id, &params.param, refinement_level, &entries))
+}
+
+#[derive(serde::Deserialize)]
+struct RefineRequest {
+    group_id: String,
+    sender_id: String,
+    probe_param: String,
+}
+
+/// The walk descended a floor: advance the persisted refinement level.
+/// Atomic upsert-increment; the depth CAP is enforced caller-side.
+async fn walk_view_refine(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RefineRequest>,
+) -> Json<serde_json::Value> {
+    match state.reader.connect_archive().await {
+        Ok(client) => {
+            if let Err(e) = curve_store::ensure_walker_state_table(&client).await {
+                return Json(serde_json::json!({
+                    "error": format!("walker_state setup failed: {}", e)
+                }));
+            }
+            match curve_store::increment_refinement_level(
+                &client,
+                &req.group_id,
+                &req.sender_id,
+                &req.probe_param,
+            )
+            .await
+            {
+                Ok(level) => Json(serde_json::json!({ "refinement_level": level })),
+                Err(e) => Json(serde_json::json!({ "error": e.to_string() })),
+            }
+        }
+        Err(e) => Json(serde_json::json!({
+            "error": format!("archive DB unreachable: {}", e)
+        })),
+    }
+}
+
 /// Median of a slice of f64 (0.0 for empty slices).
 fn median_f64(v: &[f64]) -> f64 {
     if v.is_empty() {
@@ -1250,6 +1324,8 @@ async fn main() {
         .route("/graph", get(get_graph))
         .route("/artifact", get(get_artifact))
         .route("/curves", get(get_curves))
+        .route("/walk-view/{sender_id}", get(walk_view))
+        .route("/walk-view/refine", post(walk_view_refine))
         .route("/curves/{sender_id}", delete(delete_curves_for_sender))
         .route("/predict", post(predict))
         .route("/predict/multihop", post(predict_multihop))

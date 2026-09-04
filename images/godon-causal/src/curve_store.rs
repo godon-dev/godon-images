@@ -222,3 +222,63 @@ pub async fn delete_curve_points(
         )
         .await
 }
+
+// ─── walker_state: the walk's persisted refinement level ────────────
+//
+// One integer per (group, sender, param). The walker's in-RAM plan is
+// gone by design (stateless over causal) — the floor depth is the only
+// piece not derivable from banked points, so it lives here and survives
+// invocations, restarts, and purges of trial data.
+
+pub async fn ensure_walker_state_table(client: &tokio_postgres::Client) -> Result<(), Error> {
+    client
+        .execute(
+            "CREATE TABLE IF NOT EXISTS walker_state (\
+             group_id VARCHAR NOT NULL, \
+             sender_id VARCHAR NOT NULL, \
+             probe_param VARCHAR NOT NULL, \
+             refinement_level INT NOT NULL DEFAULT 0, \
+             written_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), \
+             PRIMARY KEY (group_id, sender_id, probe_param))",
+            &[],
+        )
+        .await
+        .map(|_| ())
+}
+
+pub async fn load_refinement_level(
+    client: &tokio_postgres::Client,
+    group_id: &str,
+    sender_id: &str,
+    probe_param: &str,
+) -> Result<u32, Error> {
+    let row = client
+        .query_opt(
+            "SELECT refinement_level FROM walker_state \
+             WHERE group_id = $1 AND sender_id = $2 AND probe_param = $3",
+            &[&group_id, &sender_id, &probe_param],
+        )
+        .await?;
+    Ok(row.map(|r| r.get::<_, i32>(0)).unwrap_or(0).max(0) as u32)
+}
+
+/// Atomic increment — the notebook advances its own floor.
+pub async fn increment_refinement_level(
+    client: &tokio_postgres::Client,
+    group_id: &str,
+    sender_id: &str,
+    probe_param: &str,
+) -> Result<u32, Error> {
+    let row = client
+        .query_one(
+            "INSERT INTO walker_state (group_id, sender_id, probe_param, refinement_level) \
+             VALUES ($1, $2, $3, 1) \
+             ON CONFLICT (group_id, sender_id, probe_param) \
+             DO UPDATE SET refinement_level = walker_state.refinement_level + 1, \
+             written_at = NOW() \
+             RETURNING refinement_level",
+            &[&group_id, &sender_id, &probe_param],
+        )
+        .await?;
+    Ok(row.get::<_, i32>(0).max(0) as u32)
+}
