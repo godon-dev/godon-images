@@ -330,8 +330,8 @@ impl CfarDetector {
         };
 
         DetectionResult {
-            sender_id: _sender.breeder_id.clone(),
-            receiver_id: receiver.breeder_id.clone(),
+            sender_id: _sender.systemtender_id.clone(),
+            receiver_id: receiver.systemtender_id.clone(),
             channel,
             detected,
             confidence,

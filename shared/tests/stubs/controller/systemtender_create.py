@@ -1,5 +1,5 @@
 def main(request_data=None):
-    """Stub for breeder_create - creates a new breeder"""
+    """Stub for systemtender_create - creates a new systemtender"""
     if not request_data:
         return {"result": "FAILURE", "error": "Missing request data"}
 
@@ -18,7 +18,7 @@ def main(request_data=None):
     return {
         "result": "SUCCESS",
         "data": {
-            "id": "test-breeder-2",
+            "id": "test-systemtender-2",
             "name": name,
             "status": "active",
             "createdAt": "2024-01-01T00:00:00Z"

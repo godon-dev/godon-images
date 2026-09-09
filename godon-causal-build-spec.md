@@ -14,8 +14,8 @@ existing code patterns, implement.
 `godon-causal` is a Rust HTTP service (crate + Axum server) that:
 
 1. Reads interventional probe trials from YugabyteDB (push/pause/hold
-   data produced by the breeder detection coordinator)
-2. Detects coupling edges between breeder pairs (CFAR block-step, first
+   data produced by the systemtender detection coordinator)
+2. Detects coupling edges between systemtender pairs (CFAR block-step, first
    implementation — abstracted behind a trait)
 3. Characterizes each detected edge: response magnitude, recovery,
    noise model, confidence
@@ -24,7 +24,7 @@ existing code patterns, implement.
 6. Answers what-if / impact queries via composition along edges
 
 It sits alongside `godon-observer` in the images directory. Both read
-from the same YugabyteDB. Observer asks "are breeders interfering
+from the same YugabyteDB. Observer asks "are systemtenders interfering
 right now?" Causal asks "what is the full causal structure, how strong
 are the couplings, and what can we predict?"
 
@@ -46,7 +46,7 @@ Two cadences, one detection codebase:
    This is what the observer dashboard calls for "are they coupled now?"
    Does NOT touch the graph cache.
 
-2. BATCH: `POST /build` — reads all breeders, all pairs, runs detection
+2. BATCH: `POST /build` — reads all systemtenders, all pairs, runs detection
    + characterization, assembles full graph, updates cache. Background
    task. This produces the connectome snapshot.
 
@@ -85,7 +85,7 @@ Before implementing, read these existing files:
 1. **`images/godon-observer/src/optuna_reader.rs`** (939 lines) — the
    primary reference. Copy:
    - DB connection pattern (`OptunaReader::from_env()`, `connect()`,
-     `breeder_db_name()`)
+     `systemtender_db_name()`)
    - All SQL queries (trials, params, values, user_attrs, study_directions)
    - The `TrialRecord` struct
    - The CFAR detection logic (`detect_watermark_coupling`) — this is
@@ -120,7 +120,7 @@ record from YugabyteDB contains:
 pub struct TrialRecord {
     pub number: i32,
     pub state: String,           // "COMPLETE" is what we use
-    pub datetime_start: Option<String>,   // ISO timestamp — critical for cross-breeder alignment
+    pub datetime_start: Option<String>,   // ISO timestamp — critical for cross-systemtender alignment
     pub datetime_complete: Option<String>,
     pub params: HashMap<String, f64>,
     pub param_distributions: HashMap<String, serde_json::Value>,
@@ -130,11 +130,11 @@ pub struct TrialRecord {
 ```
 
 The detection coordinator writes these user_attrs per trial (from
-`breeder_worker.py:994-1005`):
+`systemtender_worker.py:994-1005`):
 
 | Key | Values | Meaning |
 |-----|--------|---------|
-| `detection_mode` | `optimize` \| `hold` \| `impulse` | What the breeder did this trial |
+| `detection_mode` | `optimize` \| `hold` \| `impulse` | What the systemtender did this trial |
 | `coord_state` | `hold_calib` \| `impulse_calib` \| `push` \| `pause` \| `done` \| `cooldown` \| `hold` \| `optimize` | Coordinator state machine position |
 | `impulse_phase` | `hold_calib` \| `impulse_calib` \| `push` \| `pause` | Phase tag for observer windowing (sender only) |
 | `impulse_scale` | float (0.125–1.0) | Amplitude scale of the impulse probe |
@@ -157,8 +157,8 @@ Same env vars as observer:
 - `GODON_ARCHIVE_DB_SERVICE_HOST` (default: "yb-tserver-0")
 - `GODON_ARCHIVE_DB_SERVICE_PORT` (default: 5433)
 
-Each breeder has its own DB: `breeder_{uuid_with_dashes_as_underscores}`.
-The shared `yugabyte` DB lists all breeder study names.
+Each systemtender has its own DB: `systemtender_{uuid_with_dashes_as_underscores}`.
+The shared `yugabyte` DB lists all systemtender study names.
 
 SQL queries: identical to observer's optuna_reader.rs. Copy them.
 
@@ -206,12 +206,12 @@ patterns as observer's `optuna_reader.rs`. Copy the connection, query,
 and TrialRecord building logic.
 
 **Additional capability beyond observer:** the causal image needs to
-enumerate ALL breeder pairs, not just one sender/receiver. The trial
+enumerate ALL systemtender pairs, not just one sender/receiver. The trial
 reader must:
 
-1. List all breeder databases (query `yugabyte` DB for study names,
-   derive breeder IDs)
-2. For a given breeder pair (sender, receiver), load both breeders'
+1. List all systemtender databases (query `yugabyte` DB for study names,
+   derive systemtender IDs)
+2. For a given systemtender pair (sender, receiver), load both systemtenders'
    complete trials
 
 ```rust
@@ -222,22 +222,22 @@ pub struct TrialReader {
 impl TrialReader {
     pub fn from_env() -> Self;
 
-    /// List all breeder IDs that have databases.
-    pub async fn list_breeders(&self) -> Result<Vec<String>;
+    /// List all systemtender IDs that have databases.
+    pub async fn list_systemtenders(&self) -> Result<Vec<String>;
 
-    /// Load all COMPLETE trials for a breeder's default study.
-    pub async fn read_trials(&self, breeder_id: &str)
+    /// Load all COMPLETE trials for a systemtender's default study.
+    pub async fn read_trials(&self, systemtender_id: &str)
         -> Result<Vec<TrialRecord>>;
 
     /// Load trials and classify them by detection role.
     /// Returns sender phases (push/pause/hold_calib) and receiver hold trials.
-    pub async fn read_probe_trials(&self, breeder_id: &str)
+    pub async fn read_probe_trials(&self, systemtender_id: &str)
         -> Result<ProbeTrials>;
 }
 
-/// Classified trial data for a single breeder.
+/// Classified trial data for a single systemtender.
 pub struct ProbeTrials {
-    pub breeder_id: String,
+    pub systemtender_id: String,
     /// Sender push trials — params at extremes, timestamped.
     /// Each entry is (timestamp_secs, trial_number, params, values, impulse_scale).
     pub push_trials: Vec<ProbeTrial>,
@@ -499,7 +499,7 @@ response. This is Pearl Level 2 (intervention), not Level 1
 
 ### graph.rs
 
-The causal graph — the connectome snapshot. Nodes are breeders,
+The causal graph — the connectome snapshot. Nodes are systemtenders,
 directed edges carry characterized coupling.
 
 ```rust
@@ -507,7 +507,7 @@ use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CausalNode {
-    pub id: String,           // breeder UUID
+    pub id: String,           // systemtender UUID
     pub label: String,        // human-readable name
     pub objectives: Vec<String>,   // objective names/channels
     pub observations: Vec<String>, // observation channel names
@@ -520,16 +520,16 @@ pub struct CausalGraph {
     pub built_at: String,         // ISO timestamp
     pub detector: String,         // "cfar_block_step"
     pub detector_params: serde_json::Value,
-    pub breeders_scanned: usize,
+    pub systemtenders_scanned: usize,
     pub pairs_evaluated: usize,   // directed pairs checked
     pub edges_detected: usize,
 }
 
 impl CausalGraph {
-    /// All edges from a given node (what does this breeder affect?)
+    /// All edges from a given node (what does this systemtender affect?)
     pub fn edges_from(&self, node_id: &str) -> Vec<&CharacterizedEdge>;
 
-    /// All edges into a given node (what affects this breeder?)
+    /// All edges into a given node (what affects this systemtender?)
     pub fn edges_into(&self, node_id: &str) -> Vec<&CharacterizedEdge>;
 
     /// All edges between two nodes (both directions)
@@ -560,7 +560,7 @@ pub struct GraphSummary {
 
 ```rust
 pub fn build_graph(
-    breeders: &[String],
+    systemtenders: &[String],
     reader: &TrialReader,
     detector: &dyn EdgeDetector,
 ) -> Result<CausalGraph>
@@ -569,8 +569,8 @@ pub fn build_graph(
     let mut edges = Vec::new();
 
     // For each directed pair (sender, receiver):
-    for sender_id in breeders {
-        for receiver_id in breeders {
+    for sender_id in systemtenders {
+        for receiver_id in systemtenders {
             if sender_id == receiver_id { continue; }
 
             let sender_trials = reader.read_probe_trials(sender_id).await?;
@@ -592,7 +592,7 @@ pub fn build_graph(
         }
     }
 
-    // Build nodes from breeder metadata
+    // Build nodes from systemtender metadata
     // ...
 }
 ```
@@ -711,7 +711,7 @@ pub fn import_artifact(json: &str) -> Result<CausalGraph, serde_json::Error> {
   "built_at": "2026-07-24T14:30:00Z",
   "detector": "cfar_block_step",
   "detector_params": {"detection_confidence": 0.95, "propagation_lag": 20.0},
-  "breeders_scanned": 2,
+  "systemtenders_scanned": 2,
   "pairs_evaluated": 2,
   "edges_detected": 1
 }
@@ -731,15 +731,15 @@ pub struct QueryEngine<'a> {
 }
 
 impl<'a> QueryEngine<'a> {
-    /// "If breeder A probes at scale S, what happens to everyone?"
+    /// "If systemtender A probes at scale S, what happens to everyone?"
     pub fn what_if(&self, sender_id: &str, impulse_scale: f64)
         -> Vec<Prediction>;
 
-    /// "What affects breeder B, and through which channels?"
+    /// "What affects systemtender B, and through which channels?"
     pub fn causes_of(&self, receiver_id: &str)
         -> Vec<&CharacterizedEdge>;
 
-    /// "What does breeder A affect?"
+    /// "What does systemtender A affect?"
     pub fn impact_of(&self, sender_id: &str)
         -> Vec<&CharacterizedEdge>;
 
@@ -779,14 +779,14 @@ enum BuildStatus {
 // GET /graph — returns cached graph (or 503 if never built)
 // GET /artifact — returns downloadable JSON
 // POST /predict — reads cached graph, computes prediction
-// GET /impact/:id — edges from this breeder
-// GET /causes/:id — edges into this breeder
+// GET /impact/:id — edges from this systemtender
+// GET /causes/:id — edges into this systemtender
 // GET /summary — summary stats
 ```
 
 **Service lifecycle:**
 - Starts with empty graph (graph = None, status = Idle)
-- POST /build spawns background task: list breeders → for each directed
+- POST /build spawns background task: list systemtenders → for each directed
   pair, load probe trials → detect edges → characterize → assemble graph
   → update cache. Returns immediately with build started confirmation.
 - GET /graph returns cached graph. If no build has completed yet,
@@ -838,7 +838,7 @@ POST /build
   body: {"detection_confidence": 0.95}  (optional)
   → {"status": "building", "detection_confidence": 0.95}
   → or {"status": "already_building"} if a build is in progress
-  Background task: reads all breeders, detects, characterizes,
+  Background task: reads all systemtenders, detects, characterizes,
   assembles graph.
 ```
 
@@ -856,11 +856,11 @@ POST /predict
   body: {"sender_id": "abc-123", "impulse_scale": 1.0}
   → {"predictions": [{"receiver_id": "def-456", ...}]}
 
-GET  /impact/:breeder_id
-  → all edges from this breeder (everything it affects)
+GET  /impact/:systemtender_id
+  → all edges from this systemtender (everything it affects)
 
-GET  /causes/:breeder_id
-  → all edges into this breeder (everything that affects it)
+GET  /causes/:systemtender_id
+  → all edges into this systemtender (everything that affects it)
 
 GET  /summary
   → {"node_count": 2, "edge_count": 3, "strongest_edge": {...}, ...}
@@ -900,7 +900,7 @@ Reference the shared `release-image.yml` workflow (same as other images).
 
 1. **Cargo.toml + default.nix** — scaffold, get it building (empty main.rs)
 2. **trial_reader.rs** — copy DB patterns from observer, read trials
-   into `ProbeTrials`. Test: connect to a breeder DB, classify trials
+   into `ProbeTrials`. Test: connect to a systemtender DB, classify trials
    by detection_mode/impulse_phase, print counts.
 3. **detector.rs** — port CFAR block-step from observer's
    `detect_watermark_coupling`. Behind `EdgeDetector` trait. Test: feed
@@ -990,5 +990,5 @@ interventional data.
   with `#[serde(default)]` on optional fields).
 
 - Use `env_logger` for logging (same as observer). Log at info level:
-  which breeders scanned, how many pairs, how many edges detected,
+  which systemtenders scanned, how many pairs, how many edges detected,
   build time.

@@ -20,8 +20,8 @@ impl ToolRegistry {
     pub fn new(client: GodonClient) -> Self {
         let tools = vec![
             ToolDef {
-                name: "breeder_list",
-                description: "List all optimization breeders with their current status (active, stopped, error).",
+                name: "systemtender_list",
+                description: "List all optimization systemtenders with their current status (active, stopped, error).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -29,64 +29,64 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "breeder_get",
-                description: "Get detailed information about a specific breeder including its full configuration, status, and creation time.",
+                name: "systemtender_get",
+                description: "Get detailed information about a specific systemtender including its full configuration, status, and creation time.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "breeder_id": { "type": "string", "description": "UUID of the breeder" }
+                        "systemtender_id": { "type": "string", "description": "UUID of the systemtender" }
                     },
-                    "required": ["breeder_id"],
+                    "required": ["systemtender_id"],
                     "additionalProperties": false
                 }),
             },
             ToolDef {
-                name: "breeder_create",
-                description: "Create and start a new optimization breeder. Requires a name and a godon config object (v0.3 schema with breeder type, settings, objectives, effectuation, reconnaissance, and optional guardrails).",
+                name: "systemtender_create",
+                description: "Create and start a new optimization systemtender. Requires a name and a godon config object (v0.3 schema with systemtender type, settings, objectives, effectuation, reconnaissance, and optional guardrails).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "name": { "type": "string", "description": "Human-readable name for this optimization run" },
-                        "config": { "type": "object", "description": "Godon breeder configuration (v0.3). Must include: meta.configVersion, breeder.type, settings, objectives, effectuation. May include: guardrails, rollback_strategies, run, cooperation." }
+                        "config": { "type": "object", "description": "Godon systemtender configuration (v0.3). Must include: meta.configVersion, systemtender.type, settings, objectives, effectuation. May include: guardrails, rollback_strategies, run, cooperation." }
                     },
                     "required": ["name", "config"],
                     "additionalProperties": false
                 }),
             },
             ToolDef {
-                name: "breeder_stop",
-                description: "Gracefully stop a running breeder. Workers complete their current trial before stopping.",
+                name: "systemtender_stop",
+                description: "Gracefully stop a running systemtender. Workers complete their current trial before stopping.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "breeder_id": { "type": "string", "description": "UUID of the breeder to stop" }
+                        "systemtender_id": { "type": "string", "description": "UUID of the systemtender to stop" }
                     },
-                    "required": ["breeder_id"],
+                    "required": ["systemtender_id"],
                     "additionalProperties": false
                 }),
             },
             ToolDef {
-                name: "breeder_start",
-                description: "Resume a previously stopped breeder. Continues from existing trial history.",
+                name: "systemtender_start",
+                description: "Resume a previously stopped systemtender. Continues from existing trial history.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "breeder_id": { "type": "string", "description": "UUID of the breeder to resume" }
+                        "systemtender_id": { "type": "string", "description": "UUID of the systemtender to resume" }
                     },
-                    "required": ["breeder_id"],
+                    "required": ["systemtender_id"],
                     "additionalProperties": false
                 }),
             },
             ToolDef {
-                name: "breeder_delete",
-                description: "Delete a breeder and all its data (trial history, archive database). Use force=true to cancel running workers immediately.",
+                name: "systemtender_delete",
+                description: "Delete a systemtender and all its data (trial history, archive database). Use force=true to cancel running workers immediately.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "breeder_id": { "type": "string", "description": "UUID of the breeder to delete" },
+                        "systemtender_id": { "type": "string", "description": "UUID of the systemtender to delete" },
                         "force": { "type": "boolean", "default": false, "description": "Force deletion even if workers are running" }
                     },
-                    "required": ["breeder_id"],
+                    "required": ["systemtender_id"],
                     "additionalProperties": false
                 }),
             },
@@ -101,7 +101,7 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "credential_create",
-                description: "Register a new credential (SSH key, API token, database connection, HTTP basic auth) for breeders to authenticate against target systems.",
+                description: "Register a new credential (SSH key, API token, database connection, HTTP basic auth) for systemtenders to authenticate against target systems.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -140,7 +140,7 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "target_list",
-                description: "List all registered target systems (servers, APIs) that breeders can optimize against.",
+                description: "List all registered target systems (servers, APIs) that systemtenders can optimize against.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -149,7 +149,7 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "target_create",
-                description: "Register a new target system (SSH server or HTTP API) for breeders to optimize against.",
+                description: "Register a new target system (SSH server or HTTP API) for systemtenders to optimize against.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -216,21 +216,21 @@ impl ToolRegistry {
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<Value> {
         info!("Tool call: {} args={}", name, args);
         let id = args
-            .get("breeder_id")
+            .get("systemtender_id")
             .or_else(|| args.get("credential_id"))
             .or_else(|| args.get("target_id"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
         match name {
-            "breeder_list" => self.client.get("/breeders").await,
-            "breeder_get" => {
-                require_id(id, "breeder_id")?;
+            "systemtender_list" => self.client.get("/systemtenders").await,
+            "systemtender_get" => {
+                require_id(id, "systemtender_id")?;
                 self.client
-                    .get(&format!("/breeders/{}", urlencoding::encode(id)))
+                    .get(&format!("/systemtenders/{}", urlencoding::encode(id)))
                     .await
             }
-            "breeder_create" => {
+            "systemtender_create" => {
                 let name_val = args["name"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("name required"))?;
@@ -238,27 +238,27 @@ impl ToolRegistry {
                     .get("config")
                     .ok_or_else(|| anyhow::anyhow!("config object required"))?;
                 let body = serde_json::json!({ "name": name_val, "config": config });
-                self.client.post("/breeders", body).await
+                self.client.post("/systemtenders", body).await
             }
-            "breeder_stop" => {
-                require_id(id, "breeder_id")?;
+            "systemtender_stop" => {
+                require_id(id, "systemtender_id")?;
                 self.client
-                    .post_empty(&format!("/breeders/{}/stop", urlencoding::encode(id)))
+                    .post_empty(&format!("/systemtenders/{}/stop", urlencoding::encode(id)))
                     .await
             }
-            "breeder_start" => {
-                require_id(id, "breeder_id")?;
+            "systemtender_start" => {
+                require_id(id, "systemtender_id")?;
                 self.client
-                    .post_empty(&format!("/breeders/{}/start", urlencoding::encode(id)))
+                    .post_empty(&format!("/systemtenders/{}/start", urlencoding::encode(id)))
                     .await
             }
-            "breeder_delete" => {
-                require_id(id, "breeder_id")?;
+            "systemtender_delete" => {
+                require_id(id, "systemtender_id")?;
                 let force = args["force"].as_bool().unwrap_or(false);
                 let path = if force {
-                    format!("/breeders/{}?force=true", urlencoding::encode(id))
+                    format!("/systemtenders/{}?force=true", urlencoding::encode(id))
                 } else {
-                    format!("/breeders/{}", urlencoding::encode(id))
+                    format!("/systemtenders/{}", urlencoding::encode(id))
                 };
                 self.client.delete(&path).await
             }

@@ -156,7 +156,7 @@ mod tests {
         // OLD formula: 0.28 / 1.0 = 0.28 (wrong — bakes in base function)
         // NEW formula: 0.28 / (0.8 - 0.4) = 0.28 / 0.4 = 0.7 (true coefficient)
         let sender = ProbeTrials {
-            breeder_id: "sender".to_string(),
+            systemtender_id: "sender".to_string(),
             push_trials: vec![
                 make_probe_trial(0.80, 1.0),
                 make_probe_trial(0.82, 1.0),
@@ -190,7 +190,7 @@ mod tests {
     fn test_sensitivity_fallback_to_impulse_scale() {
         // No sender pause trials → sender_delta = 0 → fallback to impulse_scale
         let sender = ProbeTrials {
-            breeder_id: "sender".to_string(),
+            systemtender_id: "sender".to_string(),
             push_trials: vec![make_probe_trial(0.8, 1.0)],
             pause_trials: vec![], // empty
             hold_calib_trials: vec![],

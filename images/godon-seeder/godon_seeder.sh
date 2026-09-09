@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script that seeds the breeder flows and scripts into the windmill orchestration engine.
+# Script that seeds the systemtender flows and scripts into the windmill orchestration engine.
 # Now orchestrates the Rust godon-seeder instead of using wmill CLI directly.
 
 set -eEux
@@ -14,8 +14,8 @@ export WINDMILL_EMAIL="${WINDMILL_EMAIL:-admin@windmill.dev}"
 export WINDMILL_PASSWORD="${WINDMILL_PASSWORD:-changeme}"
 export CONTROLLER_REPO="${CONTROLLER_REPO:-https://github.com/godon-dev/godon-controller.git}"
 export CONTROLLER_VERSION="${CONTROLLER_VERSION:-0.1.0}"
-export BREEDER_REPO="${BREEDER_REPO:-https://github.com/godon-dev/godon-breeders.git}"
-export BREEDER_VERSION="${BREEDER_VERSION:-0.1.0}"
+export SYSTEMTENDER_REPO="${SYSTEMTENDER_REPO:-https://github.com/godon-dev/godon-systemtenders.git}"
+export SYSTEMTENDER_VERSION="${SYSTEMTENDER_VERSION:-0.1.0}"
 export GODON_DIR="${GODON_DIR:-/var/lib/godon}"
 
 # Path to the godon-seeder binary (use PATH to find it)
@@ -51,13 +51,13 @@ setup_repo() {
 echo "Setting up godon-controller repository..."
 setup_repo "godon-controller" "${CONTROLLER_REPO}" "${CONTROLLER_VERSION}"
 
-## Setup Breeder Repository
-echo "Setting up godon-breeders repository..."
-setup_repo "godon-breeders" "${BREEDER_REPO}" "${BREEDER_VERSION}"
+## Setup Systemtender Repository
+echo "Setting up godon-systemtenders repository..."
+setup_repo "godon-systemtenders" "${SYSTEMTENDER_REPO}" "${SYSTEMTENDER_VERSION}"
 
 echo "✅ All repositories updated successfully"
 
-## Seed Controller and Breeder Logic using godon-seeder
+## Seed Controller and Systemtender Logic using godon-seeder
 echo "Starting component deployment with godon-seeder"
 
 # Build CLI args with optional retry settings from env vars
@@ -71,9 +71,9 @@ if [ -n "${SEEDER_RETRY_DELAY:-}" ]; then
     CLI_ARGS="$CLI_ARGS --retry-delay=$SEEDER_RETRY_DELAY"
 fi
 
-# Call the Rust seeder with the controller and breeder directories
+# Call the Rust seeder with the controller and systemtender directories
 "$GODON_SEEDER_BIN" $CLI_ARGS \
     "${GODON_DIR}/godon-controller" \
-    "${GODON_DIR}/godon-breeders"
+    "${GODON_DIR}/godon-systemtenders"
 
 echo "✅ Godon seeding completed successfully!"

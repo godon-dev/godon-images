@@ -20,7 +20,7 @@
 //   Inter-greenhouse coupling: Neighbors silently modify each other's ambient
 //                     conditions through 4 hidden channels (waste heat, CO2
 //                     exhaust, power sag, humidity drift). Each greenhouse is
-//                     a separate target with its own breeder. The coupling is
+//                     a separate target with its own systemtender. The coupling is
 //                     invisible to the optimizer -- it only sees unexplained
 //                     variance in its objectives.
 //

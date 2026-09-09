@@ -5,7 +5,7 @@ use serde_json::json;
 use std::env;
 use wmill::Windmill;
 
-use crate::types::{Breeder, BreederSummary, Credential, Target};
+use crate::types::{Systemtender, SystemtenderSummary, Credential, Target};
 
 fn login_to_windmill(base_url: &str, email: &str, password: &str) -> Result<String> {
     let client = Client::new();
@@ -111,73 +111,73 @@ impl WindmillClient {
         response.get("data").cloned().unwrap_or(response)
     }
 
-    pub fn list_breeders(&self) -> Result<Vec<BreederSummary>> {
-        let response = self.run_script("breeders_get", json!({}))?;
+    pub fn list_systemtenders(&self) -> Result<Vec<SystemtenderSummary>> {
+        let response = self.run_script("systemtenders_get", json!({}))?;
         let data = Self::unwrap_data(response);
 
         if data.is_array() {
-            let breeders: Vec<BreederSummary> = serde_json::from_value(data)
-                .context("Failed to parse breeders list")?;
-            Ok(breeders)
+            let systemtenders: Vec<SystemtenderSummary> = serde_json::from_value(data)
+                .context("Failed to parse systemtenders list")?;
+            Ok(systemtenders)
         } else {
             Ok(Vec::new())
         }
     }
 
-    pub fn create_breeder(&self, breeder_config: serde_json::Value) -> Result<BreederSummary> {
-        let args = json!({ "request_data": breeder_config });
-        let response = self.run_script("breeder_create", args)?;
+    pub fn create_systemtender(&self, systemtender_config: serde_json::Value) -> Result<SystemtenderSummary> {
+        let args = json!({ "request_data": systemtender_config });
+        let response = self.run_script("systemtender_create", args)?;
         let data = Self::unwrap_data(response);
         
         serde_json::from_value(data)
-            .context("Failed to parse created breeder")
+            .context("Failed to parse created systemtender")
     }
 
-    pub fn get_breeder(&self, breeder_id: &str) -> Result<Breeder> {
-        let args = json!({ "request_data": { "breeder_id": breeder_id } });
-        let response = self.run_script("breeder_get", args)?;
+    pub fn get_systemtender(&self, systemtender_id: &str) -> Result<Systemtender> {
+        let args = json!({ "request_data": { "systemtender_id": systemtender_id } });
+        let response = self.run_script("systemtender_get", args)?;
         let data = Self::unwrap_data(response);
 
-        let breeder: Breeder = serde_json::from_value(data)
-            .context("Failed to parse breeder")?;
+        let systemtender: Systemtender = serde_json::from_value(data)
+            .context("Failed to parse systemtender")?;
         
-        if breeder.id.is_empty() {
-            anyhow::bail!("Invalid breeder response: missing id field");
+        if systemtender.id.is_empty() {
+            anyhow::bail!("Invalid systemtender response: missing id field");
         }
 
-        Ok(breeder)
+        Ok(systemtender)
     }
 
-    pub fn delete_breeder(&self, breeder_id: &str, force: bool) -> Result<()> {
-        let mut request_data = json!({ "breeder_id": breeder_id });
+    pub fn delete_systemtender(&self, systemtender_id: &str, force: bool) -> Result<()> {
+        let mut request_data = json!({ "systemtender_id": systemtender_id });
         if force {
             request_data["force"] = json!(force);
         }
         
         let args = json!({ "request_data": request_data });
-        self.run_script("breeder_delete", args)?;
+        self.run_script("systemtender_delete", args)?;
         Ok(())
     }
 
-    pub fn stop_breeder(&self, breeder_id: &str) -> Result<serde_json::Value> {
-        let args = json!({ "request_data": { "breeder_id": breeder_id } });
-        let response = self.run_script("breeder_stop", args)?;
+    pub fn stop_systemtender(&self, systemtender_id: &str) -> Result<serde_json::Value> {
+        let args = json!({ "request_data": { "systemtender_id": systemtender_id } });
+        let response = self.run_script("systemtender_stop", args)?;
         Ok(Self::unwrap_data(response))
     }
 
-    pub fn update_breeder(&self, breeder_id: &str, config: serde_json::Value, force: bool) -> Result<serde_json::Value> {
-        let mut request_data = json!({ "breeder_id": breeder_id, "config": config });
+    pub fn update_systemtender(&self, systemtender_id: &str, config: serde_json::Value, force: bool) -> Result<serde_json::Value> {
+        let mut request_data = json!({ "systemtender_id": systemtender_id, "config": config });
         if force {
             request_data["force"] = json!(force);
         }
         let args = json!({ "request_data": request_data });
-        let response = self.run_script("breeder_update", args)?;
+        let response = self.run_script("systemtender_update", args)?;
         Ok(Self::unwrap_data(response))
     }
 
-    pub fn start_breeder(&self, breeder_id: &str) -> Result<serde_json::Value> {
-        let args = json!({ "request_data": { "breeder_id": breeder_id } });
-        let response = self.run_script("breeder_start", args)?;
+    pub fn start_systemtender(&self, systemtender_id: &str) -> Result<serde_json::Value> {
+        let args = json!({ "request_data": { "systemtender_id": systemtender_id } });
+        let response = self.run_script("systemtender_start", args)?;
         Ok(Self::unwrap_data(response))
     }
 

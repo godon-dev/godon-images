@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BreederSummary {
+pub struct SystemtenderSummary {
     pub id: String,
     pub name: String,
     pub status: String,
@@ -10,7 +10,7 @@ pub struct BreederSummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Breeder {
+pub struct Systemtender {
     pub id: String,
     pub name: String,
     pub status: String,
@@ -20,13 +20,13 @@ pub struct Breeder {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BreederCreate {
+pub struct SystemtenderCreate {
     pub name: String,
     pub config: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BreederUpdate {
+pub struct SystemtenderUpdate {
     pub config: serde_json::Value,
     #[serde(default)]
     pub force: Option<bool>,

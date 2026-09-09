@@ -9,7 +9,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::config::Config;
-use crate::types::{Breeder, BreederCreate, BreederUpdate, BreederSummary, Credential, CredentialCreate, DeleteResponse, ErrorResponse, Target, TargetCreate};
+use crate::types::{Systemtender, SystemtenderCreate, SystemtenderUpdate, SystemtenderSummary, Credential, CredentialCreate, DeleteResponse, ErrorResponse, Target, TargetCreate};
 use crate::windmill_adapter::WindmillClient;
 
 static BUILD_VERSION: &str = match option_env!("BUILD_VERSION") {
@@ -45,18 +45,18 @@ pub async fn health() -> Json<serde_json::Value> {
     Json(json!({"status": "healthy", "service": "godon-api", "version": BUILD_VERSION}))
 }
 
-pub async fn list_breeders(
+pub async fn list_systemtenders(
     State(_config): State<Config>,
-) -> Result<Json<Vec<BreederSummary>>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<Vec<SystemtenderSummary>>, (StatusCode, Json<ErrorResponse>)> {
     let client = get_client()?;
     
     tokio::task::spawn_blocking(move || {
-        client.list_breeders()
+        client.list_systemtenders()
             .map(Json)
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
-                    format!("Failed to retrieve breeders: {}", e),
+                    format!("Failed to retrieve systemtenders: {}", e),
                     "INTERNAL_SERVER_ERROR"
                 ))
             ))
@@ -66,24 +66,24 @@ pub async fn list_breeders(
     ))?
 }
 
-pub async fn create_breeder(
+pub async fn create_systemtender(
     State(_config): State<Config>,
-    Json(payload): Json<BreederCreate>,
-) -> Result<(StatusCode, Json<BreederSummary>), (StatusCode, Json<ErrorResponse>)> {
+    Json(payload): Json<SystemtenderCreate>,
+) -> Result<(StatusCode, Json<SystemtenderSummary>), (StatusCode, Json<ErrorResponse>)> {
     let client = get_client()?;
     
-    let breeder_config = json!({
+    let systemtender_config = json!({
         "name": payload.name,
         "config": payload.config
     });
     
     tokio::task::spawn_blocking(move || {
-        client.create_breeder(breeder_config)
+        client.create_systemtender(systemtender_config)
             .map(|b| (StatusCode::CREATED, Json(b)))
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
-                    format!("Failed to create breeder: {}", e),
+                    format!("Failed to create systemtender: {}", e),
                     "INTERNAL_SERVER_ERROR"
                 ))
             ))
@@ -93,10 +93,10 @@ pub async fn create_breeder(
     ))?
 }
 
-pub async fn get_breeder(
+pub async fn get_systemtender(
     State(_config): State<Config>,
     Path(id): Path<String>,
-) -> Result<Json<Breeder>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<Systemtender>, (StatusCode, Json<ErrorResponse>)> {
     if !UUID_REGEX.is_match(&id) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -111,12 +111,12 @@ pub async fn get_breeder(
     let client = get_client()?;
     
     tokio::task::spawn_blocking(move || {
-        client.get_breeder(&id)
+        client.get_systemtender(&id)
             .map(Json)
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
-                    format!("Failed to retrieve breeder: {}", e),
+                    format!("Failed to retrieve systemtender: {}", e),
                     "INTERNAL_SERVER_ERROR"
                 ))
             ))
@@ -126,10 +126,10 @@ pub async fn get_breeder(
     ))?
 }
 
-pub async fn update_breeder(
+pub async fn update_systemtender(
     State(_config): State<Config>,
     Path(id): Path<String>,
-    Json(payload): Json<BreederUpdate>,
+    Json(payload): Json<SystemtenderUpdate>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     if !UUID_REGEX.is_match(&id) {
         return Err((
@@ -156,12 +156,12 @@ pub async fn update_breeder(
     let force = payload.force.unwrap_or(false);
 
     tokio::task::spawn_blocking(move || {
-        client.update_breeder(&id, payload.config, force)
+        client.update_systemtender(&id, payload.config, force)
             .map(Json)
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
-                    format!("Failed to update breeder: {}", e),
+                    format!("Failed to update systemtender: {}", e),
                     "INTERNAL_SERVER_ERROR"
                 ))
             ))
@@ -177,7 +177,7 @@ pub struct DeleteParams {
     force: Option<String>,
 }
 
-pub async fn delete_breeder(
+pub async fn delete_systemtender(
     State(_config): State<Config>,
     Path(id): Path<String>,
     Query(params): Query<DeleteParams>,
@@ -201,7 +201,7 @@ pub async fn delete_breeder(
     let id_clone = id.clone();
     
     tokio::task::spawn_blocking(move || {
-        client.delete_breeder(&id_clone, force)
+        client.delete_systemtender(&id_clone, force)
             .map(|_| Json(DeleteResponse {
                 id: id_clone.clone(),
                 deleted: true,
@@ -210,7 +210,7 @@ pub async fn delete_breeder(
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
-                    format!("Failed to delete breeder: {}", e),
+                    format!("Failed to delete systemtender: {}", e),
                     "INTERNAL_SERVER_ERROR"
                 ))
             ))
@@ -220,7 +220,7 @@ pub async fn delete_breeder(
     ))?
 }
 
-pub async fn stop_breeder(
+pub async fn stop_systemtender(
     State(_config): State<Config>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
@@ -238,12 +238,12 @@ pub async fn stop_breeder(
     let client = get_client()?;
     
     tokio::task::spawn_blocking(move || {
-        client.stop_breeder(&id)
+        client.stop_systemtender(&id)
             .map(Json)
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
-                    format!("Failed to stop breeder: {}", e),
+                    format!("Failed to stop systemtender: {}", e),
                     "INTERNAL_SERVER_ERROR"
                 ))
             ))
@@ -253,7 +253,7 @@ pub async fn stop_breeder(
     ))?
 }
 
-pub async fn start_breeder(
+pub async fn start_systemtender(
     State(_config): State<Config>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
@@ -271,12 +271,12 @@ pub async fn start_breeder(
     let client = get_client()?;
     
     tokio::task::spawn_blocking(move || {
-        client.start_breeder(&id)
+        client.start_systemtender(&id)
             .map(Json)
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
-                    format!("Failed to start breeder: {}", e),
+                    format!("Failed to start systemtender: {}", e),
                     "INTERNAL_SERVER_ERROR"
                 ))
             ))

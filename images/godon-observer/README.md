@@ -9,9 +9,9 @@ Optimization observability: Prometheus metrics proxy, trial history from Optuna 
 | `GET /metrics` | Prometheus metrics from Push Gateway |
 | `GET /health` | Health check (`DEGRADED` if DB unreachable) |
 | `GET /dashboard` | Interactive visualization (heatmap, spider web, parallel coordinates) |
-| `GET /api/breeders/<uuid>/trials/<study>?offset=0&limit=100` | Paginated trial history |
-| `GET /api/breeders/<uuid>/studies` | List Optuna studies for a breeder |
-| `GET /api/breeders/<uuid>/summary` | Trial count, directions, study attributes |
+| `GET /api/systemtenders/<uuid>/trials/<study>?offset=0&limit=100` | Paginated trial history |
+| `GET /api/systemtenders/<uuid>/studies` | List Optuna studies for a systemtender |
+| `GET /api/systemtenders/<uuid>/summary` | Trial count, directions, study attributes |
 
 ## Environment Variables
 

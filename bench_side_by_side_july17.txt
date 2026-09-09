@@ -1,0 +1,115 @@
+========================================================================================================================================================================================================
+B1 (receiver) vs B2 (sender) — paired by each 15s trial slot
+========================================================================================================================================================================================================
+
+   time  |  B1 state       phase          growth  temp  co2 |  B2 state       phase          growth  temp  co2 |
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+  18:30:40  |  optimize                      0.457  30.8   421 |                                                  |
+  18:31:01  |  optimize                      0.496  32.4   501 |                                                  |
+  18:31:18  |  optimize                      0.000  27.5   544 |  optimize                      0.000  31.7   520 |
+  18:31:36  |  optimize                      0.000  29.3   664 |  optimize                      0.000  34.1   558 |
+  18:31:52  |  optimize                      0.000  31.3   654 |  optimize                      0.000  24.5   564 |
+  18:32:07  |  optimize                      0.000  47.6   722 |  optimize                      0.000  44.2   543 |
+  18:32:23  |  optimize                      0.000  44.6   695 |  optimize                      0.224  37.6   533 |
+  18:32:39  |  optimize                      0.000  15.3   655 |  optimize                      0.000  25.7   732 |
+  18:32:55  |  optimize                      0.423  31.5   642 |  optimize                      0.000  42.5   801 |
+  18:33:10  |  optimize                      0.000  35.6   783 |  optimize                      0.000  37.0   706 |
+  18:33:26  |  optimize                      0.615  27.2   464 |  optimize                      0.000  33.0   683 |
+  18:33:41  |  optimize                      0.407  26.2   454 |  optimize                      0.000  28.3   503 |
+  18:33:57  |  optimize                      0.670  25.4   471 |  optimize                      0.431  31.0   500 |
+  18:34:12  |  optimize                      0.000  18.4   516 |  optimize                      0.000  29.7   517 |
+  18:34:27  |  optimize                      0.634  30.8   521 |  optimize                      0.696  18.5   501 |
+  18:34:46  |  optimize                      0.000  35.5   538 |  optimize                      0.293  37.8   476 |
+  18:35:01  |  optimize                      0.522  26.1   635 |  optimize                      0.000  27.1   698 |
+  18:35:17  |  optimize                      0.000  38.1   653 |  optimize                      0.000  44.9   625 |
+  18:35:32  |  optimize                      0.000  39.4   679 |  optimize                      0.307  38.4   582 |
+  18:35:47  |  optimize                      0.396  19.8   615 |  optimize                      0.464  26.8   643 |
+  18:36:02  |  optimize                      0.776  20.9   500 |  optimize                      0.000  32.1   548 |
+  18:36:17  |  optimize                      0.000  44.1   604 |  optimize                      0.000  44.1   626 |
+  18:36:33  |  optimize                      0.784  25.5   528 |  optimize                      0.286  19.4   706 |
+  18:36:48  |  optimize                      0.909  27.3   650 |  optimize                      0.000  39.9   717 |
+  18:37:04  |  optimize                      0.000  26.1   436 |  optimize                      0.405  22.4   454 |
+  18:37:19  |  optimize                      0.235  36.3   460 |  optimize                      0.000  51.7   465 |
+  18:37:34  |  hold_calib     hold_calib     0.320  34.1   484 |  optimize                      0.517  32.4   453 |
+  18:37:57  |  hold_calib     hold_calib     0.293  34.8   503 |  optimize                      0.000  30.4   529 |
+  18:38:17  |  hold_calib     hold_calib     0.291  34.9   510 |  optimize                      0.000  35.9   540 |
+  18:38:39  |  hold_calib     hold_calib     0.454  32.3   524 |  optimize                      0.859  23.9   572 |
+  18:38:57  |  hold_calib     hold_calib     0.269  35.4   522 |  optimize                      0.604  30.6   553 |
+  18:39:18  |  hold_calib     hold_calib     0.494  31.4   513 |  optimize                      0.657  28.4   514 |
+  18:39:33  |  hold_calib     hold_calib     0.100  38.3   535 |  optimize                      0.281  36.9   562 |
+  18:39:49  |  hold_calib     hold_calib     0.439  33.2   567 |  optimize                      0.000  29.8   720 |
+  18:40:10  |  hold_calib     hold_calib     0.432  32.3   497 |  optimize                      0.478  26.8   426 |
+  18:40:26  |  hold_calib     hold_calib     0.236  36.1   531 |  optimize                      0.000  32.5   573 |
+  18:40:56  |  hold_calib     hold_calib     0.215  36.3   511 |  optimize                      0.000  38.5   501 |
+  18:41:11  |  hold_calib     hold_calib     0.317  34.3   495 |  optimize                      0.433  34.6   458 |
+  18:41:37  |  hold_calib     hold_calib     0.296  34.7   492 |  hold           hold_calib     0.643  28.6   493 |
+  18:41:53  |  hold_calib     hold_calib     0.389  33.2   507 |  hold           hold_calib     0.595  29.7   503 |
+  18:42:08  |  hold_calib     hold_calib     0.415  32.9   512 |  hold           hold_calib     0.660  28.7   510 |
+  18:42:25  |  hold_calib     hold_calib     0.436  32.5   514 |  hold           hold_calib     0.647  29.0   513 |
+  18:42:40  |  hold_calib     hold_calib     0.468  32.0   515 |  hold           hold_calib     0.652  29.0   515 |
+  18:42:56  |  hold_calib     hold_calib     0.495  31.6   516 |  hold           hold_calib     0.648  29.1   515 |
+  18:43:17  |  hold_calib     hold_calib     0.524  31.1   516 |  hold           hold_calib     0.641  29.2   515 |
+  18:43:33  |  hold_calib     hold_calib     0.552  30.6   515 |  hold           hold_calib     0.634  29.3   515 |
+  18:43:50  |  hold_calib     hold_calib     0.580  30.2   515 |  hold           hold_calib     0.625  29.4   515 |
+  18:44:05  |  hold_calib     hold_calib     0.606  29.7   515 |  hold           hold_calib     0.616  29.6   515 |
+  18:44:24  |  hold_calib     hold_calib     0.630  29.3   515 |  hold           hold_calib     0.608  29.7   515 |
+  18:44:39  |  hold_calib     hold_calib     0.652  29.0   515 |  hold           hold_calib     0.600  29.8   515 |
+  18:44:56  |  hold_calib     hold_calib     0.671  28.7   515 |  hold           hold_calib     0.594  29.9   515 |
+  18:45:14  |  hold_calib     hold_calib     0.687  28.4   515 |  hold           hold_calib     0.590  30.0   515 |
+  18:45:31  |  hold_calib     hold_calib     0.698  28.2   515 |  hold           hold_calib     0.589  30.0   515 |
+  18:45:52  |  hold_calib     hold_calib     0.706  28.1   515 |  hold           hold_calib     0.589  30.0   515 |
+  18:46:07  |  hold_calib     hold_calib     0.710  28.0   515 |  hold           hold_calib     0.593  30.0   515 |
+  18:46:22  |  hold_calib     hold_calib     0.711  28.0   515 |  hold           hold_calib     0.598  29.9   515 |
+  18:46:41  |  hold_calib     hold_calib     0.708  28.1   515 |  hold           hold_calib     0.607  29.7   515 |
+  18:46:56  |  hold_calib     hold_calib     0.701  28.2   515 |  hold           hold_calib     0.617  29.6   515 |
+  18:47:11  |  hold_calib     hold_calib     0.692  28.3   515 |  hold           hold_calib     0.628  29.4   515 |
+  18:47:26  |  hold_calib     hold_calib     0.681  28.5   515 |  hold           hold_calib     0.642  29.2   515 |
+  18:47:41  |  hold_calib     hold_calib     0.669  28.7   515 |  hold           hold_calib     0.656  29.0   515 |
+  18:47:56  |  cooldown                      0.817  26.8   512 |  hold           hold_calib     0.670  28.7   515 |
+  18:48:12  |  cooldown                      0.748  26.6   514 |  optimize                      0.453  24.0   563 |
+  18:48:27  |  cooldown                      0.000  34.5   546 |  hold_calib     hold_calib     0.605  29.9   521 |
+  18:48:42  |  cooldown                      0.314  32.1   526 |  hold_calib     hold_calib     0.685  28.5   520 |
+  18:48:57  |  cooldown                      0.671  22.7   708 |  hold_calib     hold_calib     0.915  22.8   562 |
+  18:49:12  |  optimize                      0.271  34.7   666 |  hold_calib     hold_calib     0.564  31.2   551 |
+  18:49:27  |  hold           hold_calib     0.674  29.2   586 |  hold_calib     hold_calib     0.865  26.1   531 |
+  18:49:42  |  hold           hold_calib     0.692  28.6   551 |  hold_calib     hold_calib     0.762  27.6   522 |
+  18:49:57  |  hold           hold_calib     0.658  29.0   533 |  hold_calib     hold_calib     0.786  27.1   518 |
+  18:50:12  |  hold           hold_calib     0.699  28.3   524 |  hold_calib     hold_calib     0.796  26.9   516 |
+  18:50:27  |  hold           hold_calib     0.710  28.1   520 |  impulse_calib  impulse_calib  0.131  37.5   517 | ** B2 PROBE
+  18:50:42  |  hold           impulse_calib  0.481  31.9   518 |  push           push           0.230  35.6   517 | <<<< B2 PUSH
+  18:50:57  |  hold           push           0.632  29.4   518 |  push           push           0.239  35.5   517 | << B1 sees push
+  18:51:12  |  hold           push           0.603  29.9   517 |  push           push           0.226  35.7   517 |
+  18:51:27  |  hold           push           0.627  29.6   516 |  push           push           0.233  35.6   517 |
+  18:51:42  |  hold           push           0.639  29.4   516 |  push           push           0.231  35.7   517 |
+  18:51:57  |  hold           push           0.647  29.3   516 |  push           push           0.231  35.7   517 |
+  18:52:12  |  hold           push           0.655  29.2   516 |  push           push           0.231  35.7   517 |
+  18:52:27  |  hold           push           0.660  29.1   516 |  push           push           0.232  35.7   517 |
+  18:52:43  |  hold           push           0.663  29.1   516 |  push           push           0.233  35.7   517 |
+  18:52:58  |  hold           push           0.663  29.1   516 |  push           push           0.235  35.6   517 |
+  18:53:15  |  hold           push           0.661  29.1   516 |  push           push           0.238  35.6   517 |
+  18:53:32  |  hold           push           0.659  29.2   516 |  push           push           0.241  35.5   517 |
+  18:53:51  |  hold           push           0.656  29.2   516 |  push           push           0.245  35.5   517 |
+  18:54:06  |  hold           push           0.653  29.3   516 |  push           push           0.250  35.4   517 |
+  18:54:21  |  hold           push           0.651  29.3   516 |  pause          push           0.256  35.3   517 |
+  18:54:36  |  hold           push           0.650  29.3   516 |  pause          pause          0.853  24.0   516 | >>>> B2 PAUSE
+  18:54:51  |  hold           pause          0.852  24.9   516 |  pause          pause          0.842  26.2   515 | >> B1 sees pause
+  18:55:06  |  hold           pause          0.767  27.4   515 |  pause          pause          0.839  26.2   515 |
+  18:55:21  |  hold           pause          0.821  26.5   515 |  pause          pause          0.851  25.7   515 |
+  18:55:36  |  hold           pause          0.816  26.6   515 |  pause          pause          0.851  25.9   515 |
+  18:55:51  |  hold           pause          0.820  26.5   515 |  pause          pause          0.851  25.8   515 |
+  18:56:07  |  hold           pause          0.829  26.4   515 |  pause          pause          0.851  25.8   515 |
+  18:56:23  |  hold           pause          0.834  26.3   515 |  pause          pause          0.851  25.8   515 |
+  18:56:38  |  hold           pause          0.842  26.2   515 |                                                  |
+  18:56:53  |  hold           pause          0.848  26.1   515 |  pause          pause          0.851  25.8   515 |
+  18:57:09  |  hold           pause          0.851  25.9   515 |  pause          pause          0.851  25.9   515 |
+  18:57:24  |  hold           pause          0.851  25.9   515 |  pause          pause          0.848  26.1   515 |
+  18:57:57  |  hold           pause          0.851  25.8   515 |  pause          pause          0.842  26.1   515 |
+  18:58:12  |  hold           pause          0.851  25.7   515 |  pause          pause          0.831  26.3   515 |
+  18:58:27  |  hold           pause          0.851  25.8   515 |  pause          pause          0.820  26.5   515 |
+  18:58:42  |  hold           pause          0.851  25.8   515 |  cooldown                      0.000  26.9   575 |
+  18:58:57  |  optimize                      0.856  21.6   544 |  cooldown                      0.698  26.6   478 |
+  18:59:13  |  hold_calib     hold_calib     0.816  25.8   509 |  cooldown                      0.786  20.3   492 |
+  18:59:32  |  hold_calib     hold_calib     0.769  27.1   512 |  cooldown                      0.385  29.0   507 |
+  18:59:47  |                                                  |  cooldown                      0.750  27.3   542 |
+  19:00:04  |                                                  |  optimize                      0.000  29.2   644 |
+  19:00:20  |                                                  |  hold           hold_calib     0.814  27.0   558 |

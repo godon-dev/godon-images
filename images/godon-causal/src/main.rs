@@ -168,7 +168,7 @@ async fn delete_curves_for_sender(
     State(state): State<Arc<AppState>>,
     Path(sender_id): Path<String>,
 ) -> Json<serde_json::Value> {
-    // Breeder purged: its curves die with it — memory and persisted rows.
+    // Systemtender purged: its curves die with it — memory and persisted rows.
     // Restart replay must not resurrect them.
     let removed = state.curves.write().await.delete_sender(&sender_id);
     let mut rows_deleted: u64 = 0;
@@ -285,7 +285,7 @@ async fn predict_multihop(
 
 async fn impact(
     State(state): State<Arc<AppState>>,
-    Path(breeder_id): Path<String>,
+    Path(systemtender_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let guard = state.graph.read().await;
     let graph = match guard.as_ref() {
@@ -298,9 +298,9 @@ async fn impact(
         }
     };
 
-    let edges = graph.edges_from(&breeder_id);
+    let edges = graph.edges_from(&systemtender_id);
     Ok(Json(serde_json::json!({
-        "breeder_id": breeder_id,
+        "systemtender_id": systemtender_id,
         "edges": edges,
         "count": edges.len(),
     })))
@@ -308,7 +308,7 @@ async fn impact(
 
 async fn causes(
     State(state): State<Arc<AppState>>,
-    Path(breeder_id): Path<String>,
+    Path(systemtender_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let guard = state.graph.read().await;
     let graph = match guard.as_ref() {
@@ -321,9 +321,9 @@ async fn causes(
         }
     };
 
-    let edges = graph.edges_into(&breeder_id);
+    let edges = graph.edges_into(&systemtender_id);
     Ok(Json(serde_json::json!({
-        "breeder_id": breeder_id,
+        "systemtender_id": systemtender_id,
         "edges": edges,
         "count": edges.len(),
     })))
@@ -337,28 +337,28 @@ async fn build_graph_inner(
 ) -> Result<CausalGraph, Box<dyn std::error::Error + Send + Sync>> {
     let detector = CfarDetector::new(confidence);
 
-    let breeders = reader.list_breeders().await?;
-    info!("Found {} breeders", breeders.len());
+    let systemtenders = reader.list_systemtenders().await?;
+    info!("Found {} systemtenders", systemtenders.len());
 
-    // Load probe trials for all breeders
+    // Load probe trials for all systemtenders
     let mut all_trials: std::collections::HashMap<String, trial_reader::ProbeTrials> =
         std::collections::HashMap::new();
 
-    for breeder_id in &breeders {
-        match reader.read_probe_trials(breeder_id).await {
+    for systemtender_id in &systemtenders {
+        match reader.read_probe_trials(systemtender_id).await {
             Ok(probe) => {
                 info!(
-                    "Breeder {}: {} push, {} pause, {} hold_calib, {} receiver_hold",
-                    breeder_id,
+                    "Systemtender {}: {} push, {} pause, {} hold_calib, {} receiver_hold",
+                    systemtender_id,
                     probe.push_trials.len(),
                     probe.pause_trials.len(),
                     probe.hold_calib_trials.len(),
                     probe.receiver_hold_trials.len()
                 );
-                all_trials.insert(breeder_id.clone(), probe);
+                all_trials.insert(systemtender_id.clone(), probe);
             }
             Err(e) => {
-                info!("Skipping breeder {} (read error: {})", breeder_id, e);
+                info!("Skipping systemtender {} (read error: {})", systemtender_id, e);
             }
         }
     }
@@ -367,8 +367,8 @@ async fn build_graph_inner(
     let mut edges = Vec::new();
     let mut pairs_evaluated = 0usize;
 
-    for sender_id in &breeders {
-        for receiver_id in &breeders {
+    for sender_id in &systemtenders {
+        for receiver_id in &systemtenders {
             if sender_id == receiver_id {
                 continue;
             }
@@ -409,10 +409,10 @@ async fn build_graph_inner(
     }
 
     // Build nodes
-    for breeder_id in &breeders {
+    for systemtender_id in &systemtenders {
         nodes.push(CausalNode {
-            id: breeder_id.clone(),
-            label: breeder_id.clone(),
+            id: systemtender_id.clone(),
+            label: systemtender_id.clone(),
             objectives: Vec::new(),
             observations: Vec::new(),
         });
@@ -427,7 +427,7 @@ async fn build_graph_inner(
         built_at: chrono::Utc::now().to_rfc3339(),
         detector: detector.name().to_string(),
         detector_params: detector.params(),
-        breeders_scanned: breeders.len(),
+        systemtenders_scanned: systemtenders.len(),
         pairs_evaluated,
         edges_detected,
     };
@@ -521,7 +521,7 @@ struct ProbeResultRequest {
     push_start: String,
     pause_end: String,
     convergence_threshold: f64,
-    /// Declared parameter range (upper - lower) from the breeder.
+    /// Declared parameter range (upper - lower) from the systemtender.
     /// Scales gap ignorance; absent → observed level span.
     param_range: Option<f64>,
 }
@@ -715,7 +715,7 @@ async fn probe_result(
 
     // Primary receiver: largest |shift| across all receivers and channels.
     // Top-level fields describe it — with one receiver this is exactly the
-    // previous (2-breeder) behavior.
+    // previous (2-systemtender) behavior.
     let mut primary_recv = &per_receiver[0];
     for rr in per_receiver.iter().skip(1) {
         if rr.1.primary().1.shift.abs()
@@ -1329,8 +1329,8 @@ async fn main() {
         .route("/curves/{sender_id}", delete(delete_curves_for_sender))
         .route("/predict", post(predict))
         .route("/predict/multihop", post(predict_multihop))
-        .route("/impact/{breeder_id}", get(impact))
-        .route("/causes/{breeder_id}", get(causes))
+        .route("/impact/{systemtender_id}", get(impact))
+        .route("/causes/{systemtender_id}", get(causes))
         .layer(CorsLayer::very_permissive())
         .with_state(state);
 
@@ -1490,7 +1490,7 @@ mod tests {
     #[test]
     fn test_fold_self_bracket_joins_union_and_unstable_self_flips_key() {
         // Seed-48 tail defect: a stable-but-unresolved self curve (the
-        // +0.996 step at L=100) must join the gap union so the breeder's
+        // +0.996 step at L=100) must join the gap union so the systemtender's
         // blocking check sees it — retirement blocked via key 2.
         let mut gaps = vec![gap(0.0, 50.0, 0.006, 0.037, false, 0.003)];
         let self_o = vec![self_out(

@@ -36,8 +36,8 @@ impl TrialReader {
         }
     }
 
-    pub fn breeder_db_name(breeder_id: &str) -> String {
-        format!("breeder_{}", breeder_id.replace('-', "_"))
+    pub fn systemtender_db_name(systemtender_id: &str) -> String {
+        format!("systemtender_{}", systemtender_id.replace('-', "_"))
     }
 
     async fn connect(&self, dbname: &str) -> Result<tokio_postgres::Client, Error> {
@@ -139,7 +139,7 @@ impl TrialReader {
     }
 
     /// The sender's own node readings in a window — self-rows the
-    /// breeder publishes during its push and pause trials
+    /// systemtender publishes during its push and pause trials
     /// (receiver_id = the walking sender). Per-channel series; these
     /// bank the self-curve and its baseline (pause window = the
     /// sender at neutral).
@@ -182,10 +182,10 @@ impl TrialReader {
         Ok(values)
     }
 
-    /// The group's standing dials — each breeder's applied params,
+    /// The group's standing dials — each systemtender's applied params,
     /// refreshed per trial in the heartbeat table. This IS the
     /// constellation, assembled from purely local publications.
-    /// Returns {breeder_id: params} as a JSON value.
+    /// Returns {systemtender_id: params} as a JSON value.
     pub async fn read_standing_params(
         &self,
         group_id: &str,
@@ -194,8 +194,8 @@ impl TrialReader {
 
         let rows = client
             .query(
-                "SELECT breeder_id, CAST(params AS TEXT) \
-                 FROM interference_active_breeders \
+                "SELECT systemtender_id, CAST(params AS TEXT) \
+                 FROM interference_active_systemtenders \
                  WHERE group_id = $1::varchar AND params IS NOT NULL \
                  AND last_seen > NOW() - INTERVAL '600 seconds'",
                 &[&group_id],
@@ -204,41 +204,41 @@ impl TrialReader {
 
         let mut map = serde_json::Map::new();
         for row in &rows {
-            let breeder_id: String = row.get(0);
+            let systemtender_id: String = row.get(0);
             let params_str: String = row.get(1);
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&params_str) {
-                map.insert(breeder_id, v);
+                map.insert(systemtender_id, v);
             }
         }
         Ok(serde_json::Value::Object(map))
     }
 
-    // ─── List all breeder IDs ────────────────────────────────────────
+    // ─── List all systemtender IDs ────────────────────────────────────────
 
-    pub async fn list_breeders(&self) -> Result<Vec<String>, Error> {
+    pub async fn list_systemtenders(&self) -> Result<Vec<String>, Error> {
         let client = self.connect("yugabyte").await?;
         let rows = client
-            .query("SELECT datname FROM pg_database WHERE datname LIKE 'breeder_%' ORDER BY datname", &[])
+            .query("SELECT datname FROM pg_database WHERE datname LIKE 'systemtender_%' ORDER BY datname", &[])
             .await?;
 
-        let mut breeders = Vec::new();
+        let mut systemtenders = Vec::new();
         for row in &rows {
             let dbname: String = row.get(0);
-            // Strip breeder_ prefix to get UUID with dashes
-            if let Some(uuid) = dbname.strip_prefix("breeder_") {
-                breeders.push(uuid.replace('_', "-"));
+            // Strip systemtender_ prefix to get UUID with dashes
+            if let Some(uuid) = dbname.strip_prefix("systemtender_") {
+                systemtenders.push(uuid.replace('_', "-"));
             }
         }
-        Ok(breeders)
+        Ok(systemtenders)
     }
 
-    // ─── Read all trials for a breeder ───────────────────────────────
+    // ─── Read all trials for a systemtender ───────────────────────────────
 
-    pub async fn read_trials(&self, breeder_id: &str) -> Result<Vec<TrialRecord>, Error> {
-        let db = Self::breeder_db_name(breeder_id);
+    pub async fn read_trials(&self, systemtender_id: &str) -> Result<Vec<TrialRecord>, Error> {
+        let db = Self::systemtender_db_name(systemtender_id);
         let client = self.connect(&db).await?;
 
-        let study_name = format!("{}_study", breeder_id);
+        let study_name = format!("{}_study", systemtender_id);
 
         let trial_rows = client
             .query(
@@ -259,7 +259,7 @@ impl TrialReader {
             trials.push(record);
         }
 
-        info!("Loaded {} trials for breeder {}", trials.len(), breeder_id);
+        info!("Loaded {} trials for systemtender {}", trials.len(), systemtender_id);
         Ok(trials)
     }
 
@@ -347,9 +347,9 @@ impl TrialReader {
 
     // ─── Read classified probe trials ────────────────────────────────
 
-    pub async fn read_probe_trials(&self, breeder_id: &str) -> Result<ProbeTrials, Error> {
-        let trials = self.read_trials(breeder_id).await?;
-        Ok(ProbeTrials::from_trials(breeder_id, &trials))
+    pub async fn read_probe_trials(&self, systemtender_id: &str) -> Result<ProbeTrials, Error> {
+        let trials = self.read_trials(systemtender_id).await?;
+        Ok(ProbeTrials::from_trials(systemtender_id, &trials))
     }
 }
 
@@ -370,7 +370,7 @@ pub struct TrialRecord {
 
 #[derive(Debug, Clone)]
 pub struct ProbeTrials {
-    pub breeder_id: String,
+    pub systemtender_id: String,
     pub push_trials: Vec<ProbeTrial>,
     pub pause_trials: Vec<ProbeTrial>,
     pub hold_calib_trials: Vec<ProbeTrial>,
@@ -378,7 +378,7 @@ pub struct ProbeTrials {
 }
 
 impl ProbeTrials {
-    pub fn from_trials(breeder_id: &str, trials: &[TrialRecord]) -> Self {
+    pub fn from_trials(systemtender_id: &str, trials: &[TrialRecord]) -> Self {
         let mut push_trials = Vec::new();
         let mut pause_trials = Vec::new();
         let mut hold_calib_trials = Vec::new();
@@ -482,7 +482,7 @@ impl ProbeTrials {
         }
 
         Self {
-            breeder_id: breeder_id.to_string(),
+            systemtender_id: systemtender_id.to_string(),
             push_trials,
             pause_trials,
             hold_calib_trials,
