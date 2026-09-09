@@ -71,12 +71,12 @@ impl OptunaReader {
         Ok(client)
     }
 
-    fn breeder_db_name(breeder_id: &str) -> String {
-        format!("breeder_{}", breeder_id.replace('-', "_"))
+    fn systemtender_db_name(systemtender_id: &str) -> String {
+        format!("systemtender_{}", systemtender_id.replace('-', "_"))
     }
 
-    pub async fn list_studies(&self, breeder_id: &str) -> Result<Vec<StudyInfo>, Error> {
-        let db = Self::breeder_db_name(breeder_id);
+    pub async fn list_studies(&self, systemtender_id: &str) -> Result<Vec<StudyInfo>, Error> {
+        let db = Self::systemtender_db_name(systemtender_id);
         let client = self.connect(&db).await?;
 
         let studies = client
@@ -106,12 +106,12 @@ impl OptunaReader {
 
     pub async fn get_trials(
         &self,
-        breeder_id: &str,
+        systemtender_id: &str,
         study_name: &str,
         offset: i64,
         limit: i64,
     ) -> Result<Vec<TrialRecord>, Error> {
-        let db = Self::breeder_db_name(breeder_id);
+        let db = Self::systemtender_db_name(systemtender_id);
         let client = self.connect(&db).await?;
 
         let trial_rows = client
@@ -137,8 +137,8 @@ impl OptunaReader {
         Ok(trials)
     }
 
-    pub async fn get_trial_count(&self, breeder_id: &str, study_name: &str) -> Result<i64, Error> {
-        let db = Self::breeder_db_name(breeder_id);
+    pub async fn get_trial_count(&self, systemtender_id: &str, study_name: &str) -> Result<i64, Error> {
+        let db = Self::systemtender_db_name(systemtender_id);
         let client = self.connect(&db).await?;
 
         let row = client
@@ -236,10 +236,10 @@ impl OptunaReader {
 
     pub async fn get_study_user_attrs(
         &self,
-        breeder_id: &str,
+        systemtender_id: &str,
         study_name: &str,
     ) -> Result<HashMap<String, serde_json::Value>, Error> {
-        let db = Self::breeder_db_name(breeder_id);
+        let db = Self::systemtender_db_name(systemtender_id);
         let client = self.connect(&db).await?;
 
         let rows = client
@@ -505,7 +505,7 @@ impl OptunaReader {
         // k is derived dynamically from N reference cells:
         //   pfa = 1 - confidence
         //   k = N * (pfa^(-1/N) - 1)
-        // Configurable via interference_detection.detection_confidence in breeder config.
+        // Configurable via interference_detection.detection_confidence in systemtender config.
         // Default 0.95 (5% false alarm rate).
         let confidence = self.config_detection_confidence.unwrap_or(0.95_f64);
         let pfa = 1.0 - confidence;
@@ -689,8 +689,8 @@ impl OptunaReader {
 
         Ok(result)
     }
-/// List all breeder databases (for interference active breeder detection).
-    pub async fn get_active_breeders(&self) -> Result<Vec<serde_json::Value>, Error> {
+/// List all systemtender databases (for interference active systemtender detection).
+    pub async fn get_active_systemtenders(&self) -> Result<Vec<serde_json::Value>, Error> {
         let client = self.connect("yugabyte").await?;
         let rows = client
             .query(
@@ -733,7 +733,7 @@ fn mad(v: &[f64]) -> f64 {
 }
 
 /// Parse an ISO 8601 / RFC 3339 timestamp string to epoch seconds.
-/// Returns None if parsing fails. Used for cross-breeder trial alignment.
+/// Returns None if parsing fails. Used for cross-systemtender trial alignment.
 pub fn parse_timestamp_secs(ts: &str) -> Option<f64> {
     // Optuna timestamps from YugaByte look like "2026-06-14 10:23:45.123456+00"
     // or "2026-06-14T10:23:45.123456+00:00"

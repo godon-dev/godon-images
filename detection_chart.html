@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Detection Bench Data</title></head>
+<body style="background:#0d1117;margin:0;padding:20px">
+<div id="chart"></div>
+<script>
+// Embed the data directly
+const b1Data = [
+[0,0.444,"opt"],[1,0.340,"opt"],[2,0.977,"opt"],[4,0.570,"opt"],[7,0.519,"opt"],
+[8,0.255,"opt"],[9,0.728,"opt"],[10,0.602,"opt"],[12,0.000,"opt"],[14,0.627,"hold/baseline"],
+[16,0.695,"hold/signal"],[17,0.768,"hold/signal"],[18,0.794,"hold/signal"],[19,0.274,"opt"],
+[20,0.824,"hold/signal"],[22,0.795,"hold/signal"],[23,0.589,"opt"],[24,0.766,"hold/signal"],
+[25,0.317,"opt"],[26,0.814,"hold/signal"],[27,0.833,"hold/signal"],[28,0.844,"hold/signal"],
+[29,0.847,"hold/signal"],[30,0.812,"hold/signal"],[31,0.800,"hold/signal"],[32,0.775,"hold/signal"],
+[33,0.735,"hold/signal"],[34,0.713,"hold/signal"],[35,0.716,"hold/signal"],[36,0.780,"hold/signal"]
+];
+const b2Data = [
+[0,0.649,"opt"],[2,0.747,"opt"],[3,0.449,"opt"],[4,0.148,"opt"],[5,0.621,"opt"],
+[10,0.684,"opt"],[11,0.797,"opt"],[13,0.715,"opt"],[14,0.115,"impulse:push"],
+[15,0.154,"impulse:push"],[16,0.187,"impulse:push"],[17,0.304,"impulse:pause"],
+[18,0.319,"impulse:pause"],[20,0.369,"impulse:pause"],[21,0.388,"impulse:pause"],
+[22,0.341,"hold/baseline"],[23,0.152,"opt"],[24,0.525,"impulse:push"],[25,0.543,"impulse:push"],
+[26,0.560,"impulse:push"],[27,0.577,"impulse:push"],[28,0.408,"impulse:pause"],
+[29,0.421,"impulse:pause"],[30,0.415,"impulse:pause"],[31,0.411,"impulse:pause"],
+[32,0.408,"impulse:pause"],[33,0.403,"hold/baseline"],[34,0.604,"impulse:push"],
+[35,0.605,"impulse:push"],[36,0.606,"impulse:push"]
+];
+
+const colors = {
+  "opt": "#58a6ff",
+  "hold/baseline": "#8b949e",
+  "hold/signal": "#3fb950",
+  "hold/post": "#8b949e",
+  "impulse:push": "#f0883e",
+  "impulse:pause": "#d29922"
+};
+
+function getColor(mode) {
+  for (const key in colors) { if (mode.includes(key)) return colors[key]; }
+  return "#58a6ff";
+}
+
+const w = 1200, h = 700;
+const ml = 60, mr = 40, mt = 80, mb = 80;
+const pw = w - ml - mr, ph = h - mt - mb;
+
+function xPos(t) { return ml + (t / 40) * pw; }
+function yPos(v) { return mt + ph - v * ph; }
+
+let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" style="background:#0d1117">`;
+svg += `<text x="${w/2}" y="35" fill="#c9d1d9" font-family="monospace" font-size="16" text-anchor="middle">Greenhouse Growth Rate — Detection Bench (coupling=0.5, breeder 0.121.0)</text>`;
+
+// Grid
+for (let v = 0; v <= 1.0; v += 0.2) {
+  let y = yPos(v);
+  svg += `<line x1="${ml}" y1="${y}" x2="${w-mr}" y2="${y}" stroke="#30363d" stroke-width="1"/>`;
+  svg += `<text x="${ml-10}" y="${y+4}" fill="#8b949e" font-family="monospace" font-size="10" text-anchor="end">${v.toFixed(1)}</text>`;
+}
+
+// Phase shading for B2 push blocks
+const pushBlocks = [[14,16],[24,27],[34,36]];
+for (const [s,e] of pushBlocks) {
+  let x1 = xPos(s) - 15;
+  let x2 = xPos(e) + 15;
+  svg += `<rect x="${x1}" y="${mt}" width="${x2-x1}" height="${ph}" fill="#f0883e" opacity="0.08"/>`;
+}
+
+// Phase shading for B2 pause blocks
+const pauseBlocks = [[17,21],[28,32]];
+for (const [s,e] of pauseBlocks) {
+  let x1 = xPos(s) - 15;
+  let x2 = xPos(e) + 15;
+  svg += `<rect x="${x1}" y="${mt}" width="${x2-x1}" height="${ph}" fill="#d29922" opacity="0.06"/>`;
+}
+
+// Phase labels
+svg += `<text x="${xPos(15)}" y="${mt-8}" fill="#f0883e" font-family="monospace" font-size="10" text-anchor="middle" opacity="0.7">B2 PUSH</text>`;
+svg += `<text x="${xPos(19)}" y="${mt-8}" fill="#d29922" font-family="monospace" font-size="10" text-anchor="middle" opacity="0.7">B2 PAUSE</text>`;
+svg += `<text x="${xPos(25)}" y="${mt-8}" fill="#f0883e" font-family="monospace" font-size="10" text-anchor="middle" opacity="0.7">B2 PUSH</text>`;
+svg += `<text x="${xPos(30)}" y="${mt-8}" fill="#d29922" font-family="monospace" font-size="10" text-anchor="middle" opacity="0.7">B2 PAUSE</text>`;
+svg += `<text x="${xPos(35)}" y="${mt-8}" fill="#f0883e" font-family="monospace" font-size="10" text-anchor="middle" opacity="0.7">B2 PUSH</text>`;
+
+// X axis
+for (let t = 0; t <= 40; t += 5) {
+  svg += `<text x="${xPos(t)}" y="${h-mb+20}" fill="#8b949e" font-family="monospace" font-size="10" text-anchor="middle">${t}</text>`;
+}
+svg += `<text x="${w/2}" y="${h-15}" fill="#8b949e" font-family="monospace" font-size="11" text-anchor="middle">Trial Number</text>`;
+
+// B1 line + dots
+let prev = null;
+for (const [t, v, mode] of b1Data) {
+  let x = xPos(t), y = yPos(v);
+  let c = getColor(mode);
+  let r = (mode.includes("push") || mode.includes("signal")) ? 5 : 3;
+  if (prev) svg += `<line x1="${prev[0]}" y1="${prev[1]}" x2="${x}" y2="${y}" stroke="#30363d" stroke-width="1"/>`;
+  svg += `<circle cx="${x}" cy="${y}" r="${r}" fill="${c}" opacity="0.85"><title>B1 #${t}: ${v.toFixed(3)} (${mode})</title></circle>`;
+  prev = [x, y];
+}
+prev = null;
+
+// B2 line + dots
+for (const [t, v, mode] of b2Data) {
+  let x = xPos(t), y = yPos(v);
+  let c = getColor(mode);
+  let r = (mode.includes("push") || mode.includes("signal")) ? 5 : 3;
+  if (prev) svg += `<line x1="${prev[0]}" y1="${prev[1]}" x2="${x}" y2="${y}" stroke="#30363d" stroke-width="1"/>`;
+  svg += `<circle cx="${x}" cy="${y}" r="${r}" fill="${c}" opacity="0.85" stroke="${c}" stroke-width="0"><title>B2 #${t}: ${v.toFixed(3)} (${mode})</title></circle>`;
+  // Ring for B2 to distinguish
+  svg += `<circle cx="${x}" cy="${y}" r="${r+2}" fill="none" stroke="${c}" stroke-width="1" opacity="0.4"/>`;
+  prev = [x, y];
+}
+
+// Legend
+const legendItems = [
+  ["optimize (free trial)", "#58a6ff"],
+  ["hold/baseline", "#8b949e"],
+  ["hold/signal (receiver)", "#3fb950"],
+  ["impulse:push", "#f0883e"],
+  ["impulse:pause", "#d29922"]
+];
+for (let i = 0; i < legendItems.length; i++) {
+  let x = ml + i * 200;
+  svg += `<circle cx="${x}" cy="${h-35}" r="4" fill="${legendItems[i][1]}"/>`;
+  svg += `<text x="${x+10}" y="${h-31}" fill="#c9d1d9" font-family="monospace" font-size="10">${legendItems[i][0]}</text>`;
+}
+
+// B1/B2 labels
+svg += `<text x="${ml}" y="${mt-25}" fill="#58a6ff" font-family="monospace" font-size="11">B1 (solid dots)</text>`;
+svg += `<text x="${ml+150}" y="${mt-25}" fill="#f0883e" font-family="monospace" font-size="11">B2 (ringed dots)</text>`;
+
+svg += `</svg>`;
+document.getElementById('chart').innerHTML = svg;
+</script>
+</body>
+</html>

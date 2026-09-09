@@ -15,7 +15,7 @@ use tokio_postgres::Error;
 pub struct CurvePointRow {
     pub group_id: String,
     pub sender_id: String,
-    /// Breeder whose readout this point measured. Rows persisted before
+    /// Systemtender whose readout this point measured. Rows persisted before
     /// the column existed replay as "unknown".
     pub receiver_id: String,
     pub probe_param: String,
@@ -63,7 +63,7 @@ pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), E
         )
         .await?;
     // Tables created before the receiver column existed (causal <= 0.15.x,
-    // 2-breeder era: one implicit receiver per window).
+    // 2-systemtender era: one implicit receiver per window).
     client
         .execute(
             "ALTER TABLE curve_points \
@@ -208,8 +208,8 @@ pub async fn persist_point(
     }
 }
 
-/// Delete every persisted curve point owned by a sender (breeder purge).
-/// Without this, startup replay resurrects purged breeders' curves as
+/// Delete every persisted curve point owned by a sender (systemtender purge).
+/// Without this, startup replay resurrects purged systemtenders' curves as
 /// ghosts in /curves and the graph artifact. Returns rows deleted.
 pub async fn delete_curve_points(
     client: &tokio_postgres::Client,

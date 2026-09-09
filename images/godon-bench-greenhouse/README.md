@@ -4,7 +4,7 @@ A multi-zone greenhouse simulation for verifying the godon optimization engine.
 
 ## What It Does
 
-Simulates a greenhouse with 2-6 climate zones. Each zone tracks temperature, humidity, CO2 level, and plant growth rate. The optimizer (godon breeder) sends parameter sets via HTTP, the simulator runs the physics forward, and returns measurable outcomes (growth rate, energy consumed, water used).
+Simulates a greenhouse with 2-6 climate zones. Each zone tracks temperature, humidity, CO2 level, and plant growth rate. The optimizer (godon systemtender) sends parameter sets via HTTP, the simulator runs the physics forward, and returns measurable outcomes (growth rate, energy consumed, water used).
 
 The optimizer's job: find heating, ventilation, shading, CO2 injection, lighting, and irrigation settings that maximize plant growth while minimizing resource usage -- without violating safety guardrails (temperature extremes, disease-risk humidity, CO2 limits).
 
@@ -17,7 +17,7 @@ The godon engine needs a **target to optimize** that is:
 - **Multi-objective**: growth vs energy vs water -- genuine tradeoffs
 - **Dynamic**: weather drifts over time, forcing continuous adaptation
 - **Guardrail-friendly**: temperature, humidity, and CO2 extremes trigger rollback
-- **Composable**: more zones = more breeders that must cooperate through shared walls
+- **Composable**: more zones = more systemtenders that must cooperate through shared walls
 
 This is not a production greenhouse control system. It is a verification bench.
 
@@ -172,7 +172,7 @@ These simulate cold snaps, heat waves, and cloud bursts. A shock at tick 200 mig
 
 Set via `GREENHOUSE_SCENARIO` environment variable:
 
-| Scenario | Zones | Breeders | Purpose |
+| Scenario | Zones | Systemtenders | Purpose |
 |----------|-------|----------|---------|
 | `simple` (default) | 2 | 1 | Verify basic engine convergence |
 | `medium` | 4 | 2-3 | Test cooperation (zones share walls) |

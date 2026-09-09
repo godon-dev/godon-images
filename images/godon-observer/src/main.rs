@@ -185,12 +185,12 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
             .unwrap());
     }
 
-    // /api/active-breeders — interference active breeders
-    if path_parts.len() == 2 && path_parts[0] == "api" && path_parts[1] == "active-breeders" {
-        return match state.optuna.get_active_breeders().await {
+    // /api/active-systemtenders — interference active systemtenders
+    if path_parts.len() == 2 && path_parts[0] == "api" && path_parts[1] == "active-systemtenders" {
+        return match state.optuna.get_active_systemtenders().await {
             Ok(status) => Ok(json_response(StatusCode::OK, &serde_json::to_string(&status).unwrap_or_default())),
             Err(e) => {
-                error!("Active breeders error: {}", e);
+                error!("Active systemtenders error: {}", e);
                 Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{{\"error\": \"{}\"}}", e)))
             }
         };
@@ -246,16 +246,16 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
         };
     }
 
-    // /api/breeders — list all breeders with trial summaries
-    if path_parts.len() == 2 && path_parts[0] == "api" && path_parts[1] == "breeders" {
-        let url = format!("{}/breeders", state.api_url);
+    // /api/systemtenders — list all systemtenders with trial summaries
+    if path_parts.len() == 2 && path_parts[0] == "api" && path_parts[1] == "systemtenders" {
+        let url = format!("{}/systemtenders", state.api_url);
         return match state.http_client.get(&url).send() {
             Ok(response) if response.status().is_success() => {
                 let body = response.text().unwrap_or_default();
                 match serde_json::from_str::<serde_json::Value>(&body) {
-                    Ok(serde_json::Value::Array(breeders)) => {
+                    Ok(serde_json::Value::Array(systemtenders)) => {
                         let mut enriched = Vec::new();
-                        for b in &breeders {
+                        for b in &systemtenders {
                             let id = b.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                             let study_name = format!("{}_study", id);
                             let trial_count = state.optuna.get_trial_count(&id, &study_name).await.unwrap_or(0);
@@ -274,15 +274,15 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
                 Ok(json_response(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY), &body))
             }
             Err(e) => {
-                error!("API list breeders error: {}", e);
+                error!("API list systemtenders error: {}", e);
                 Ok(json_response(StatusCode::BAD_GATEWAY, &format!("{{\"error\": \"api unreachable: {}\"}}", e)))
             }
         };
     }
 
-    // /api-proxy/breeders/<uuid> — proxy to godon-api for breeder config
-    if path_parts.len() >= 3 && path_parts[0] == "api-proxy" && path_parts[1] == "breeders" {
-        let api_path = format!("/breeders/{}", path_parts[2]);
+    // /api-proxy/systemtenders/<uuid> — proxy to godon-api for systemtender config
+    if path_parts.len() >= 3 && path_parts[0] == "api-proxy" && path_parts[1] == "systemtenders" {
+        let api_path = format!("/systemtenders/{}", path_parts[2]);
         let url = format!("{}{}", state.api_url, api_path);
         return match state.http_client.get(&url).send() {
             Ok(response) if response.status().is_success() => {
@@ -301,16 +301,16 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
         };
     }
 
-    // /api/breeders/<uuid>/summary
-    if path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "breeders" && path_parts[3] == "summary" {
-        let breeder_id = path_parts[2].to_string();
-        let study_name = format!("{}_study", breeder_id);
+    // /api/systemtenders/<uuid>/summary
+    if path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "systemtenders" && path_parts[3] == "summary" {
+        let systemtender_id = path_parts[2].to_string();
+        let study_name = format!("{}_study", systemtender_id);
 
-        let count = state.optuna.get_trial_count(&breeder_id, &study_name).await.unwrap_or(0);
-        let attrs = state.optuna.get_study_user_attrs(&breeder_id, &study_name).await.unwrap_or_default();
+        let count = state.optuna.get_trial_count(&systemtender_id, &study_name).await.unwrap_or(0);
+        let attrs = state.optuna.get_study_user_attrs(&systemtender_id, &study_name).await.unwrap_or_default();
 
         let json = serde_json::json!({
-            "breeder_id": breeder_id,
+            "systemtender_id": systemtender_id,
             "study_name": study_name,
             "total_trials": count,
             "study_user_attributes": attrs,
@@ -318,12 +318,12 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
         return Ok(json_response(StatusCode::OK, &serde_json::to_string(&json).unwrap()));
     }
 
-    // /api/breeders/<uuid>/studies
-    if path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "breeders" && path_parts[3] == "studies" {
-        let breeder_id = path_parts[2].to_string();
-        return match state.optuna.list_studies(&breeder_id).await {
+    // /api/systemtenders/<uuid>/studies
+    if path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "systemtenders" && path_parts[3] == "studies" {
+        let systemtender_id = path_parts[2].to_string();
+        return match state.optuna.list_studies(&systemtender_id).await {
             Ok(studies) => {
-                let json = serde_json::json!({"breeder_id": breeder_id, "studies": studies});
+                let json = serde_json::json!({"systemtender_id": systemtender_id, "studies": studies});
                 Ok(json_response(StatusCode::OK, &serde_json::to_string(&json).unwrap()))
             }
             Err(e) => {
@@ -333,18 +333,18 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
         };
     }
 
-    // /api/breeders/<uuid>/trials/<study_name>
-    if path_parts.len() >= 5 && path_parts[0] == "api" && path_parts[1] == "breeders" && path_parts[3] == "trials" {
-        let breeder_id = path_parts[2].to_string();
+    // /api/systemtenders/<uuid>/trials/<study_name>
+    if path_parts.len() >= 5 && path_parts[0] == "api" && path_parts[1] == "systemtenders" && path_parts[3] == "trials" {
+        let systemtender_id = path_parts[2].to_string();
         let study_name = path_parts[4].to_string();
         let query = parse_query(req.uri());
         let offset: i64 = query.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
         let limit: i64 = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
 
-        return match state.optuna.get_trials(&breeder_id, &study_name, offset, limit).await {
+        return match state.optuna.get_trials(&systemtender_id, &study_name, offset, limit).await {
             Ok(trials) => {
                 let json = serde_json::json!({
-                    "breeder_id": breeder_id,
+                    "systemtender_id": systemtender_id,
                     "study_name": study_name,
                     "offset": offset,
                     "limit": limit,
@@ -359,18 +359,18 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
         };
     }
 
-    // /api/breeders/<uuid>/trials (auto-detect study name)
-    if path_parts.len() >= 4 && path_parts[0] == "api" && path_parts[1] == "breeders" && path_parts[3] == "trials" {
-        let breeder_id = path_parts[2].to_string();
-        let study_name = format!("{}_study", breeder_id);
+    // /api/systemtenders/<uuid>/trials (auto-detect study name)
+    if path_parts.len() >= 4 && path_parts[0] == "api" && path_parts[1] == "systemtenders" && path_parts[3] == "trials" {
+        let systemtender_id = path_parts[2].to_string();
+        let study_name = format!("{}_study", systemtender_id);
         let query = parse_query(req.uri());
         let offset: i64 = query.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
         let limit: i64 = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
 
-        return match state.optuna.get_trials(&breeder_id, &study_name, offset, limit).await {
+        return match state.optuna.get_trials(&systemtender_id, &study_name, offset, limit).await {
             Ok(trials) => {
                 let json = serde_json::json!({
-                    "breeder_id": breeder_id,
+                    "systemtender_id": systemtender_id,
                     "study_name": study_name,
                     "offset": offset,
                     "limit": limit,
@@ -387,7 +387,7 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
 
     Ok(Response::builder()
         .status(StatusCode::NOT_FOUND)
-        .body(Body::from("godon observer: try /metrics, /dashboard, /api/breeders/<uuid>/trials"))
+        .body(Body::from("godon observer: try /metrics, /dashboard, /api/systemtenders/<uuid>/trials"))
         .unwrap())
 }
 
@@ -420,7 +420,7 @@ async fn main() {
     info!("Observer listening on http://{}", addr);
     info!("  /metrics   - Prometheus metrics");
     info!("  /dashboard - Visualization dashboard");
-    info!("  /api/breeders/<uuid>/trials - Trial history");
+    info!("  /api/systemtenders/<uuid>/trials - Trial history");
 
     if let Err(e) = server.await {
         error!("Server error: {}", e);

@@ -1,4 +1,4 @@
-breeder:
+systemtender:
   type: linux_performance
 run:
   parallel: 1

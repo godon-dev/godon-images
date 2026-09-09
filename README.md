@@ -6,11 +6,11 @@ Container images built with Nix for reproducible, isolated builds.
 
 | Image | Language | Port | Purpose |
 |-------|----------|------|---------|
-| `godon-api` | Rust (Axum) | 8080 | REST API for managing optimizer breeders and credentials |
+| `godon-api` | Rust (Axum) | 8080 | REST API for managing optimizer systemtenders and credentials |
 | `godon-cli` | Rust | - | CLI tool for interacting with godon-api |
 | `godon-observer` | Rust (Hyper) | 8089 | Optimization observability: Prometheus metrics, trial history from Optuna storage, visualization dashboard |
 | `godon-causal` | Rust (Axum) | 8091 | Coupling detection (CFAR) and uncertainty-aware response-curve characterization from probe trials; curve persistence and the causal graph artifact |
-| `godon-seeder` | Rust | - | Deploys controller/breeder scripts to Windmill |
+| `godon-seeder` | Rust | - | Deploys controller/systemtender scripts to Windmill |
 | `godon-mcp` | Rust (Axum) | 3001 | MCP server exposing godon-api as tool interface for LLM agents |
 | `godon-bench-greenhouse` | Rust (Axum) | 8090 | Multi-zone greenhouse simulation bench for engine verification |
 | `godon-bench-generic` | Rust (Axum) | 8090 | Configurable synthetic coupling bench (topology, base functions, stacked noise) with ground truth |
