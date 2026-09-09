@@ -128,16 +128,16 @@ impl WeatherMode {
 
 /// Complexity scenario -- determines zone count and problem difficulty.
 ///
-/// Godon's breeder engine can run multiple workers. In multi-zone scenarios,
-/// different breeders can control different zones and must cooperate (or at
+/// Godon's systemtender engine can run multiple workers. In multi-zone scenarios,
+/// different systemtenders can control different zones and must cooperate (or at
 /// least not fight each other through shared walls).
 #[derive(Debug, Clone)]
 pub enum Scenario {
-    /// 2 zones, 1 breeder. Verify engine convergence on a simple problem.
+    /// 2 zones, 1 systemtender. Verify engine convergence on a simple problem.
     Simple,
-    /// 4 zones, 2-3 breeders. Test cooperation -- zones share walls.
+    /// 4 zones, 2-3 systemtenders. Test cooperation -- zones share walls.
     Medium,
-    /// 6 zones, 4+ breeders. Stress test -- multiple interacting subsystems.
+    /// 6 zones, 4+ systemtenders. Stress test -- multiple interacting subsystems.
     Complex,
 }
 
@@ -219,7 +219,7 @@ impl CouplingState {
 /// Top-level greenhouse state, shared via Arc<Mutex> across HTTP handlers.
 ///
 /// Maintains the full simulation: zones, weather, cumulative resource usage,
-/// coupling state, and the last applied parameter set (for the breeder's
+/// coupling state, and the last applied parameter set (for the systemtender's
 /// effectuation cycle).
 pub struct Greenhouse {
     /// The climate-controlled zones in this greenhouse.

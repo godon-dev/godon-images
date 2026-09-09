@@ -19,12 +19,12 @@ impl<'a> QueryEngine<'a> {
         self.graph.predict_multihop(sender_id, impulse_scale)
     }
 
-    /// "What affects this breeder?"
+    /// "What affects this systemtender?"
     pub fn causes_of(&self, receiver_id: &str) -> Vec<&crate::graph::CharacterizedEdge> {
         self.graph.edges_into(receiver_id)
     }
 
-    /// "What does this breeder affect?"
+    /// "What does this systemtender affect?"
     pub fn impact_of(&self, sender_id: &str) -> Vec<&crate::graph::CharacterizedEdge> {
         self.graph.edges_from(sender_id)
     }

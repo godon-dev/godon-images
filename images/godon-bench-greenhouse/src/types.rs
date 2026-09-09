@@ -67,7 +67,7 @@ fn default_sim_steps() -> u64 {
 ///     plants. Usable as guardrail: min_damage < 0.7 triggers rollback.
 ///   - coupling_delta_*: coupling channel magnitudes applied directly to zones.
 ///     Valuable for post-hoc causality analysis (cross-correlation, Granger
-///     causality between breeder time series).
+///     causality between systemtender time series).
 ///   - water_efficiency: growth achieved per unit of water consumed.
 ///   - crop_quality: accumulates stress degradation, slowly recovers.
 #[derive(Debug, Clone, Serialize)]

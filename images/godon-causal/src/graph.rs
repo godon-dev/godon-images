@@ -172,7 +172,7 @@ pub struct CausalGraph {
     #[serde(default)]
     pub detector_params: serde_json::Value,
     #[serde(default)]
-    pub breeders_scanned: usize,
+    pub systemtenders_scanned: usize,
     #[serde(default)]
     pub pairs_evaluated: usize,
     #[serde(default)]
@@ -188,7 +188,7 @@ impl Default for CausalGraph {
             built_at: String::new(),
             detector: String::new(),
             detector_params: serde_json::Value::Null,
-            breeders_scanned: 0,
+            systemtenders_scanned: 0,
             pairs_evaluated: 0,
             edges_detected: 0,
         }
@@ -417,7 +417,7 @@ pub struct Prediction {
 #[derive(Debug, Clone, Serialize)]
 pub struct BuildResult {
     pub status: String,
-    pub breeders_scanned: usize,
+    pub systemtenders_scanned: usize,
     pub pairs_evaluated: usize,
     pub edges_detected: usize,
     pub edges_total: usize,

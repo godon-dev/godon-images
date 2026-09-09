@@ -45,7 +45,7 @@ use std::sync::Arc;
 // ─── Request/Response Types ─────────────────────────────────────────
 
 /// POST /{node_id}/apply — accepts named params as a flat dict.
-/// The breeder sends {"param_0": 50.0, "param_1": 50.0, ...}.
+/// The systemtender sends {"param_0": 50.0, "param_1": 50.0, ...}.
 /// We convert to array internally based on config.
 #[derive(Debug, Deserialize)]
 struct ApplyRequest {
@@ -55,7 +55,7 @@ struct ApplyRequest {
 
 /// GET /{node_id}/metrics/json — returns named scalar objectives.
 /// objective_0, objective_1, etc. — built dynamically from config.
-/// The breeder reads via `key: objective_N` (scalar, not array).
+/// The systemtender reads via `key: objective_N` (scalar, not array).
 
 fn build_metrics_response(
     node_id: &str,

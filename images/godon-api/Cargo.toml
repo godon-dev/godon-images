@@ -4,7 +4,7 @@ name = "godon-api"
 version = "0.0.0"
 authors = ["godon-dev Matthias Tafelmeier"]
 edition = "2021"
-description = "Godon Control API - RESTful API for managing optimizer breeders"
+description = "Godon Control API - RESTful API for managing optimizer systemtenders"
 license = "AGPL-3.0"
 
 [dependencies]

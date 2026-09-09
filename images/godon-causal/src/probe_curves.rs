@@ -57,7 +57,7 @@ pub struct CurveState {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct CurveEntry {
     pub sender_id: String,
-    /// Breeder whose objective readout this curve measures. The probe
+    /// Systemtender whose objective readout this curve measures. The probe
     /// window contains every holding receiver's rows; the curve belongs
     /// to one listener.
     #[serde(default = "default_receiver")]
@@ -73,7 +73,7 @@ fn default_channel() -> String {
     "objective_0".to_string()
 }
 
-/// Rows persisted before the receiver column existed (2-breeder era)
+/// Rows persisted before the receiver column existed (2-systemtender era)
 /// replay under this identity — one curve per legacy sender/param/channel.
 fn default_receiver() -> String {
     "unknown".to_string()
@@ -119,7 +119,7 @@ pub struct ResponseCurve {
     /// Freshest blur on this curve: the (blended) bar of the last
     /// probed point. The scale is_converged() compares against.
     last_bar: f64,
-    /// Declared parameter range (upper - lower) from the breeder, used
+    /// Declared parameter range (upper - lower) from the systemtender, used
     /// to scale gap ignorance. None → observed level span.
     param_range: Option<f64>,
 }
@@ -430,8 +430,8 @@ impl CurveRegistry {
                           param.to_string(), channel.to_string()))
     }
 
-    /// Drop every curve owned by a sender (breeder purged). Returns the
-    /// number of curves removed. Curves follow the breeder lifecycle:
+    /// Drop every curve owned by a sender (systemtender purged). Returns the
+    /// number of curves removed. Curves follow the systemtender lifecycle:
     /// kept across restarts, deleted on explicit purge. Sender-scoped:
     /// every receiver-curve the sender authored dies with it.
     pub fn delete_sender(&mut self, sender_id: &str) -> usize {
@@ -475,7 +475,7 @@ impl CurveRegistry {
 mod tests {
     use super::*;
 
-    // ─── Multi-receiver separation (the 3-breeder sentinel) ───────
+    // ─── Multi-receiver separation (the 3-systemtender sentinel) ───────
 
     #[test]
     fn test_two_receivers_kept_separate_same_sender_param_channel() {
