@@ -5,6 +5,10 @@ on:
     types: [created, published, edited]
   workflow_call:
 
+permissions:
+  contents: read
+  packages: write
+
 env:
   REGISTRY: ghcr.io
   ORG: godon-dev
