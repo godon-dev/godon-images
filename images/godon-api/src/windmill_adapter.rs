@@ -293,4 +293,56 @@ impl WindmillClient {
         self.run_script("target_delete", args)?;
         Ok(())
     }
+
+    // ─── Steerwishes ────────────────────────────────────────────────
+    // Backed by Windmill scripts (f/{folder}/steerwish_*); those scripts
+    // own the wish records and their lifecycle events. Calculation
+    // (plan, verdicts, vigilance) lives in causal, keyed by wish id -
+    // this service never computes steering state.
+
+    pub fn list_steerwishes(&self) -> Result<Vec<crate::types::SteerwishSummary>> {
+        let response = self.run_script("steerwishes_get", json!({}))?;
+        let data = Self::unwrap_data(response);
+
+        if data.is_array() {
+            let wishes: Vec<crate::types::SteerwishSummary> = serde_json::from_value(data)
+                .context("Failed to parse steerwishes list")?;
+            Ok(wishes)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    pub fn create_steerwish(&self, wish_data: serde_json::Value) -> Result<crate::types::Steerwish> {
+        let args = json!({ "request_data": wish_data });
+        let response = self.run_script("steerwish_create", args)?;
+        let data = Self::unwrap_data(response);
+
+        serde_json::from_value(data)
+            .context("Failed to parse declared steerwish")
+    }
+
+    pub fn get_steerwish(&self, wish_id: &str) -> Result<crate::types::Steerwish> {
+        let args = json!({ "request_data": { "wish_id": wish_id } });
+        let response = self.run_script("steerwish_get", args)?;
+        let data = Self::unwrap_data(response);
+
+        let wish: crate::types::Steerwish = serde_json::from_value(data)
+            .context("Failed to parse steerwish")?;
+
+        if wish.id.is_empty() {
+            anyhow::bail!("Invalid steerwish response: missing id field");
+        }
+
+        Ok(wish)
+    }
+
+    pub fn close_steerwish(&self, wish_id: &str) -> Result<crate::types::Steerwish> {
+        let args = json!({ "request_data": { "wish_id": wish_id } });
+        let response = self.run_script("steerwish_close", args)?;
+        let data = Self::unwrap_data(response);
+
+        serde_json::from_value(data)
+            .context("Failed to parse closed steerwish")
+    }
 }

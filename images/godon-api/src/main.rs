@@ -37,6 +37,10 @@ async fn main() {
         .route("/targets", post(handlers::create_target))
         .route("/targets/{id}", get(handlers::get_target))
         .route("/targets/{id}", delete(handlers::delete_target))
+        .route("/steerwishes", get(handlers::list_steerwishes))
+        .route("/steerwishes", post(handlers::declare_steerwish))
+        .route("/steerwishes/{id}", get(handlers::get_steerwish))
+        .route("/steerwishes/{id}/close", post(handlers::close_steerwish))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .with_state(cfg.clone());
 
