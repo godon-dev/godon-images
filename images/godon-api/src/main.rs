@@ -1,3 +1,4 @@
+mod causal;
 mod config;
 mod handlers;
 mod types;
@@ -41,6 +42,13 @@ async fn main() {
         .route("/steerwishes", post(handlers::declare_steerwish))
         .route("/steerwishes/{id}", get(handlers::get_steerwish))
         .route("/steerwishes/{id}/close", post(handlers::close_steerwish))
+        .route("/map", get(handlers::get_map))
+        .route("/map/curves", get(handlers::get_map_curves))
+        .route("/map/artifact", get(handlers::get_map_artifact))
+        .route("/map/predict", post(handlers::map_predict))
+        .route("/map/predict/multihop", post(handlers::map_predict_multihop))
+        .route("/map/impact/{systemtender_id}", get(handlers::map_impact))
+        .route("/map/causes/{systemtender_id}", get(handlers::map_causes))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .with_state(cfg.clone());
 
