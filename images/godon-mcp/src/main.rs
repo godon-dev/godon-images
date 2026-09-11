@@ -15,7 +15,7 @@ use axum::{
     http::StatusCode,
     response::{
         sse::{Event, Sse},
-        IntoResponse,
+        IntoResponse, Response,
     },
     routing::{get, post},
     Json, Router,
@@ -57,10 +57,14 @@ async fn main() {
     let app = Router::new()
         .route("/sse", get(sse_handler))
         .route("/message", post(message_handler))
+        .route("/mcp", post(mcp_handler).get(mcp_get_blocked))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .with_state(state);
 
-    info!("Starting godon-mcp SSE server on {}", addr);
+    info!(
+        "Starting godon-mcp on {} (streamable HTTP at /mcp, legacy SSE at /sse)",
+        addr
+    );
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
@@ -108,8 +112,17 @@ async fn handle_request(
 ) -> JsonRpcResponse {
     match request.method.as_str() {
         "initialize" => {
+            // echo the client's requested protocol version when sane;
+            // streamable-HTTP clients (2025-03-26) and legacy SSE clients
+            // (2024-11-05) both land here.
+            let requested = request
+                .params
+                .as_ref()
+                .and_then(|p| p.get("protocolVersion"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("2025-03-26");
             let result = serde_json::json!({
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": requested,
                 "capabilities": {
                     "tools": { "listChanged": false }
                 },
@@ -172,4 +185,42 @@ async fn handle_request(
             format!("Method not found: {}", request.method),
         ),
     }
+}
+
+/// Streamable HTTP transport (MCP 2025-03-26): POST /mcp with one
+/// JSON-RPC message, response as application/json. Stateless - every
+/// POST stands alone; server-initiated streams are not offered, so
+/// GET /mcp answers 405 (allowed by the spec for tool-only servers).
+async fn mcp_handler(
+    State(state): State<AppState>,
+    Json(request): Json<serde_json::Value>,
+) -> Response {
+    // notifications carry no id: accept them, answer 202, no body
+    let is_notification = request.get("id").is_none();
+
+    let request: JsonRpcRequest = match serde_json::from_value(request) {
+        Ok(req) => req,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": serde_json::Value::Null,
+                    "error": { "code": -32700, "message": format!("Parse error: {}", e) }
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    let response = handle_request(&state.registry, request).await;
+    if is_notification {
+        StatusCode::ACCEPTED.into_response()
+    } else {
+        Json(response).into_response()
+    }
+}
+
+async fn mcp_get_blocked() -> StatusCode {
+    StatusCode::METHOD_NOT_ALLOWED
 }
