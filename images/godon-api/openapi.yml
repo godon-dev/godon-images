@@ -876,6 +876,128 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /map:
+    get:
+      tags: [map]
+      summary: Get the live map
+      description: Every node and characterized edge the system currently believes in, with fitted response, confidence, and noise floor. Partial by design - curves exist only where probed.
+      responses:
+        '200':
+          description: The live map
+          content:
+            application/json:
+              schema:
+                type: object
+  /map/curves:
+    get:
+      tags: [map]
+      summary: Get the measured response curves
+      description: Per edge, probe levels with measured shifts and honest error bars.
+      responses:
+        '200':
+          description: Measured curves
+          content:
+            application/json:
+              schema:
+                type: object
+  /map/artifact:
+    get:
+      tags: [map]
+      summary: Get the map artifact
+      description: The full connectome as persisted at last build - complete at build time, the citable object.
+      responses:
+        '200':
+          description: The persisted map artifact
+          content:
+            application/json:
+              schema:
+                type: object
+  /map/predict:
+    post:
+      tags: [map]
+      summary: Predict a one-hop shift
+      description: Ask the map - reads never touch the system. Linearized; refusal is causal-side for out-of-range asks.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sender_id, impulse_scale]
+              properties:
+                sender_id:
+                  type: string
+                impulse_scale:
+                  type: number
+      responses:
+        '200':
+          description: Prediction
+          content:
+            application/json:
+              schema:
+                type: object
+  /map/predict/multihop:
+    post:
+      tags: [map]
+      summary: Predict a composed cascade shift
+      description: P3 composition along a measured path; reads never touch the system.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sender_id, impulse_scale]
+              properties:
+                sender_id:
+                  type: string
+                impulse_scale:
+                  type: number
+      responses:
+        '200':
+          description: Cascade prediction
+          content:
+            application/json:
+              schema:
+                type: object
+  /map/impact/{systemtender_id}:
+    get:
+      tags: [map]
+      summary: Impact of one systemtender
+      description: What its probing has moved across the map.
+      parameters:
+        - name: systemtender_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Measured impact
+          content:
+            application/json:
+              schema:
+                type: object
+  /map/causes/{systemtender_id}:
+    get:
+      tags: [map]
+      summary: Causes feeding one systemtender
+      description: The measured upstream causes of its patch of the map.
+      parameters:
+        - name: systemtender_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Upstream causes
+          content:
+            application/json:
+              schema:
+                type: object
 components:
   parameters:
     SystemtenderUuid:
