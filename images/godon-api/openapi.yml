@@ -43,8 +43,8 @@ tags:
     description: Operations for managing credential catalog
   - name: targets
     description: Operations for managing target system catalog
-  - name: connectome
-    description: Operations for reading and asking the connectome
+  - name: connectomes
+    description: Operations for reading and asking connectomes
 
 paths:
   /systemtenders:
@@ -880,7 +880,7 @@ paths:
 
   /connectome:
     get:
-      tags: [connectome]
+      tags: [connectomes]
       summary: Get the live connectome
       description: Every node and characterized edge the system currently believes in, with fitted response, confidence, and noise floor. Partial by design - curves exist only where probed.
       responses:
@@ -892,7 +892,7 @@ paths:
                 type: object
   /connectome/curves:
     get:
-      tags: [connectome]
+      tags: [connectomes]
       summary: Get the measured response curves
       description: Per edge, probe levels with measured shifts and honest error bars.
       responses:
@@ -904,7 +904,7 @@ paths:
                 type: object
   /connectome/artifact:
     get:
-      tags: [connectome]
+      tags: [connectomes]
       summary: Get the connectome artifact
       description: The full connectome as persisted at last build - complete at build time, the citable object. The formal name for the certified export; the living partial connectome lives under /connectome.
       responses:
@@ -916,7 +916,7 @@ paths:
                 type: object
   /connectome/predict:
     post:
-      tags: [connectome]
+      tags: [connectomes]
       summary: Predict a one-hop shift
       description: Ask the connectome - reads never touch the system. Linearized; refusal is causal-side for out-of-range asks.
       requestBody:
@@ -940,7 +940,7 @@ paths:
                 type: object
   /connectome/predict/multihop:
     post:
-      tags: [connectome]
+      tags: [connectomes]
       summary: Predict a composed cascade shift
       description: P3 composition along a measured path; reads never touch the system.
       requestBody:
@@ -964,7 +964,7 @@ paths:
                 type: object
   /connectome/impact/{systemtender_id}:
     get:
-      tags: [connectome]
+      tags: [connectomes]
       summary: Impact of one systemtender
       description: What its probing has moved across the connectome.
       parameters:
@@ -983,7 +983,7 @@ paths:
                 type: object
   /connectome/causes/{systemtender_id}:
     get:
-      tags: [connectome]
+      tags: [connectomes]
       summary: Causes feeding one systemtender
       description: The measured upstream causes of its patch of the connectome.
       parameters:
