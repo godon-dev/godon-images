@@ -253,8 +253,8 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "connectome_get",
-                description: "Get the connectome: the system's wiring map - every node and characterized edge with its fitted response, confidence, and noise floor. This is the measured causal map the whole system acts on.",
+                name: "map_get",
+                description: "Get the live map: every node and characterized edge the system currently believes in, with fitted response, confidence, and noise floor. The map is partial by design - curves exist only where the system has probed - and always aging: check freshness before trusting.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -262,7 +262,7 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "connectome_curves",
+                name: "map_curves",
                 description: "Get the measured response curves: per edge, the probe levels with measured shifts and honest error bars. Curves exist only where the system has actually probed.",
                 input_schema: serde_json::json!({
                     "type": "object",
@@ -280,7 +280,7 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "connectome_predict",
+                name: "map_predict",
                 description: "Predict the one-hop shift at a receiver for a push magnitude on a sender, from the measured map (linearized). Reads never touch the system.",
                 input_schema: serde_json::json!({
                     "type": "object",
@@ -293,7 +293,7 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "connectome_predict_multihop",
+                name: "map_predict_multihop",
                 description: "Predict the composed cascade shift along a measured path (P3 composition, linearized). Reads never touch the system.",
                 input_schema: serde_json::json!({
                     "type": "object",
@@ -306,7 +306,7 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "connectome_impact",
+                name: "map_impact",
                 description: "What has a given systemtender's probing moved: the measured impact of its pushes across the map.",
                 input_schema: serde_json::json!({
                     "type": "object",
@@ -318,7 +318,7 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "connectome_causes",
+                name: "map_causes",
                 description: "What feeds a given systemtender's nodes: the measured causes upstream of its patch of the map.",
                 input_schema: serde_json::json!({
                     "type": "object",
@@ -476,9 +476,9 @@ impl ToolRegistry {
                     .await
             }
             "connectome_get" => self.causal_client.get("/graph").await,
-            "connectome_curves" => self.causal_client.get("/curves").await,
+            "map_curves" => self.causal_client.get("/curves").await,
             "connectome_artifact" => self.causal_client.get("/artifact").await,
-            "connectome_predict" => {
+            "map_predict" => {
                 let sender = args["sender_id"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("sender_id required"))?;
@@ -490,7 +490,7 @@ impl ToolRegistry {
                     )
                     .await
             }
-            "connectome_predict_multihop" => {
+            "map_predict_multihop" => {
                 let sender = args["sender_id"]
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("sender_id required"))?;
@@ -502,7 +502,7 @@ impl ToolRegistry {
                     )
                     .await
             }
-            "connectome_impact" => {
+            "map_impact" => {
                 require_id(id, "systemtender_id")?;
                 self.causal_client
                     .get(&format!(
@@ -511,7 +511,7 @@ impl ToolRegistry {
                     ))
                     .await
             }
-            "connectome_causes" => {
+            "map_causes" => {
                 require_id(id, "systemtender_id")?;
                 self.causal_client
                     .get(&format!(
