@@ -17,8 +17,18 @@ pub async fn ensure_connectomes_table(client: &Client) -> Result<(), tokio_postg
         .execute(
             "CREATE TABLE IF NOT EXISTS connectomes (\
              group_id VARCHAR(64) PRIMARY KEY, \
-             artifact JSONB NOT NULL, \
+             artifact TEXT NOT NULL, \
              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+            &[],
+        )
+        .await
+        .map(|_| ())?;
+    // 0.19.0 created the column as JSONB; binding a text parameter into
+    // JSONB fails on YB. The artifact is a JSON string - TEXT is exact.
+    // Idempotent: a TEXT column re-Alters to itself.
+    client
+        .execute(
+            "ALTER TABLE connectomes ALTER COLUMN artifact TYPE TEXT",
             &[],
         )
         .await
