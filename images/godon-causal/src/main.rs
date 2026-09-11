@@ -5,6 +5,7 @@ mod graph;
 mod probe_curves;
 mod curve_store;
 mod query;
+mod steer;
 mod trial_reader;
 
 use axum::{
