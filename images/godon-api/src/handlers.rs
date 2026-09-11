@@ -849,7 +849,7 @@ pub async fn get_map_curves(State(_config): State<Config>) -> Result<Response, (
     causal_relay(move || client.get("/curves")).await
 }
 
-pub async fn get_map_artifact(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+pub async fn get_connectome(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let client = get_causal_client()?;
     causal_relay(move || client.get("/artifact")).await
 }

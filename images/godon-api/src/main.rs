@@ -44,7 +44,7 @@ async fn main() {
         .route("/steerwishes/{id}/close", post(handlers::close_steerwish))
         .route("/map", get(handlers::get_map))
         .route("/map/curves", get(handlers::get_map_curves))
-        .route("/map/artifact", get(handlers::get_map_artifact))
+        .route("/connectome", get(handlers::get_connectome))
         .route("/map/predict", post(handlers::map_predict))
         .route("/map/predict/multihop", post(handlers::map_predict_multihop))
         .route("/map/impact/{systemtender_id}", get(handlers::map_impact))
