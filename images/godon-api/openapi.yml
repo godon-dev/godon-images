@@ -900,11 +900,11 @@ paths:
             application/json:
               schema:
                 type: object
-  /connectome:
+  /connectome/artifact:
     get:
       tags: [map]
-      summary: Get the connectome
-      description: The full connectome as persisted at last build - complete at build time, the citable object. The formal name for the certified export; the living partial map lives under /map.
+      summary: Get the connectome artifact
+      description: The full connectome as persisted at last build - complete at build time, the citable object. The formal name for the certified export; the living partial map lives under /connectome.
       responses:
         '200':
           description: The persisted map artifact
