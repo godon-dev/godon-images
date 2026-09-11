@@ -6,6 +6,7 @@ use serde_json::Value;
 #[derive(Clone)]
 pub struct ToolRegistry {
     client: GodonClient,
+    causal_client: GodonClient,
     tools: Vec<ToolDef>,
 }
 
@@ -17,7 +18,7 @@ struct ToolDef {
 }
 
 impl ToolRegistry {
-    pub fn new(client: GodonClient) -> Self {
+    pub fn new(client: GodonClient, causal_client: GodonClient) -> Self {
         let tools = vec![
             ToolDef {
                 name: "systemtender_list",
@@ -252,6 +253,83 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
+                name: "map_get",
+                description: "Get the live map: every node and characterized edge the system currently believes in, with fitted response, confidence, and noise floor. The map is partial by design - curves exist only where the system has probed - and always aging: check freshness before trusting.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
+                name: "map_curves",
+                description: "Get the measured response curves: per edge, the probe levels with measured shifts and honest error bars. Curves exist only where the system has actually probed.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
+                name: "connectome_artifact",
+                description: "Get the exported map artifact: the full connectome with curves and metadata, as persisted at last build.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
+                name: "map_predict",
+                description: "Predict the one-hop shift at a receiver for a push magnitude on a sender, from the measured map (linearized). Reads never touch the system.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "sender_id": { "type": "string", "description": "The node to push" },
+                        "impulse_scale": { "type": "number", "description": "Push magnitude" }
+                    },
+                    "required": ["sender_id", "impulse_scale"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
+                name: "map_predict_multihop",
+                description: "Predict the composed cascade shift along a measured path (P3 composition, linearized). Reads never touch the system.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "sender_id": { "type": "string", "description": "The node to push" },
+                        "impulse_scale": { "type": "number", "description": "Push magnitude" }
+                    },
+                    "required": ["sender_id", "impulse_scale"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
+                name: "map_impact",
+                description: "What has a given systemtender's probing moved: the measured impact of its pushes across the map.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "systemtender_id": { "type": "string", "description": "UUID of the systemtender" }
+                    },
+                    "required": ["systemtender_id"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
+                name: "map_causes",
+                description: "What feeds a given systemtender's nodes: the measured causes upstream of its patch of the map.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "systemtender_id": { "type": "string", "description": "UUID of the systemtender" }
+                    },
+                    "required": ["systemtender_id"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
                 name: "health",
                 description: "Check the health of the godon platform.",
                 input_schema: serde_json::json!({
@@ -262,7 +340,7 @@ impl ToolRegistry {
             },
         ];
 
-        Self { client, tools }
+        Self { client, causal_client, tools }
     }
 
     pub fn list_tools(&self) -> Vec<Value> {
@@ -393,6 +471,51 @@ impl ToolRegistry {
                 self.client
                     .post_empty(&format!(
                         "/steerwishes/{}/close",
+                        urlencoding::encode(id)
+                    ))
+                    .await
+            }
+            "map_get" => self.causal_client.get("/graph").await,
+            "map_curves" => self.causal_client.get("/curves").await,
+            "connectome_artifact" => self.causal_client.get("/artifact").await,
+            "map_predict" => {
+                let sender = args["sender_id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("sender_id required"))?;
+                let scale = args["impulse_scale"].as_f64().unwrap_or(1.0);
+                self.causal_client
+                    .post(
+                        "/predict",
+                        serde_json::json!({ "sender_id": sender, "impulse_scale": scale }),
+                    )
+                    .await
+            }
+            "map_predict_multihop" => {
+                let sender = args["sender_id"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("sender_id required"))?;
+                let scale = args["impulse_scale"].as_f64().unwrap_or(1.0);
+                self.causal_client
+                    .post(
+                        "/predict/multihop",
+                        serde_json::json!({ "sender_id": sender, "impulse_scale": scale }),
+                    )
+                    .await
+            }
+            "map_impact" => {
+                require_id(id, "systemtender_id")?;
+                self.causal_client
+                    .get(&format!(
+                        "/impact/{}",
+                        urlencoding::encode(id)
+                    ))
+                    .await
+            }
+            "map_causes" => {
+                require_id(id, "systemtender_id")?;
+                self.causal_client
+                    .get(&format!(
+                        "/causes/{}",
                         urlencoding::encode(id)
                     ))
                     .await
