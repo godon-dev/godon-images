@@ -187,6 +187,71 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
+                name: "steerwish_list",
+                description: "List all declared steerwishes with their derived lifecycle state (declared, planned, refused, acted, landed, missed, re_opened, closed).",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
+                name: "steerwish_declare",
+                description: "Declare a steerwish: a named measured outcome the system should bring into a band and hold. The map plans the input setting; refusals name their binding constraint. Omitted budget means upkeep indefinitely; omitted regime means standing. Judging is in/out of band only - the target is receipt and reporting.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "outcome": { "type": "string", "description": "Plain name of the measured value this wish is about - must resolve to exactly one entry in the map's outcome registry, e.g. 'chainend.shift'" },
+                        "band": {
+                            "type": "object",
+                            "description": "Acceptable range in the outcome's measurement units",
+                            "properties": {
+                                "lo": { "type": "number", "description": "Lower edge of the acceptable band" },
+                                "hi": { "type": "number", "description": "Upper edge of the acceptable band" },
+                                "target": { "type": "number", "description": "Aim point inside the band - receipt and reporting only, never judged" }
+                            },
+                            "required": ["lo", "hi"]
+                        },
+                        "limits": {
+                            "type": "object",
+                            "description": "Guardrails checked at plan time; a refusal names the binding one",
+                            "properties": {
+                                "exclude": { "type": "array", "items": { "type": "string" }, "description": "Param names that may not be moved at all" },
+                                "maxChange": { "type": "number", "description": "No input may end further from its neutral point than this fraction of its own range" }
+                            }
+                        },
+                        "budget": { "type": "integer", "description": "Re-act allowance after drift events; omitted means upkeep indefinitely" },
+                        "regime": { "type": "string", "enum": ["standing"], "description": "Closing rule of the wish; only standing exists today (held until closed)" }
+                    },
+                    "required": ["outcome", "band"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
+                name: "steerwish_get",
+                description: "Get one steerwish with its full event history (declared, planned, refused, acted, landed, missed, re_opened, closed).",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "wish_id": { "type": "string", "description": "UUID of the steerwish" }
+                    },
+                    "required": ["wish_id"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
+                name: "steerwish_close",
+                description: "Close a steerwish: append the 'closed' event and release the hold (idempotent on already-closed wishes).",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "wish_id": { "type": "string", "description": "UUID of the steerwish to close" }
+                    },
+                    "required": ["wish_id"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
                 name: "health",
                 description: "Check the health of the godon platform.",
                 input_schema: serde_json::json!({
@@ -219,6 +284,7 @@ impl ToolRegistry {
             .get("systemtender_id")
             .or_else(|| args.get("credential_id"))
             .or_else(|| args.get("target_id"))
+            .or_else(|| args.get("wish_id"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
@@ -288,6 +354,47 @@ impl ToolRegistry {
                 require_id(id, "target_id")?;
                 self.client
                     .delete(&format!("/targets/{}", urlencoding::encode(id)))
+                    .await
+            }
+            "steerwish_list" => self.client.get("/steerwishes").await,
+            "steerwish_get" => {
+                require_id(id, "wish_id")?;
+                self.client
+                    .get(&format!(
+                        "/steerwishes/{}",
+                        urlencoding::encode(id)
+                    ))
+                    .await
+            }
+            "steerwish_declare" => {
+                if args.get("outcome").and_then(|v| v.as_str()).is_none() {
+                    bail!("outcome required: the plain name of the measured value");
+                }
+                if args.get("band").is_none() {
+                    bail!("band required: an object with lo and hi, in the outcome's measurement units");
+                }
+                let mut body = serde_json::json!({
+                    "outcome": args["outcome"],
+                    "band": args["band"],
+                });
+                if let Some(limits) = args.get("limits") {
+                    body["limits"] = limits.clone();
+                }
+                if let Some(budget) = args.get("budget") {
+                    body["budget"] = budget.clone();
+                }
+                if let Some(regime) = args.get("regime") {
+                    body["regime"] = regime.clone();
+                }
+                self.client.post("/steerwishes", body).await
+            }
+            "steerwish_close" => {
+                require_id(id, "wish_id")?;
+                self.client
+                    .post_empty(&format!(
+                        "/steerwishes/{}/close",
+                        urlencoding::encode(id)
+                    ))
                     .await
             }
             "health" => self.client.get("/health").await,
