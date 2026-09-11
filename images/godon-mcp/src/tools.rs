@@ -475,7 +475,7 @@ impl ToolRegistry {
                     ))
                     .await
             }
-            "connectome_get" => self.causal_client.get("/graph").await,
+            "map_get" => self.causal_client.get("/graph").await,
             "map_curves" => self.causal_client.get("/curves").await,
             "connectome_artifact" => self.causal_client.get("/artifact").await,
             "map_predict" => {
