@@ -7,6 +7,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::json;
+use serde_json::Value;
 
 use crate::config::Config;
 use crate::types::{
@@ -790,4 +791,120 @@ pub async fn close_steerwish(
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
     ))?
+}
+
+// ─── The map (relays to causal
+
+fn get_causal_client() -> Result<crate::causal::CausalClient, (StatusCode, Json<ErrorResponse>)> {
+    crate::causal::CausalClient::new().map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse::new(
+            format!("Failed to initialize causal client: {}", e),
+            "INTERNAL_SERVER_ERROR"
+        ))
+    ))
+}
+
+use axum::response::{IntoResponse, Response};
+
+async fn causal_relay<F>(relay: F) -> Result<Response, (StatusCode, Json<ErrorResponse>)>
+where
+    F: FnOnce() -> Result<(reqwest::StatusCode, Value), anyhow::Error> + Send + 'static,
+{
+    let (status, body) = relay().map_err(|e| (
+        StatusCode::BAD_GATEWAY,
+        Json(ErrorResponse::new(
+            format!("causal relay error: {}", e),
+            "BAD_GATEWAY"
+        ))
+    ))?;
+
+    if status.is_success() {
+        Ok(Json(body).into_response())
+    } else if status == reqwest::StatusCode::NOT_FOUND {
+        Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse::new(
+                body.get("message").and_then(|m| m.as_str()).unwrap_or("not found in the map"),
+                "NOT_FOUND"
+            )),
+        ))
+    } else {
+        Err((
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse::new(
+                format!("causal relay error ({}): {}", status, body),
+                "BAD_GATEWAY"
+            )),
+        ))
+    }
+}
+
+pub async fn get_connectome(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let client = get_causal_client()?;
+    causal_relay(move || client.get("/graph")).await
+}
+
+pub async fn get_connectome_curves(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let client = get_causal_client()?;
+    causal_relay(move || client.get("/curves")).await
+}
+
+pub async fn get_connectome_artifact(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let client = get_causal_client()?;
+    causal_relay(move || client.get("/artifact")).await
+}
+
+pub async fn connectome_predict(
+    State(_config): State<Config>,
+    Json(body): Json<Value>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    if body.get("sender_id").and_then(|v| v.as_str()).is_none() {
+        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new(
+            "sender_id required: the node the push lands on",
+            "BAD_REQUEST"
+        ))));
+    }
+    let client = get_causal_client()?;
+    causal_relay(move || client.post("/predict", &body)).await
+}
+
+pub async fn connectome_predict_multihop(
+    State(_config): State<Config>,
+    Json(body): Json<Value>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    if body.get("sender_id").and_then(|v| v.as_str()).is_none() {
+        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new(
+            "sender_id required: the node the push lands on",
+            "BAD_REQUEST"
+        ))));
+    }
+    let client = get_causal_client()?;
+    causal_relay(move || client.post("/predict/multihop", &body)).await
+}
+
+pub async fn connectome_impact(
+    State(_config): State<Config>,
+    Path(systemtender_id): Path<String>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    if !UUID_REGEX.is_match(&systemtender_id) {
+        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new(
+            "Invalid UUID format", "BAD_REQUEST"
+        ))));
+    }
+    let client = get_causal_client()?;
+    causal_relay(move || client.get(&format!("/impact/{}", systemtender_id))).await
+}
+
+pub async fn connectome_causes(
+    State(_config): State<Config>,
+    Path(systemtender_id): Path<String>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    if !UUID_REGEX.is_match(&systemtender_id) {
+        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new(
+            "Invalid UUID format", "BAD_REQUEST"
+        ))));
+    }
+    let client = get_causal_client()?;
+    causal_relay(move || client.get(&format!("/causes/{}", systemtender_id))).await
 }
