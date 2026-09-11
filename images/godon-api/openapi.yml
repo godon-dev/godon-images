@@ -876,7 +876,7 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
-  /map:
+  /connectome:
     get:
       tags: [map]
       summary: Get the live map
@@ -888,7 +888,7 @@ paths:
             application/json:
               schema:
                 type: object
-  /map/curves:
+  /connectome/curves:
     get:
       tags: [map]
       summary: Get the measured response curves
@@ -912,7 +912,7 @@ paths:
             application/json:
               schema:
                 type: object
-  /map/predict:
+  /connectome/predict:
     post:
       tags: [map]
       summary: Predict a one-hop shift
@@ -936,7 +936,7 @@ paths:
             application/json:
               schema:
                 type: object
-  /map/predict/multihop:
+  /connectome/predict/multihop:
     post:
       tags: [map]
       summary: Predict a composed cascade shift
@@ -960,7 +960,7 @@ paths:
             application/json:
               schema:
                 type: object
-  /map/impact/{systemtender_id}:
+  /connectome/impact/{systemtender_id}:
     get:
       tags: [map]
       summary: Impact of one systemtender
@@ -979,7 +979,7 @@ paths:
             application/json:
               schema:
                 type: object
-  /map/causes/{systemtender_id}:
+  /connectome/causes/{systemtender_id}:
     get:
       tags: [map]
       summary: Causes feeding one systemtender

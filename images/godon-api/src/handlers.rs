@@ -839,22 +839,22 @@ where
     }
 }
 
-pub async fn get_map(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+pub async fn get_connectome(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let client = get_causal_client()?;
     causal_relay(move || client.get("/graph")).await
 }
 
-pub async fn get_map_curves(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+pub async fn get_connectome_curves(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let client = get_causal_client()?;
     causal_relay(move || client.get("/curves")).await
 }
 
-pub async fn get_connectome(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+pub async fn get_connectome_artifact(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let client = get_causal_client()?;
     causal_relay(move || client.get("/artifact")).await
 }
 
-pub async fn map_predict(
+pub async fn connectome_predict(
     State(_config): State<Config>,
     Json(body): Json<Value>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
@@ -868,7 +868,7 @@ pub async fn map_predict(
     causal_relay(move || client.post("/predict", &body)).await
 }
 
-pub async fn map_predict_multihop(
+pub async fn connectome_predict_multihop(
     State(_config): State<Config>,
     Json(body): Json<Value>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
@@ -882,7 +882,7 @@ pub async fn map_predict_multihop(
     causal_relay(move || client.post("/predict/multihop", &body)).await
 }
 
-pub async fn map_impact(
+pub async fn connectome_impact(
     State(_config): State<Config>,
     Path(systemtender_id): Path<String>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
@@ -895,7 +895,7 @@ pub async fn map_impact(
     causal_relay(move || client.get(&format!("/impact/{}", systemtender_id))).await
 }
 
-pub async fn map_causes(
+pub async fn connectome_causes(
     State(_config): State<Config>,
     Path(systemtender_id): Path<String>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
