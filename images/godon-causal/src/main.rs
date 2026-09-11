@@ -1,5 +1,6 @@
 mod artifact;
 mod characterizer;
+mod connectome_store;
 mod detector;
 mod graph;
 mod probe_curves;
@@ -18,6 +19,7 @@ use axum::{
     Router,
 };
 use log::info;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -31,7 +33,7 @@ use trial_reader::{mad, TrialReader};
 
 struct AppState {
     reader: TrialReader,
-    graph: RwLock<Option<CausalGraph>>,
+    connectomes: RwLock<HashMap<String, CausalGraph>>,
     build_status: RwLock<BuildStatus>,
     curves: RwLock<probe_curves::CurveRegistry>,
 }
@@ -61,17 +63,33 @@ impl AppState {
     fn new(reader: TrialReader) -> Self {
         Self {
             reader,
-            graph: RwLock::new(None),
+            connectomes: RwLock::new(HashMap::new()),
             build_status: RwLock::new(BuildStatus::default()),
             curves: RwLock::new(probe_curves::CurveRegistry::new()),
         }
+    }
+
+    /// The map this engine currently serves (the default group).
+    async fn current_graph(&self) -> Option<CausalGraph> {
+        self.connectomes
+            .read()
+            .await
+            .get(connectome_store::DEFAULT_GROUP)
+            .cloned()
+    }
+
+    async fn set_connectome(&self, group: &str, graph: CausalGraph) {
+        self.connectomes
+            .write()
+            .await
+            .insert(group.to_string(), graph);
     }
 }
 
 // ─── Handlers ───────────────────────────────────────────────────────
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    let graph_built = state.graph.read().await.is_some();
+    let graph_built = state.current_graph().await.is_some();
     let db_ok = state.reader.health_check().await;
     Json(serde_json::json!({
         "status": if db_ok { "ok" } else { "degraded" },
@@ -130,7 +148,29 @@ async fn build(
                     "Graph build complete: {} edges detected in {:.1}s",
                     edges, duration
                 );
-                *state_clone.graph.write().await = Some(graph);
+                let artifact_json = serde_json::to_string(&graph)
+                    .unwrap_or_else(|_| "null".to_string());
+                state_clone
+                    .set_connectome(connectome_store::DEFAULT_GROUP, graph)
+                    .await;
+                // Durability: the built map is persisted for boot restore.
+                match state_clone.reader.connect_archive().await {
+                    Ok(client) => {
+                        if let Err(e) = connectome_store::upsert_connectome(
+                            &client,
+                            connectome_store::DEFAULT_GROUP,
+                            &artifact_json,
+                        )
+                        .await
+                        {
+                            log::error!("connectome persist failed: {}", e);
+                        }
+                    }
+                    Err(e) => log::error!(
+                        "connectome persist skipped, archive DB unreachable: {}",
+                        e
+                    ),
+                }
                 *state_clone.build_status.write().await = BuildStatus::Done {
                     at: chrono::Utc::now().to_rfc3339(),
                     edges,
@@ -207,14 +247,13 @@ async fn delete_curves_for_sender(
 async fn get_graph(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<CausalGraph>, (StatusCode, Json<serde_json::Value>)> {
-    let guard = state.graph.read().await;
-    match guard.as_ref() {
-        Some(graph) => Ok(Json(graph.clone())),
+    match state.current_graph().await {
+        Some(graph) => Ok(Json(graph)),
         None => Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({
                 "error": "no graph built yet",
-                "hint": "POST /build to construct the causal graph"
+                "hint": "POST /build to construct the causal graph",
             })),
         )),
     }
@@ -223,10 +262,9 @@ async fn get_graph(
 async fn get_artifact(
     State(state): State<Arc<AppState>>,
 ) -> Result<String, (StatusCode, String)> {
-    let guard = state.graph.read().await;
-    match guard.as_ref() {
+    match state.current_graph().await {
         Some(graph) => {
-            let json = artifact::export_artifact(graph).map_err(|e| {
+            let json = artifact::export_artifact(&graph).map_err(|e| {
                 (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
             })?;
             Ok(json)
@@ -234,6 +272,118 @@ async fn get_artifact(
         None => Err((
             StatusCode::SERVICE_UNAVAILABLE,
             "no graph built yet — POST /build".to_string(),
+        )),
+    }
+}
+
+// The artifact is a portable object: build derives it, upload
+// reinstates it, the archive DB keeps it alive across restarts.
+// One connectome per inference group; "default" is what the legacy
+// routes serve.
+async fn store_connectome(
+    state: Arc<AppState>,
+    group: String,
+    value: serde_json::Value,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    if !connectome_store::valid_group(&group) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid group id (letters, digits, '-', '_', max 64)"
+            })),
+        ));
+    }
+
+    let graph = crate::artifact::import_artifact(&value.to_string()).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": format!("invalid artifact: {}", e)
+            })),
+        )
+    })?;
+    let nodes = graph.nodes.len();
+    let edges = graph.edges.len();
+
+    // Durability first: persist, then serve from memory.
+    let artifact_json = serde_json::to_string(&graph).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+    })?;
+    match state.reader.connect_archive().await {
+        Ok(client) => {
+            if let Err(e) =
+                connectome_store::upsert_connectome(&client, &group, &artifact_json).await
+            {
+                log::error!("connectome persist failed for '{}': {}", group, e);
+            }
+        }
+        Err(e) => {
+            log::error!(
+                "connectome persist skipped for '{}', archive DB unreachable: {}",
+                group,
+                e
+            );
+        }
+    }
+
+    state.connectomes.write().await.insert(group.clone(), graph);
+    info!(
+        "connectome '{}' loaded: {} nodes, {} edges",
+        group, nodes, edges
+    );
+    Ok(Json(serde_json::json!({
+        "status": "loaded",
+        "group": group,
+        "nodes": nodes,
+        "edges": edges
+    })))
+}
+
+async fn upload_artifact(
+    State(state): State<Arc<AppState>>,
+    Json(value): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    store_connectome(state, connectome_store::DEFAULT_GROUP.to_string(), value).await
+}
+
+async fn upload_artifact_group(
+    State(state): State<Arc<AppState>>,
+    Path(group): Path<String>,
+    Json(value): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    store_connectome(state, group, value).await
+}
+
+async fn get_graph_group(
+    State(state): State<Arc<AppState>>,
+    Path(group): Path<String>,
+) -> Result<Json<CausalGraph>, (StatusCode, Json<serde_json::Value>)> {
+    match state.connectomes.read().await.get(&group).cloned() {
+        Some(graph) => Ok(Json(graph)),
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": format!("no connectome stored for group '{}'", group),
+                "hint": "POST /artifact/{group} to load one, or POST /build to derive it",
+            })),
+        )),
+    }
+}
+
+async fn get_artifact_group(
+    State(state): State<Arc<AppState>>,
+    Path(group): Path<String>,
+) -> Result<String, (StatusCode, String)> {
+    let guard = state.connectomes.read().await;
+    match guard.get(&group) {
+        Some(graph) => artifact::export_artifact(graph)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("no connectome stored for group '{}'", group),
         )),
     }
 }
@@ -248,8 +398,7 @@ async fn predict(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PredictRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let guard = state.graph.read().await;
-    let graph = match guard.as_ref() {
+    let graph = match state.current_graph().await {
         Some(g) => g,
         None => {
             return Err((
@@ -268,8 +417,7 @@ async fn predict_multihop(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PredictRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let guard = state.graph.read().await;
-    let graph = match guard.as_ref() {
+    let graph = match state.current_graph().await {
         Some(g) => g,
         None => {
             return Err((
@@ -288,8 +436,7 @@ async fn impact(
     State(state): State<Arc<AppState>>,
     Path(systemtender_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let guard = state.graph.read().await;
-    let graph = match guard.as_ref() {
+    let graph = match state.current_graph().await {
         Some(g) => g,
         None => {
             return Err((
@@ -311,8 +458,7 @@ async fn causes(
     State(state): State<Arc<AppState>>,
     Path(systemtender_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let guard = state.graph.read().await;
-    let graph = match guard.as_ref() {
+    let graph = match state.current_graph().await {
         Some(g) => g,
         None => {
             return Err((
@@ -1312,6 +1458,28 @@ async fn main() {
         }
     }
 
+    // Restart recovery: connectomes are durable per inference group.
+    match state.reader.connect_archive().await {
+        Ok(client) => {
+            if let Err(e) = connectome_store::ensure_connectomes_table(&client).await {
+                log::error!("connectomes table setup failed: {}", e);
+            }
+            match connectome_store::load_connectomes(&client).await {
+                Ok(pairs) => {
+                    let count = pairs.len();
+                    let map: HashMap<String, CausalGraph> = pairs.into_iter().collect();
+                    *state.connectomes.write().await = map;
+                    info!("restored {} connectome(s) from the archive", count);
+                }
+                Err(e) => log::error!("connectome restore failed: {}", e),
+            }
+        }
+        Err(e) => log::error!(
+            "archive DB unavailable at startup, connectomes start empty: {}",
+            e
+        ),
+    }
+
     let app = Router::new()
         .route("/health", get(health))
         // Real-time detection (per-pair, on-demand)
@@ -1323,7 +1491,13 @@ async fn main() {
         .route("/build/status", get(build_status))
         // Cached graph endpoints
         .route("/graph", get(get_graph))
-        .route("/artifact", get(get_artifact))
+        .route("/artifact", get(get_artifact).post(upload_artifact))
+        // Per-group connectomes: durable, keyed by inference group
+        .route("/graph/{group}", get(get_graph_group))
+        .route(
+            "/artifact/{group}",
+            get(get_artifact_group).post(upload_artifact_group),
+        )
         .route("/curves", get(get_curves))
         .route("/walk-view/{sender_id}", get(walk_view))
         .route("/walk-view/refine", post(walk_view_refine))
