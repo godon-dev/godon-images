@@ -13,22 +13,31 @@ use tokio_postgres::Client;
 pub const DEFAULT_GROUP: &str = "default";
 
 pub async fn ensure_connectomes_table(client: &Client) -> Result<(), tokio_postgres::Error> {
+    // YB does not reliably apply ALTER COLUMN TYPE (0.19.0 created the
+    // column as JSONB and the ignored ALTER left it there - bit Sep 11,
+    // persist failed with "error serializing parameter 1"). A non-TEXT
+    // legacy table can hold no rows - persist never succeeded - so it is
+    // dropped and recreated as TEXT.
+    let ty: String = client
+        .query_one(
+            "SELECT data_type FROM information_schema.columns \
+             WHERE table_name = 'connectomes' AND column_name = 'artifact'",
+            &[],
+        )
+        .await
+        .map(|row| row.get(0))
+        .unwrap_or_else(|_| "absent".to_string());
+
+    if ty != "text" {
+        client.execute("DROP TABLE IF EXISTS connectomes", &[]).await?;
+    }
+
     client
         .execute(
             "CREATE TABLE IF NOT EXISTS connectomes (\
              group_id VARCHAR(64) PRIMARY KEY, \
              artifact TEXT NOT NULL, \
              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
-            &[],
-        )
-        .await
-        .map(|_| ())?;
-    // 0.19.0 created the column as JSONB; binding a text parameter into
-    // JSONB fails on YB. The artifact is a JSON string - TEXT is exact.
-    // Idempotent: a TEXT column re-Alters to itself.
-    client
-        .execute(
-            "ALTER TABLE connectomes ALTER COLUMN artifact TYPE TEXT",
             &[],
         )
         .await
