@@ -23,7 +23,7 @@
 //! its binding constraint), evaluations at DEBUG, bisection steps at
 //! TRACE. Every number the route needs for a receipt is logged.
 
-use log::{debug, info, trace};
+use log::{debug, info, trace, warn};
 
 /// One measured point of a response curve: input level, response, bar.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -89,7 +89,8 @@ pub fn eval_level(points: &[CurvePoint], level: f64) -> Option<Evaluated> {
         sorted.len()
     );
 
-    for (lo, hi) in sorted.windows(2) {
+    for pair in sorted.windows(2) {
+        let (lo, hi) = (pair[0], pair[1]);
         if level >= lo.level && level <= hi.level {
             let span = hi.level - lo.level;
             if span <= 0.0 {
