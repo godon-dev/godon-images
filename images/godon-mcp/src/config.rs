@@ -3,6 +3,9 @@ pub struct Config {
     pub api_hostname: String,
     pub api_port: u16,
     pub api_insecure: bool,
+    pub causal_hostname: String,
+    pub causal_port: u16,
+    pub causal_insecure: bool,
 }
 
 impl Config {
@@ -19,6 +22,15 @@ impl Config {
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(8080),
             api_insecure: std::env::var("GODON_API_INSECURE")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false),
+            causal_hostname: std::env::var("GODON_CAUSAL_HOSTNAME")
+                .unwrap_or_else(|_| "localhost".to_string()),
+            causal_port: std::env::var("GODON_CAUSAL_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(9091),
+            causal_insecure: std::env::var("GODON_CAUSAL_INSECURE")
                 .map(|v| v == "true" || v == "1")
                 .unwrap_or(false),
         }

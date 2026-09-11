@@ -45,7 +45,12 @@ async fn main() {
         config.api_port,
         config.api_insecure,
     );
-    let registry = Arc::new(ToolRegistry::new(godon_client));
+    let causal_client = client::GodonClient::new(
+        config.causal_hostname.clone(),
+        config.causal_port,
+        config.causal_insecure,
+    );
+    let registry = Arc::new(ToolRegistry::new(godon_client, causal_client));
     let (tx, _) = broadcast::channel::<String>(256);
 
     let state = AppState {
