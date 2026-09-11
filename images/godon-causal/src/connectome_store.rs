@@ -43,7 +43,7 @@ pub async fn upsert_connectome(
     client
         .execute(
             "INSERT INTO connectomes (group_id, artifact, updated_at) \
-             VALUES ($1, $2, NOW()) \
+             VALUES ($1, $2::text, NOW()) \
              ON CONFLICT (group_id) DO UPDATE \
              SET artifact = EXCLUDED.artifact, updated_at = NOW()",
             &[&group_id, &artifact_json],
