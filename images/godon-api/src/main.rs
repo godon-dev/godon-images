@@ -1,3 +1,4 @@
+mod causal;
 mod config;
 mod handlers;
 mod types;
@@ -41,6 +42,13 @@ async fn main() {
         .route("/steerwishes", post(handlers::declare_steerwish))
         .route("/steerwishes/{id}", get(handlers::get_steerwish))
         .route("/steerwishes/{id}/close", post(handlers::close_steerwish))
+        .route("/connectome", get(handlers::get_connectome))
+        .route("/connectome/artifact", get(handlers::get_connectome_artifact))
+        .route("/connectome/curves", get(handlers::get_connectome_curves))
+        .route("/connectome/predict", post(handlers::connectome_predict))
+        .route("/connectome/predict/multihop", post(handlers::connectome_predict_multihop))
+        .route("/connectome/impact/{systemtender_id}", get(handlers::connectome_impact))
+        .route("/connectome/causes/{systemtender_id}", get(handlers::connectome_causes))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .with_state(cfg.clone());
 
