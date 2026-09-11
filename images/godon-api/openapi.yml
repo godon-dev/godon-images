@@ -38,11 +38,13 @@ tags:
   - name: systemtenders
     description: Operations for managing optimizer systemtenders
   - name: steerwishes
-    description: Operations for declaring and tending steerwishes (declared outcomes held on the map)
+    description: Operations for declaring and tending steerwishes (declared outcomes held on the connectome)
   - name: credentials
     description: Operations for managing credential catalog
   - name: targets
     description: Operations for managing target system catalog
+  - name: connectome
+    description: Operations for reading and asking the connectome
 
 paths:
   /systemtenders:
@@ -878,19 +880,19 @@ paths:
 
   /connectome:
     get:
-      tags: [map]
-      summary: Get the live map
+      tags: [connectome]
+      summary: Get the live connectome
       description: Every node and characterized edge the system currently believes in, with fitted response, confidence, and noise floor. Partial by design - curves exist only where probed.
       responses:
         '200':
-          description: The live map
+          description: The live connectome
           content:
             application/json:
               schema:
                 type: object
   /connectome/curves:
     get:
-      tags: [map]
+      tags: [connectome]
       summary: Get the measured response curves
       description: Per edge, probe levels with measured shifts and honest error bars.
       responses:
@@ -902,21 +904,21 @@ paths:
                 type: object
   /connectome/artifact:
     get:
-      tags: [map]
+      tags: [connectome]
       summary: Get the connectome artifact
-      description: The full connectome as persisted at last build - complete at build time, the citable object. The formal name for the certified export; the living partial map lives under /connectome.
+      description: The full connectome as persisted at last build - complete at build time, the citable object. The formal name for the certified export; the living partial connectome lives under /connectome.
       responses:
         '200':
-          description: The persisted map artifact
+          description: The persisted connectome artifact
           content:
             application/json:
               schema:
                 type: object
   /connectome/predict:
     post:
-      tags: [map]
+      tags: [connectome]
       summary: Predict a one-hop shift
-      description: Ask the map - reads never touch the system. Linearized; refusal is causal-side for out-of-range asks.
+      description: Ask the connectome - reads never touch the system. Linearized; refusal is causal-side for out-of-range asks.
       requestBody:
         required: true
         content:
@@ -938,7 +940,7 @@ paths:
                 type: object
   /connectome/predict/multihop:
     post:
-      tags: [map]
+      tags: [connectome]
       summary: Predict a composed cascade shift
       description: P3 composition along a measured path; reads never touch the system.
       requestBody:
@@ -962,9 +964,9 @@ paths:
                 type: object
   /connectome/impact/{systemtender_id}:
     get:
-      tags: [map]
+      tags: [connectome]
       summary: Impact of one systemtender
-      description: What its probing has moved across the map.
+      description: What its probing has moved across the connectome.
       parameters:
         - name: systemtender_id
           in: path
@@ -981,9 +983,9 @@ paths:
                 type: object
   /connectome/causes/{systemtender_id}:
     get:
-      tags: [map]
+      tags: [connectome]
       summary: Causes feeding one systemtender
-      description: The measured upstream causes of its patch of the map.
+      description: The measured upstream causes of its patch of the connectome.
       parameters:
         - name: systemtender_id
           in: path
@@ -1206,7 +1208,7 @@ components:
         outcome:
           type: string
           minLength: 1
-          description: Plain name of the measured value this wish is about - must resolve to exactly one entry in the map's outcome registry
+          description: Plain name of the measured value this wish is about - must resolve to exactly one entry in the connectome's outcome registry
           example: "chainend.shift"
         band:
           $ref: '#/components/schemas/SteerwishBand'
