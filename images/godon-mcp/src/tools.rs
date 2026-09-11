@@ -371,7 +371,7 @@ impl ToolRegistry {
                     bail!("outcome required: the plain name of the measured value");
                 }
                 if args.get("band").is_none() {
-                    bail!("band required: {lo, hi} in the outcome's measurement units");
+                    bail!("band required: an object with lo and hi, in the outcome's measurement units");
                 }
                 let mut body = serde_json::json!({
                     "outcome": args["outcome"],
