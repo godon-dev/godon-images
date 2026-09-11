@@ -391,7 +391,7 @@ impl ToolRegistry {
             "steerwish_close" => {
                 require_id(id, "wish_id")?;
                 self.client
-                    .post(&format!(
+                    .post_empty(&format!(
                         "/steerwishes/{}/close",
                         urlencoding::encode(id)
                     ))
