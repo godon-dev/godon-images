@@ -4,6 +4,7 @@ mod connectome_store;
 mod curve_store;
 mod detector;
 mod graph;
+mod otel;
 mod planner;
 mod probe_curves;
 mod query;
@@ -1488,7 +1489,7 @@ fn parse_iso_to_epoch(s: &str) -> Result<f64, String> {
 
 #[tokio::main]
 async fn main() {
-    env_logger::init();
+    otel::init();
 
     let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into());
     let port: u16 = std::env::var("PORT")
