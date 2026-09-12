@@ -20,6 +20,11 @@ use opentelemetry_otlp::{LogExporter, Protocol, WithExportConfig};
 use opentelemetry_sdk::logs::{BatchLogProcessor, SdkLogger, SdkLoggerProvider};
 use opentelemetry_sdk::resource::Resource;
 
+/// The provider must outlive init(): dropping it shuts the export
+/// pipeline down (emit-after-shutdown warnings, nothing exported). It
+/// lives here for the process lifetime.
+static PROVIDER: std::sync::OnceLock<SdkLoggerProvider> = std::sync::OnceLock::new();
+
 /// Same collector the tenders' otel_logging defaults to.
 pub const DEFAULT_OTLP_ENDPOINT: &str =
     "http://godon-observability-opentelemetry-collector.godon-observability.svc.cluster.local:4318";
@@ -77,6 +82,11 @@ fn build_otel_bridge() -> Result<OtBridge, String> {
         .with_resource(Resource::builder().with_service_name(service_name).build())
         .with_log_processor(BatchLogProcessor::builder(exporter).build())
         .build();
+    // keep the provider (and its batch thread) alive for the process
+    // lifetime - a dropped provider is a shut-down pipeline
+    PROVIDER
+        .set(provider.clone())
+        .expect("otel provider initialized exactly once");
 
     Ok(opentelemetry_appender_log::OpenTelemetryLogBridge::new(
         &provider,
