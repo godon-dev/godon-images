@@ -1,18 +1,17 @@
 mod artifact;
 mod characterizer;
 mod connectome_store;
+mod curve_store;
 mod detector;
 mod graph;
+mod planner;
 mod probe_curves;
-mod curve_store;
 mod query;
 mod steer;
 mod trial_reader;
 
 use axum::{
-    extract::{Path, State,
-    Query,
-},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
     routing::{delete, get, post},
@@ -148,8 +147,8 @@ async fn build(
                     "Graph build complete: {} edges detected in {:.1}s",
                     edges, duration
                 );
-                let artifact_json = serde_json::to_string(&graph)
-                    .unwrap_or_else(|_| "null".to_string());
+                let artifact_json =
+                    serde_json::to_string(&graph).unwrap_or_else(|_| "null".to_string());
                 state_clone
                     .set_connectome(connectome_store::DEFAULT_GROUP, graph)
                     .await;
@@ -166,10 +165,9 @@ async fn build(
                             log::error!("connectome persist failed: {}", e);
                         }
                     }
-                    Err(e) => log::error!(
-                        "connectome persist skipped, archive DB unreachable: {}",
-                        e
-                    ),
+                    Err(e) => {
+                        log::error!("connectome persist skipped, archive DB unreachable: {}", e)
+                    }
                 }
                 *state_clone.build_status.write().await = BuildStatus::Done {
                     at: chrono::Utc::now().to_rfc3339(),
@@ -259,14 +257,11 @@ async fn get_graph(
     }
 }
 
-async fn get_artifact(
-    State(state): State<Arc<AppState>>,
-) -> Result<String, (StatusCode, String)> {
+async fn get_artifact(State(state): State<Arc<AppState>>) -> Result<String, (StatusCode, String)> {
     match state.current_graph().await {
         Some(graph) => {
-            let json = artifact::export_artifact(&graph).map_err(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-            })?;
+            let json = artifact::export_artifact(&graph)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
             Ok(json)
         }
         None => Err((
@@ -476,6 +471,69 @@ async fn causes(
     })))
 }
 
+// ─── Steering: the wish's plan, from the measured map ───────────────
+
+async fn steer_plan(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<planner::SteerPlanRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let entries = state.curves.read().await.snapshot();
+    let group = req
+        .group_id
+        .clone()
+        .unwrap_or_else(|| connectome_store::DEFAULT_GROUP.to_string());
+    let graph = state.connectomes.read().await.get(&group).cloned();
+
+    match planner::plan(&entries, graph.as_ref(), &req) {
+        // door refusal: malformed request or unresolvable outcome
+        Err(door) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": door })),
+        )),
+        Ok(planner::PlanDecision::Planned {
+            moves,
+            predicted_value,
+            predicted_bars,
+            range_used,
+            path,
+        }) => {
+            info!(
+                "STEER /steer/plan: planned {} move(s), group {}",
+                moves.len(),
+                group
+            );
+            let range_used: serde_json::Map<String, serde_json::Value> = range_used
+                .into_iter()
+                .map(|(param, lo, hi)| (param, serde_json::json!([lo, hi])))
+                .collect();
+            Ok(Json(serde_json::json!({
+                "status": "planned",
+                "moves": moves
+                    .iter()
+                    .map(|m| serde_json::json!({
+                        "sender": m.sender,
+                        "param": m.param,
+                        "setting": m.setting,
+                        "bars": m.bars,
+                    }))
+                    .collect::<Vec<_>>(),
+                "predicted": { "value": predicted_value, "bars": predicted_bars },
+                "range_used": range_used,
+                "path": path,
+            })))
+        }
+        Ok(planner::PlanDecision::Refused { reason, detail }) => {
+            // a refusal is a legitimate answer: the binding constraint, named
+            info!("STEER /steer/plan: refused ({reason}) - {detail}");
+            Ok(Json(serde_json::json!({
+                "status": "refused",
+                "reason": reason,
+                "detail": detail,
+            })))
+        }
+    }
+}
+
 // ─── Graph Building ─────────────────────────────────────────────────
 
 async fn build_graph_inner(
@@ -505,7 +563,10 @@ async fn build_graph_inner(
                 all_trials.insert(systemtender_id.clone(), probe);
             }
             Err(e) => {
-                info!("Skipping systemtender {} (read error: {})", systemtender_id, e);
+                info!(
+                    "Skipping systemtender {} (read error: {})",
+                    systemtender_id, e
+                );
             }
         }
     }
@@ -828,11 +889,12 @@ async fn probe_result(
                     req.param_range,
                 )
             };
-            let converged = state
-                .curves
-                .read()
-                .await
-                .is_converged(&req.sender_id, recv, &req.probe_param, ch);
+            let converged =
+                state
+                    .curves
+                    .read()
+                    .await
+                    .is_converged(&req.sender_id, recv, &req.probe_param, ch);
             let gaps = state
                 .curves
                 .read()
@@ -842,12 +904,24 @@ async fn probe_result(
                 .unwrap_or_default();
             per_channel.push((
                 ch.clone(),
-                ChannelResult { shift, shift_bar, z: outcome.z, drift: outcome.drift, converged, gaps },
+                ChannelResult {
+                    shift,
+                    shift_bar,
+                    z: outcome.z,
+                    drift: outcome.drift,
+                    converged,
+                    gaps,
+                },
             ));
         }
 
         if !per_channel.is_empty() {
-            per_receiver.push((recv.clone(), ReceiverResult { channels: per_channel }));
+            per_receiver.push((
+                recv.clone(),
+                ReceiverResult {
+                    channels: per_channel,
+                },
+            ));
         }
     }
 
@@ -865,9 +939,7 @@ async fn probe_result(
     // previous (2-systemtender) behavior.
     let mut primary_recv = &per_receiver[0];
     for rr in per_receiver.iter().skip(1) {
-        if rr.1.primary().1.shift.abs()
-            > primary_recv.1.primary().1.shift.abs()
-        {
+        if rr.1.primary().1.shift.abs() > primary_recv.1.primary().1.shift.abs() {
             primary_recv = rr;
         }
     }
@@ -900,7 +972,12 @@ async fn probe_result(
         .curves
         .read()
         .await
-        .get_curve(&req.sender_id, &primary_recv_name, &req.probe_param, &primary_name)
+        .get_curve(
+            &req.sender_id,
+            &primary_recv_name,
+            &req.probe_param,
+            &primary_name,
+        )
         .map(|c| c.last_delta())
         .unwrap_or(f64::MAX / 2.0);
 
@@ -953,21 +1030,17 @@ async fn probe_result(
             let p_mad = mad(&p);
             let q_mad = mad(&q);
             let bar = (p_mad * p_mad + q_mad * q_mad).sqrt();
-            state
-                .curves
-                .write()
-                .await
-                .probe(
-                    &req.sender_id,
-                    &req.sender_id,
-                    &req.probe_param,
-                    &ch,
-                    req.probe_level,
-                    shift,
-                    bar,
-                    req.convergence_threshold,
-                    req.param_range,
-                );
+            state.curves.write().await.probe(
+                &req.sender_id,
+                &req.sender_id,
+                &req.probe_param,
+                &ch,
+                req.probe_level,
+                shift,
+                bar,
+                req.convergence_threshold,
+                req.param_range,
+            );
             self_channels.push((ch, shift, bar));
         }
     }
@@ -979,8 +1052,8 @@ async fn probe_result(
     {
         let curves = state.curves.read().await;
         for (name, shift, bar) in self_channels.iter() {
-            let sc_converged = curves.is_converged(
-                &req.sender_id, &req.sender_id, &req.probe_param, name);
+            let sc_converged =
+                curves.is_converged(&req.sender_id, &req.sender_id, &req.probe_param, name);
             let sc_gaps = curves
                 .get_curve(&req.sender_id, &req.sender_id, &req.probe_param, name)
                 .map(|c| c.gaps())
@@ -1077,8 +1150,7 @@ async fn probe_result(
     // convergence, its gaps union, and its primary channel's delta.
     // Built with a plain loop — the per-receiver delta reads need .await,
     // which iterator closures cannot hold.
-    let mut receivers_json: serde_json::Map<String, serde_json::Value> =
-        serde_json::Map::new();
+    let mut receivers_json: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
     for (recv, rr) in per_receiver.iter() {
         let p = rr.primary();
         let recv_delta = state
@@ -1137,7 +1209,8 @@ async fn probe_result(
     let self_primary = self_out
         .iter()
         .max_by(|a, b| {
-            a.shift.abs()
+            a.shift
+                .abs()
                 .partial_cmp(&b.shift.abs())
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
@@ -1236,13 +1309,12 @@ pub(crate) fn self_receiver_entry(
     self_out: &[SelfChannelOut],
     delta_json: serde_json::Value,
 ) -> serde_json::Value {
-    let primary = self_out
-        .iter()
-        .max_by(|a, b| {
-            a.shift.abs()
-                .partial_cmp(&b.shift.abs())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+    let primary = self_out.iter().max_by(|a, b| {
+        a.shift
+            .abs()
+            .partial_cmp(&b.shift.abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut union: Vec<crate::probe_curves::GapInfo> = Vec::new();
     for sc in self_out {
         union.extend(sc.gaps.iter().cloned());
@@ -1308,7 +1380,6 @@ pub(crate) fn assemble_walk_view(
     })
 }
 
-
 #[derive(serde::Deserialize)]
 struct WalkViewParams {
     param: String,
@@ -1339,7 +1410,12 @@ async fn walk_view(
             Err(e) => log::error!("walker_state setup failed: {} (level defaults to 0)", e),
         }
     }
-    Json(assemble_walk_view(&sender_id, &params.param, refinement_level, &entries))
+    Json(assemble_walk_view(
+        &sender_id,
+        &params.param,
+        refinement_level,
+        &entries,
+    ))
 }
 
 #[derive(serde::Deserialize)]
@@ -1454,7 +1530,10 @@ async fn main() {
             }
         }
         Err(e) => {
-            log::error!("archive DB unavailable at startup, curves start empty: {}", e)
+            log::error!(
+                "archive DB unavailable at startup, curves start empty: {}",
+                e
+            )
         }
     }
 
@@ -1504,6 +1583,7 @@ async fn main() {
         .route("/curves/{sender_id}", delete(delete_curves_for_sender))
         .route("/predict", post(predict))
         .route("/predict/multihop", post(predict_multihop))
+        .route("/steer/plan", post(steer_plan))
         .route("/impact/{systemtender_id}", get(impact))
         .route("/causes/{systemtender_id}", get(causes))
         .layer(CorsLayer::very_permissive())
@@ -1530,6 +1610,76 @@ mod tests {
         assert_eq!(arr.len(), 0);
     }
 
+    // ─── POST /steer/plan ─────────────────────────────────────────
+
+    /// Seed a linear curve a -> R (gain 0.5 over [0, 100]) the same way
+    /// the /characterize path does, then plan through the handler.
+    async fn seeded_plan_state() -> Arc<AppState> {
+        let state = Arc::new(AppState::new(TrialReader::from_env()));
+        {
+            let mut curves = state.curves.write().await;
+            curves.probe("a", "R", "p", "objective_0", 0.0, 0.0, 0.02, 0.01, None);
+            curves.probe("a", "R", "p", "objective_0", 100.0, 50.0, 0.02, 0.01, None);
+        }
+        state
+    }
+
+    fn plan_req(outcome: &str, target: f64) -> planner::SteerPlanRequest {
+        planner::SteerPlanRequest {
+            group_id: None,
+            outcome: outcome.to_string(),
+            band: planner::Band {
+                lo: target - 5.0,
+                hi: target + 5.0,
+                target: Some(target),
+            },
+            limits: None,
+            param_ranges: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_steer_plan_planned_shape() {
+        let state = seeded_plan_state().await;
+        let res = steer_plan(State(state), Json(plan_req("R", 25.0)))
+            .await
+            .expect("planned is Ok");
+        assert_eq!(res.0["status"], "planned");
+        let moves = res.0["moves"].as_array().expect("moves array");
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0]["sender"], "a");
+        assert_eq!(moves[0]["param"], "p");
+        assert!((moves[0]["setting"].as_f64().unwrap() - 50.0).abs() < 1e-6);
+        assert!((res.0["predicted"]["value"].as_f64().unwrap() - 25.0).abs() < 1e-6);
+        assert!((res.0["predicted"]["bars"].as_f64().unwrap() - 0.02).abs() < 1e-9);
+        assert_eq!(res.0["range_used"]["p"][0], 0.0);
+        assert_eq!(res.0["range_used"]["p"][1], 100.0);
+        assert_eq!(res.0["path"][0], "a");
+        assert_eq!(res.0["path"][1], "R");
+    }
+
+    #[tokio::test]
+    async fn test_steer_plan_refused_is_ok_json() {
+        let state = seeded_plan_state().await;
+        // target 75 lies outside the curve's shift range [0, 50]
+        let res = steer_plan(State(state), Json(plan_req("R", 75.0)))
+            .await
+            .expect("a refusal is a legitimate answer, not an error");
+        assert_eq!(res.0["status"], "refused");
+        assert_eq!(res.0["reason"], "outside_measured_range");
+        assert!(res.0["detail"].as_str().unwrap().contains("75"));
+    }
+
+    #[tokio::test]
+    async fn test_steer_plan_unknown_outcome_is_400() {
+        let state = seeded_plan_state().await;
+        let err = steer_plan(State(state), Json(plan_req("nowhere", 25.0)))
+            .await
+            .expect_err("unknown outcome must be a door refusal");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1 .0["error"].as_str().unwrap().contains("resolvable"));
+    }
+
     // ─── parse_iso_to_epoch ───────────────────────────────────────
 
     #[test]
@@ -1537,8 +1687,16 @@ mod tests {
         // Python datetime.isoformat() produces naive timestamps (no timezone).
         let epoch = parse_iso_to_epoch("2026-08-11T12:00:00.000000").unwrap();
         // Verify it's a reasonable epoch for 2026 (between 2025-01-01 and 2027-01-01)
-        assert!(epoch > 1735689600.0, "expected > 2025-01-01 epoch, got {}", epoch);
-        assert!(epoch < 1798761600.0, "expected < 2027-01-01 epoch, got {}", epoch);
+        assert!(
+            epoch > 1735689600.0,
+            "expected > 2025-01-01 epoch, got {}",
+            epoch
+        );
+        assert!(
+            epoch < 1798761600.0,
+            "expected < 2027-01-01 epoch, got {}",
+            epoch
+        );
     }
 
     #[test]
@@ -1620,11 +1778,15 @@ mod tests {
         let fixed_json = serde_json::to_string(&serde_json::json!({"delta": fixed_value})).unwrap();
         assert!(
             !fixed_json.contains("null"),
-            "fixed delta must not be null in JSON: {}", fixed_json
+            "fixed delta must not be null in JSON: {}",
+            fixed_json
         );
         assert!(
-            fixed_json.parse::<serde_json::Value>().unwrap()["delta"].as_f64().is_some(),
-            "fixed delta must deserialize back as f64: {}", fixed_json
+            fixed_json.parse::<serde_json::Value>().unwrap()["delta"]
+                .as_f64()
+                .is_some(),
+            "fixed delta must deserialize back as f64: {}",
+            fixed_json
         );
     }
 
@@ -1697,21 +1859,40 @@ mod tests {
         assert_eq!(gaps.len(), 1, "identical gaps dedup across the fold");
 
         let mut untouched = vec![g.clone()];
-        assert!(fold_self_verdict(true, &mut untouched, &[]), "empty self reads are neutral — cannot demand convergence from a curve with no rows");
+        assert!(
+            fold_self_verdict(true, &mut untouched, &[]),
+            "empty self reads are neutral — cannot demand convergence from a curve with no rows"
+        );
         assert_eq!(untouched.len(), 1);
     }
 
     #[test]
     fn test_self_receiver_entry_primary_and_union() {
         let self_o = vec![
-            self_out("objective_0", 0.01, true, vec![gap(0.0, 50.0, 0.1, 0.04, true, 0.05)]),
-            self_out("objective_1", -0.996, false, vec![gap(50.0, 100.0, 1.004, 0.041, true, 0.502)]),
+            self_out(
+                "objective_0",
+                0.01,
+                true,
+                vec![gap(0.0, 50.0, 0.1, 0.04, true, 0.05)],
+            ),
+            self_out(
+                "objective_1",
+                -0.996,
+                false,
+                vec![gap(50.0, 100.0, 1.004, 0.041, true, 0.502)],
+            ),
         ];
         let entry = self_receiver_entry(&self_o, serde_json::json!(0.25));
-        assert_eq!(entry["primary_channel"], "objective_1", "primary = largest |shift|");
+        assert_eq!(
+            entry["primary_channel"], "objective_1",
+            "primary = largest |shift|"
+        );
         assert_eq!(entry["converged"], false);
         assert_eq!(entry["unresolved_gaps"], 2);
-        assert_eq!(entry["z"], 0.0, "self has no z — keep the TELL line parseable");
+        assert_eq!(
+            entry["z"], 0.0,
+            "self has no z — keep the TELL line parseable"
+        );
         let union = entry["gaps"].as_array().unwrap();
         assert_eq!(union.len(), 2, "per-channel gaps union, deduped");
     }
