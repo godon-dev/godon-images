@@ -10,6 +10,7 @@ mod probe_curves;
 mod query;
 mod steer;
 mod trial_reader;
+mod wish_book;
 
 use axum::{
     extract::{Path, Query, State},
@@ -507,32 +508,290 @@ async fn steer_plan(
                 .into_iter()
                 .map(|(param, lo, hi)| (param, serde_json::json!([lo, hi])))
                 .collect();
-            Ok(Json(serde_json::json!({
-                "status": "planned",
-                "moves": moves
-                    .iter()
-                    .map(|m| serde_json::json!({
+            let moves_json: Vec<serde_json::Value> = moves
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
                         "sender": m.sender,
                         "param": m.param,
                         "setting": m.setting,
                         "bars": m.bars,
-                    }))
-                    .collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            let plan_json = serde_json::json!({
+                "moves": moves_json,
                 "predicted": { "value": predicted_value, "bars": predicted_bars },
                 "range_used": range_used,
                 "path": path,
+            });
+            // The ask that computed the plan also seeds the book: terms in,
+            // plan in, status set. The controller minted the wish_id.
+            if let Some(wish_id) = &req.wish_id {
+                if let Ok(client) = state.reader.connect_archive().await {
+                    let terms = serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
+                    let _ = wish_book::record_wish(
+                        &client,
+                        wish_id,
+                        &terms,
+                        Some(&plan_json),
+                        "planned",
+                    )
+                    .await;
+                    let _ =
+                        wish_book::append_wish_event(&client, wish_id, "planned", None).await;
+                }
+            }
+            Ok(Json(serde_json::json!({
+                "status": "planned",
+                "wish_id": req.wish_id,
+                "moves": plan_json["moves"],
+                "predicted": plan_json["predicted"],
+                "range_used": plan_json["range_used"],
+                "path": plan_json["path"],
             })))
         }
         Ok(planner::PlanDecision::Refused { reason, detail }) => {
             // a refusal is a legitimate answer: the binding constraint, named
             info!("STEER /steer/plan: refused ({reason}) - {detail}");
+            // refusals are book entries too: the wish stood, the map said no
+            if let Some(wish_id) = &req.wish_id {
+                if let Ok(client) = state.reader.connect_archive().await {
+                    let terms = serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
+                    let plan_json =
+                        serde_json::json!({ "reason": reason.clone(), "detail": detail.clone() });
+                    let _ = wish_book::record_wish(
+                        &client,
+                        wish_id,
+                        &terms,
+                        Some(&plan_json),
+                        "refused",
+                    )
+                    .await;
+                    let _ =
+                        wish_book::append_wish_event(&client, wish_id, "refused", None).await;
+                }
+            }
             Ok(Json(serde_json::json!({
                 "status": "refused",
+                "wish_id": req.wish_id,
                 "reason": reason,
                 "detail": detail,
             })))
         }
     }
+}
+
+/// The wish's read door: the tender's pulse hits this. Serves the book,
+/// runs the judge over fresh hold readings, and re-plans when fresh probe
+/// evidence has arrived since a miss. The call never triggers world-touching
+/// work — it only judges what already landed.
+async fn steer_plan_get(
+    State(state): State<Arc<AppState>>,
+    Path(wish_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let client = state.reader.connect_archive().await.map_err(|e| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": format!("archive DB unavailable: {e}") })),
+        )
+    })?;
+    let row = wish_book::get_wish(&client, &wish_id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("wish book read failed: {e}") })),
+        )
+    })?;
+    let Some(mut row) = row else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("unknown wish: {wish_id}") })),
+        ));
+    };
+
+    let entries = state.curves.read().await.snapshot();
+    let group = row
+        .terms
+        .get("group_id")
+        .and_then(|g| g.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| connectome_store::DEFAULT_GROUP.to_string());
+    let graph = state.connectomes.read().await.get(&group).cloned();
+    let terms_req: planner::SteerPlanRequest = serde_json::from_value(row.terms.clone())
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("stored terms unreadable: {e}") })),
+            )
+        })?;
+    let outcome_pair = planner::resolve_outcome(&entries, &terms_req.outcome).ok();
+
+    let mut status = row.status.clone();
+    let mut verdict_detail: Option<serde_json::Value> = None;
+
+    // ─── Judge: bars vs band over fresh hold readings ───────────────
+    if status != "refused" {
+        if let (Some(sender), Some((receiver, channel))) = (
+            row.plan
+                .as_ref()
+                .and_then(|p| p["moves"][0]["sender"].as_str().map(str::to_string)),
+            outcome_pair.as_ref(),
+        ) {
+            let watermark = {
+                let marks = [
+                    wish_book::last_event_tsz(&client, &wish_id, "landed").await,
+                    wish_book::last_event_tsz(&client, &wish_id, "missed").await,
+                    wish_book::last_event_tsz(&client, &wish_id, "undecidable").await,
+                ];
+                marks
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .fold(0.0f64, f64::max)
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            let since = if watermark > 0.0 {
+                watermark
+            } else {
+                now - wish_book::JUDGE_LOOKBACK_SECS
+            };
+            if let Ok(by_recv) = state
+                .reader
+                .read_receiver_observations(&group, &sender, since, now)
+                .await
+            {
+                let series = by_recv
+                    .get(receiver.as_str())
+                    .and_then(|per_ch| per_ch.get(channel.as_str()));
+                if let Some(series) = series {
+                    if let Some(bar) = wish_book::reading_bar(series) {
+                        let m = trial_reader::median(series);
+                        let v = wish_book::band_verdict(
+                            m,
+                            bar,
+                            terms_req.band.lo,
+                            terms_req.band.hi,
+                            terms_req.band.target,
+                        );
+                        if v != status {
+                            let detail = serde_json::json!({
+                                "median": m,
+                                "bar": bar,
+                                "n": series.len(),
+                            });
+                            let _ =
+                                wish_book::set_wish_status(&client, &wish_id, v).await;
+                            let _ = wish_book::append_wish_event(
+                                &client,
+                                &wish_id,
+                                v,
+                                Some(&detail),
+                            )
+                            .await;
+                            status = v.to_string();
+                            verdict_detail = Some(detail);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── Re-plan: fresh map evidence since the miss ─────────────────
+    if status == "missed" {
+        let miss_tsz = wish_book::last_event_tsz(&client, &wish_id, "missed")
+            .await
+            .ok()
+            .flatten();
+        let fresh = match (miss_tsz, outcome_pair.as_ref()) {
+            (Some(miss), Some((receiver, _))) => {
+                wish_book::latest_receiver_point_tsz(&client, receiver)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|t| t > miss)
+                    .unwrap_or(false)
+            }
+            _ => false,
+        };
+        if fresh {
+            match planner::plan(&entries, graph.as_ref(), &terms_req) {
+                Ok(planner::PlanDecision::Planned {
+                    moves,
+                    predicted_value,
+                    predicted_bars,
+                    range_used,
+                    path,
+                }) => {
+                    let range_used: serde_json::Map<String, serde_json::Value> = range_used
+                        .into_iter()
+                        .map(|(param, lo, hi)| (param, serde_json::json!([lo, hi])))
+                        .collect();
+                    let plan_json = serde_json::json!({
+                        "moves": moves
+                            .iter()
+                            .map(|m| serde_json::json!({
+                                "sender": m.sender,
+                                "param": m.param,
+                                "setting": m.setting,
+                                "bars": m.bars,
+                            }))
+                            .collect::<Vec<_>>(),
+                        "predicted": { "value": predicted_value, "bars": predicted_bars },
+                        "range_used": range_used,
+                        "path": path,
+                    });
+                    let _ = wish_book::record_wish(
+                        &client,
+                        &wish_id,
+                        &row.terms,
+                        Some(&plan_json),
+                        "serving",
+                    )
+                    .await;
+                    let _ = wish_book::append_wish_event(
+                        &client,
+                        &wish_id,
+                        "replanned",
+                        None,
+                    )
+                    .await;
+                    status = "serving".to_string();
+                    row.plan = Some(plan_json);
+                }
+                Ok(planner::PlanDecision::Refused { reason, detail }) => {
+                    let payload =
+                        serde_json::json!({ "reason": reason.clone(), "detail": detail.clone() });
+                    let _ = wish_book::record_wish(
+                        &client,
+                        &wish_id,
+                        &row.terms,
+                        Some(&payload),
+                        "refused",
+                    )
+                    .await;
+                    let _ =
+                        wish_book::append_wish_event(&client, &wish_id, "refused", None).await;
+                    status = "refused".to_string();
+                    row.plan = Some(payload);
+                }
+                Err(door) => {
+                    info!("STEER GET: re-plan refused at the door for {wish_id}: {door}");
+                }
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "wish_id": wish_id,
+        "status": status,
+        "instruction": wish_book::instruction_for(&status),
+        "plan": row.plan,
+        "verdict": verdict_detail,
+    })))
 }
 
 // ─── Graph Building ─────────────────────────────────────────────────
@@ -1508,6 +1767,9 @@ async fn main() {
             if let Err(e) = curve_store::ensure_curve_table(&client).await {
                 log::error!("curve_points table setup failed: {}", e);
             }
+            if let Err(e) = wish_book::ensure_wish_tables(&client).await {
+                log::error!("wish book table setup failed: {}", e);
+            }
             match curve_store::load_curve_points(&client).await {
                 Ok(rows) => {
                     let n = rows.len();
@@ -1585,6 +1847,7 @@ async fn main() {
         .route("/predict", post(predict))
         .route("/predict/multihop", post(predict_multihop))
         .route("/steer/plan", post(steer_plan))
+        .route("/steer/plan/{wish_id}", get(steer_plan_get))
         .route("/impact/{systemtender_id}", get(impact))
         .route("/causes/{systemtender_id}", get(causes))
         .layer(CorsLayer::very_permissive())
@@ -1628,6 +1891,7 @@ mod tests {
     fn plan_req(outcome: &str, target: f64) -> planner::SteerPlanRequest {
         planner::SteerPlanRequest {
             group_id: None,
+            wish_id: None,
             outcome: outcome.to_string(),
             band: planner::Band {
                 lo: target - 5.0,
