@@ -55,6 +55,12 @@ pub struct SteerPlanRequest {
     /// over GET). Absent = anonymous one-shot plan — exactly the
     /// pre-book behavior.
     pub wish_id: Option<String>,
+    /// The owner's outer total, in repair rounds. None = standing, no
+    /// cap — the wish dies only by derived evidence (wall, sign flip,
+    /// refusal). The first round is free; the allowance counts repairs
+    /// after it.
+    #[serde(default)]
+    pub budget: Option<u32>,
     /// The wish's outcome: one measured value, named from the registry.
     pub outcome: String,
     pub band: Band,
@@ -614,6 +620,7 @@ mod tests {
         SteerPlanRequest {
             group_id: None,
             wish_id: None,
+            budget: None,
             outcome: outcome.to_string(),
             band: Band {
                 lo: target - 5.0,
@@ -808,6 +815,7 @@ mod tests {
         let bad_band = SteerPlanRequest {
             group_id: None,
             wish_id: None,
+            budget: None,
             outcome: "R".into(),
             band: Band {
                 lo: 30.0,
