@@ -241,6 +241,18 @@ pub async fn latest_receiver_point_tsz(
     Ok(rows.into_iter().next().and_then(|r| r.get(0)))
 }
 
+/// The precise remeasure: which levels to probe so the wish's curve
+/// section regenerates — the held setting, the target, and the midpoint
+/// between them, clamped into the plan's legal range (span ∩ declared ∩
+/// maxChange window). Sorted, deduped; the tender cycles through them.
+pub fn remeasure_levels(setting: f64, target: f64, lo: f64, hi: f64) -> Vec<f64> {
+    let clamp = |x: f64| x.clamp(lo, hi);
+    let mut v = vec![clamp(setting), clamp((setting + target) / 2.0), clamp(target)];
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    v.dedup();
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,5 +311,26 @@ mod tests {
         let v = [-0.10, -0.10, -0.10, -0.14];
         let bar = reading_bar(&v).unwrap();
         assert!((bar - 0.02).abs() < 1e-9, "bar was {bar}");
+    }
+
+    #[test]
+    fn remeasure_levels_bracket_setting_and_target() {
+        let v = remeasure_levels(0.62, 0.70, 0.50, 0.80);
+        assert_eq!(v.len(), 3);
+        assert!((v[0] - 0.62).abs() < 1e-9);
+        assert!((v[1] - 0.66).abs() < 1e-9, "midpoint was {}", v[1]);
+        assert!((v[2] - 0.70).abs() < 1e-9);
+    }
+
+    #[test]
+    fn remeasure_levels_clamp_into_the_legal_range() {
+        // target beyond the plan's range: clamped, never illegal
+        let v = remeasure_levels(0.62, 1.50, 0.50, 0.80);
+        assert_eq!(v, vec![0.62, 0.80]);
+    }
+
+    #[test]
+    fn remeasure_levels_dedup_when_setting_meets_target() {
+        assert_eq!(remeasure_levels(0.70, 0.70, 0.50, 0.80), vec![0.70]);
     }
 }

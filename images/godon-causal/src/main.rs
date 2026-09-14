@@ -785,12 +785,38 @@ async fn steer_plan_get(
         }
     }
 
+    // ─── Precise remeasure: the wish's dial at the levels that matter ──
+    // Bare "remeasure" wanders; these hints pin the coordinator's push
+    // blocks to the wish's own dial — held setting, target, midpoint,
+    // clamped into the plan's legal range.
+    let probe_hints = if status == "missed" {
+        row.plan.as_ref().and_then(|plan| {
+            let mv = &plan["moves"][0];
+            let param = mv["param"].as_str()?;
+            let setting = mv["setting"].as_f64()?;
+            let range = &plan["range_used"][param];
+            let lo = range[0].as_f64().unwrap_or(setting);
+            let hi = range[1].as_f64().unwrap_or(setting);
+            let target = terms_req
+                .band
+                .target
+                .unwrap_or((terms_req.band.lo + terms_req.band.hi) / 2.0);
+            Some(serde_json::json!({
+                "param": param,
+                "levels": wish_book::remeasure_levels(setting, target, lo, hi),
+            }))
+        })
+    } else {
+        None
+    };
+
     Ok(Json(serde_json::json!({
         "wish_id": wish_id,
         "status": status,
         "instruction": wish_book::instruction_for(&status),
         "plan": row.plan,
         "verdict": verdict_detail,
+        "probe": probe_hints,
     })))
 }
 
