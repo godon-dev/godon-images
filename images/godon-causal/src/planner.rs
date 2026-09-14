@@ -31,7 +31,7 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::graph::CausalGraph;
 use crate::probe_curves::CurveEntry;
@@ -45,11 +45,16 @@ const FLAT_TOL: f64 = 1e-12;
 
 // ─── Request shape (the /steer/plan contract) ───────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SteerPlanRequest {
     /// Inference group whose connectome enriches refusals. Absent = the
     /// engine's default group.
     pub group_id: Option<String>,
+    /// The wish's identity, minted by the controller at declaration.
+    /// Present = the plan lands in causal's wish book (remembered, judged
+    /// over GET). Absent = anonymous one-shot plan — exactly the
+    /// pre-book behavior.
+    pub wish_id: Option<String>,
     /// The wish's outcome: one measured value, named from the registry.
     pub outcome: String,
     pub band: Band,
@@ -59,7 +64,7 @@ pub struct SteerPlanRequest {
     pub param_ranges: Option<HashMap<String, [f64; 2]>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Band {
     pub lo: f64,
     pub hi: f64,
@@ -68,7 +73,7 @@ pub struct Band {
     pub target: Option<f64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Limits {
     #[serde(default)]
     pub exclude: Vec<String>,
@@ -112,7 +117,10 @@ pub enum PlanDecision {
 /// "receiver/channel", "receiver.channel", or a bare receiver when exactly
 /// one of its channels carries curves. Anything else is a door refusal
 /// naming what IS resolvable.
-fn resolve_outcome(entries: &[CurveEntry], outcome: &str) -> Result<(String, String), String> {
+pub(crate) fn resolve_outcome(
+    entries: &[CurveEntry],
+    outcome: &str,
+) -> Result<(String, String), String> {
     let mut pairs: Vec<(&str, &str)> = entries
         .iter()
         .map(|e| (e.receiver_id.as_str(), e.channel.as_str()))
@@ -605,6 +613,7 @@ mod tests {
     ) -> SteerPlanRequest {
         SteerPlanRequest {
             group_id: None,
+            wish_id: None,
             outcome: outcome.to_string(),
             band: Band {
                 lo: target - 5.0,
@@ -798,6 +807,7 @@ mod tests {
         // inverted band
         let bad_band = SteerPlanRequest {
             group_id: None,
+            wish_id: None,
             outcome: "R".into(),
             band: Band {
                 lo: 30.0,
