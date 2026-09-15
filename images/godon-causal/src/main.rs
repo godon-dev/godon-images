@@ -28,6 +28,7 @@ use tower_http::cors::CorsLayer;
 
 use detector::{CfarDetector, EdgeDetector};
 use graph::{BuildResult, CausalGraph, CausalNode};
+use serde_json::Value;
 use trial_reader::{mad, TrialReader};
 
 // ─── App State ──────────────────────────────────────────────────────
@@ -582,6 +583,450 @@ async fn steer_plan(
     }
 }
 
+// ─── The re-walk: what a miss does about it ─────────────────────────
+// One GET = one walk step: observe fresh probes, journal them, run the
+// gates (budget, wall, sign flip, payback ceiling), attempt the re-plan,
+// serve the next level. Everything derived — no probe counts, no
+// schedules: the ceiling is the latest quiet spell in the loop's own
+// trial currency, the stop is a decidable plan.
+
+struct RewalkOutcome {
+    status: String,
+    plan: Option<serde_json::Value>,
+    hint: Option<serde_json::Value>,
+    walk: Option<serde_json::Value>,
+}
+
+/// Stamp the release and, when a walk was open, its closing receipt.
+/// The reason is the finding — it travels in the book for the owner.
+async fn release_wish(
+    client: &tokio_postgres::Client,
+    wish_id: &str,
+    plan: Option<&Value>,
+    reason: &str,
+    walk_was_open: bool,
+) -> RewalkOutcome {
+    let _ = wish_book::set_wish_status(client, wish_id, "released").await;
+    let _ = wish_book::append_wish_event(
+        client,
+        wish_id,
+        "released",
+        Some(&serde_json::json!({ "reason": reason })),
+    )
+    .await;
+    if walk_was_open {
+        let _ = wish_book::append_wish_event(
+            client,
+            wish_id,
+            "walk_closed",
+            Some(&serde_json::json!({ "outcome": "released", "reason": reason })),
+        )
+        .await;
+    }
+    RewalkOutcome {
+        status: "released".to_string(),
+        plan: plan.cloned(),
+        hint: None,
+        walk: None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn rewalk(
+    client: &tokio_postgres::Client,
+    reader: &trial_reader::TrialReader,
+    entries: &[probe_curves::CurveEntry],
+    graph: Option<&CausalGraph>,
+    wish_id: &str,
+    plan_json: Option<&Value>,
+    terms: &Value,
+    terms_req: &planner::SteerPlanRequest,
+    outcome_pair: Option<&(String, String)>,
+    group: &str,
+) -> RewalkOutcome {
+    let keep_walking = || RewalkOutcome {
+        status: "missed".to_string(),
+        plan: plan_json.cloned(),
+        hint: None,
+        walk: None,
+    };
+    // A miss without its own numbers cannot seed a walk — bare word.
+    let Some(miss_tsz) = wish_book::last_event_tsz(client, wish_id, "missed")
+        .await
+        .ok()
+        .flatten()
+    else {
+        return keep_walking();
+    };
+    let Some(miss_detail) = wish_book::latest_event_detail(client, wish_id, "missed")
+        .await
+        .ok()
+        .flatten()
+    else {
+        return keep_walking();
+    };
+    let (Some(miss_median), Some(miss_bar)) = (
+        miss_detail["median"].as_f64(),
+        miss_detail["bar"].as_f64(),
+    ) else {
+        return keep_walking();
+    };
+
+    // The dial: identity, held setting, legal range, old prediction.
+    let Some(plan) = plan_json else {
+        return keep_walking();
+    };
+    let mv = &plan["moves"][0];
+    let (Some(sender), Some(param), Some(held)) = (
+        mv["sender"].as_str(),
+        mv["param"].as_str(),
+        mv["setting"].as_f64(),
+    ) else {
+        return keep_walking();
+    };
+    let Some((receiver, channel)) = outcome_pair else {
+        return keep_walking();
+    };
+    let range = &plan["range_used"][param];
+    let (range_lo, range_hi) = (
+        range[0].as_f64().unwrap_or(held),
+        range[1].as_f64().unwrap_or(held),
+    );
+    if !(range_lo < range_hi) {
+        return keep_walking();
+    }
+    let aim = terms_req
+        .band
+        .target
+        .unwrap_or(0.5 * (terms_req.band.lo + terms_req.band.hi));
+
+    // The journal: walk events since the miss are the walk's own record.
+    let events = wish_book::list_wish_events(client, wish_id, miss_tsz)
+        .await
+        .unwrap_or_default();
+    let opened = events.iter().any(|e| e.event == "walk_opened");
+    let mut journal: Vec<wish_book::WalkPoint> = events
+        .iter()
+        .filter(|e| e.event == "walk_probe")
+        .filter_map(|e| {
+            let d = e.detail.as_ref()?;
+            Some(wish_book::WalkPoint::new(
+                d["level"].as_f64()?,
+                d["response"].as_f64()?,
+                d["bar"].as_f64()?,
+            ))
+        })
+        .collect();
+
+    // The dial's measured history: old map (≤ miss) carries the slope
+    // and direction; fresh rows (> miss) are the walk's new evidence.
+    let dial = wish_book::read_dial_points(client, group, sender, receiver, param, channel)
+        .await
+        .unwrap_or_default();
+    let old_points: Vec<wish_book::WalkPoint> = dial
+        .iter()
+        .filter(|(t, ..)| *t <= miss_tsz)
+        .map(|(_, l, s, b)| wish_book::WalkPoint::new(*l, *s, *b))
+        .collect();
+    let slope = wish_book::local_slope(&old_points, held);
+
+    // Sync: journal every fresh level once — the registry's blended
+    // estimate when it has one (blends are the honest current
+    // knowledge), else the latest raw row.
+    let mut fresh: Vec<(f64, f64, f64)> = Vec::new();
+    for (t, l, s, b) in &dial {
+        if *t <= miss_tsz {
+            continue;
+        }
+        match fresh.iter_mut().find(|(fl, ..)| (fl - l).abs() < 1e-9) {
+            Some(slot) => {
+                slot.1 = *s;
+                slot.2 = *b;
+            }
+            None => fresh.push((*l, *s, *b)),
+        }
+    }
+    let blend = |level: f64| -> Option<(f64, f64)> {
+        entries
+            .iter()
+            .find(|e| {
+                e.sender_id == sender
+                    && e.receiver_id == *receiver
+                    && e.param == param
+                    && e.channel == *channel
+            })
+            .and_then(|e| {
+                e.state
+                    .points
+                    .iter()
+                    .find(|(l, ..)| (l - level).abs() < 1e-9)
+                    .map(|(_, s, b)| (*s, *b))
+            })
+    };
+    for (l, raw_s, raw_b) in fresh {
+        if journal.iter().any(|p| (p.level - l).abs() < 1e-9) {
+            continue;
+        }
+        let (response, bar) = blend(l).unwrap_or((raw_s, raw_b));
+        let side = wish_book::probe_side(response, bar, terms_req.band.lo, terms_req.band.hi);
+        let _ = wish_book::append_wish_event(
+            client,
+            wish_id,
+            "walk_probe",
+            Some(&serde_json::json!({
+                "level": l, "response": response, "bar": bar, "side": side,
+            })),
+        )
+        .await;
+        journal.push(wish_book::WalkPoint::new(l, response, bar));
+    }
+
+    // The owner's outer total: rounds already walked past the free one.
+    if !opened {
+        let walks_completed = wish_book::count_wish_events(client, wish_id, "walk_closed")
+            .await
+            .unwrap_or(0);
+        if wish_book::budget_exhausted(terms_req.budget, walks_completed) {
+            return release_wish(
+                client,
+                wish_id,
+                plan_json,
+                "budget spent - the owner's round allowance is exhausted",
+                false,
+            )
+            .await;
+        }
+    }
+
+    // The payback ceiling: as many loop trials as the latest quiet spell
+    // ran — a repair may not cost more than the quiet it replaces, the
+    // freshest interval only, never an average.
+    let quiet_start = wish_book::latest_event_tsz(
+        client,
+        wish_id,
+        &["planned", "replanned"],
+        Some(miss_tsz),
+    )
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(miss_tsz);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let mut loop_trials: Vec<f64> = Vec::new();
+    if let Ok(trials) = reader.read_probe_trials(sender).await {
+        loop_trials.extend(trials.push_trials.iter().map(|t| t.timestamp));
+        loop_trials.extend(trials.pause_trials.iter().map(|t| t.timestamp));
+        loop_trials.extend(trials.hold_calib_trials.iter().map(|t| t.timestamp));
+    }
+    let ceiling = loop_trials
+        .iter()
+        .filter(|t| **t >= quiet_start && **t < miss_tsz)
+        .count();
+    let spent = loop_trials
+        .iter()
+        .filter(|t| **t > miss_tsz && **t <= now)
+        .count();
+
+    let walk_view = || {
+        Some(serde_json::json!({
+            "ceiling_trials": ceiling,
+            "spent_trials": spent,
+            "probes": journal.len(),
+        }))
+    };
+
+    // Open the walk: the wall first (a quiet that funds no probe at all
+    // is drift outpacing repair), then the receipt — the miss itself is
+    // the gavel, prediction vs fresh reading with combined bars, free.
+    let mut opened_now = opened;
+    if !opened {
+        if ceiling < 1 {
+            return release_wish(
+                client,
+                wish_id,
+                plan_json,
+                "drift outpaces repair - the latest quiet funds no probe",
+                false,
+            )
+            .await;
+        }
+        let predicted = plan["predicted"]["value"].as_f64().unwrap_or(miss_median);
+        let predicted_bars = plan["predicted"]["bars"].as_f64().unwrap_or(0.0);
+        let separated =
+            wish_book::receipt_separated(predicted, predicted_bars, miss_median, miss_bar);
+        let _ = wish_book::append_wish_event(
+            client,
+            wish_id,
+            "walk_opened",
+            Some(&serde_json::json!({
+                "held": held,
+                "predicted": predicted,
+                "predicted_bars": predicted_bars,
+                "miss_median": miss_median,
+                "miss_bar": miss_bar,
+                "separated": separated,
+                "ceiling_trials": ceiling,
+                "quiet_start": quiet_start,
+            })),
+        )
+        .await;
+        opened_now = true;
+    }
+
+    // Gate: sign flip — two consecutive probes moved the reading
+    // opposite to the stored curve's direction. A finding, not a failure.
+    if let Some(s) = slope {
+        if wish_book::sign_flip(held, miss_median, &journal, s) {
+            return release_wish(
+                client,
+                wish_id,
+                plan_json,
+                "sign flip - the stored curve's direction is falsified",
+                opened_now,
+            )
+            .await;
+        }
+    }
+
+    // Gate: the payback ceiling. Spent without a decidable plan, the
+    // repair costs more than the quiet it replaces.
+    if opened_now && spent >= ceiling {
+        return release_wish(
+            client,
+            wish_id,
+            plan_json,
+            "repair allowance spent, map still undecided",
+            opened_now,
+        )
+        .await;
+    }
+
+    // The receipt's fallback: prediction and miss reading do not
+    // separate beyond combined bars — a probe at the old level is the
+    // only thing that can sharpen "the world moved" from "was blurry".
+    if journal.is_empty() {
+        let predicted = plan["predicted"]["value"].as_f64().unwrap_or(miss_median);
+        let predicted_bars = plan["predicted"]["bars"].as_f64().unwrap_or(0.0);
+        if !wish_book::receipt_separated(predicted, predicted_bars, miss_median, miss_bar) {
+            return RewalkOutcome {
+                status: "missed".to_string(),
+                plan: plan_json.cloned(),
+                hint: Some(serde_json::json!({
+                    "param": param, "level": held, "phase": "retest",
+                })),
+                walk: walk_view(),
+            };
+        }
+    }
+
+    // The re-plan, attempted on every fresh point: decidable when the
+    // plan's predicted bars fit inside the band — the walk's only stop.
+    if !journal.is_empty() {
+        match planner::plan(entries, graph, terms_req) {
+            Ok(planner::PlanDecision::Planned {
+                moves,
+                predicted_value,
+                predicted_bars,
+                range_used,
+                path,
+            }) => {
+                let decidable = predicted_value - predicted_bars >= terms_req.band.lo
+                    && predicted_value + predicted_bars <= terms_req.band.hi;
+                if decidable {
+                    let range_used: serde_json::Map<String, serde_json::Value> = range_used
+                        .into_iter()
+                        .map(|(p, lo, hi)| (p, serde_json::json!([lo, hi])))
+                        .collect();
+                    let new_plan = serde_json::json!({
+                        "moves": moves
+                            .iter()
+                            .map(|m| serde_json::json!({
+                                "sender": m.sender,
+                                "param": m.param,
+                                "setting": m.setting,
+                                "bars": m.bars,
+                            }))
+                            .collect::<Vec<_>>(),
+                        "predicted": { "value": predicted_value, "bars": predicted_bars },
+                        "range_used": range_used,
+                        "path": path,
+                    });
+                    let _ =
+                        wish_book::record_wish(client, wish_id, terms, Some(&new_plan), "serving")
+                            .await;
+                    let _ = wish_book::append_wish_event(client, wish_id, "replanned", None).await;
+                    let _ = wish_book::append_wish_event(
+                        client,
+                        wish_id,
+                        "walk_closed",
+                        Some(&serde_json::json!({
+                            "outcome": "replanned", "probes": journal.len(),
+                        })),
+                    )
+                    .await;
+                    info!(
+                        "STEER GET: walk closed decidable for {wish_id} after {} probes",
+                        journal.len()
+                    );
+                    return RewalkOutcome {
+                        status: "serving".to_string(),
+                        plan: Some(new_plan),
+                        hint: None,
+                        walk: walk_view(),
+                    };
+                }
+                // planned but bars too wide: keep remeasuring below.
+            }
+            Ok(planner::PlanDecision::Refused { reason, detail }) => {
+                // No crossing in the legal range — a substrate finding;
+                // the walk just re-measured these curves, they are the
+                // freshest knowledge in the atlas. Release, do not mark.
+                return release_wish(
+                    client,
+                    wish_id,
+                    plan_json,
+                    &format!("no keepable setting in range - {reason}: {detail}"),
+                    opened_now,
+                )
+                .await;
+            }
+            Err(door) => {
+                info!("STEER GET: re-plan refused at the door for {wish_id}: {door}");
+            }
+        }
+    }
+
+    // The next level: one per refresh, pure function of the evidence —
+    // the same level repeats until its point lands.
+    let hint = wish_book::next_hint(
+        held,
+        miss_median,
+        &journal,
+        terms_req.band.lo,
+        terms_req.band.hi,
+        range_lo,
+        range_hi,
+        slope,
+        aim,
+    )
+    .or_else(|| {
+        journal
+            .last()
+            .map(|p| wish_book::WalkHint { level: p.level, phase: "refine" })
+    });
+    RewalkOutcome {
+        status: "missed".to_string(),
+        plan: plan_json.cloned(),
+        hint: hint.map(|h| {
+            serde_json::json!({ "param": param, "level": h.level, "phase": h.phase })
+        }),
+        walk: walk_view(),
+    }
+}
+
 /// The wish's read door: the tender's pulse hits this. Serves the book,
 /// runs the judge over fresh hold readings, and re-plans when fresh probe
 /// evidence has arrived since a miss. The call never triggers world-touching
@@ -630,7 +1075,12 @@ async fn steer_plan_get(
     let mut verdict_detail: Option<serde_json::Value> = None;
 
     // ─── Judge: bars vs band over fresh hold readings ───────────────
-    if status != "refused" {
+    // Suspended while a walk is active (status "missed"): probe pushes
+    // move the dial, and the judge cannot tell readings taken at a test
+    // level from readings at the held one — a probe landing in band
+    // would stamp "landed" at a setting that still misses. The walk's
+    // own rule (a decidable re-plan) is the only verdict then.
+    if matches!(status.as_str(), "planned" | "serving" | "undecidable") {
         if let (Some(sender), Some((receiver, channel))) = (
             row.plan
                 .as_ref()
@@ -642,6 +1092,9 @@ async fn steer_plan_get(
                     wish_book::last_event_tsz(&client, &wish_id, "landed").await,
                     wish_book::last_event_tsz(&client, &wish_id, "missed").await,
                     wish_book::last_event_tsz(&client, &wish_id, "undecidable").await,
+                    // a re-plan restarts the clock: only readings taken
+                    // at the NEW setting count toward its verdict
+                    wish_book::last_event_tsz(&client, &wish_id, "replanned").await,
                 ];
                 marks
                     .into_iter()
@@ -700,90 +1153,42 @@ async fn steer_plan_get(
         }
     }
 
-    // ─── Re-plan: fresh map evidence since the miss ─────────────────
+    // ─── The walk: a miss opens a bracket search for the new doorstep ─
+    let mut probe_hint: Option<serde_json::Value> = None;
+    let mut walk_state: Option<serde_json::Value> = None;
     if status == "missed" {
-        let miss_tsz = wish_book::last_event_tsz(&client, &wish_id, "missed")
-            .await
-            .ok()
-            .flatten();
-        let fresh = match (miss_tsz, outcome_pair.as_ref()) {
-            (Some(miss), Some((receiver, _))) => {
-                wish_book::latest_receiver_point_tsz(&client, receiver)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|t| t > miss)
-                    .unwrap_or(false)
-            }
-            _ => false,
-        };
-        if fresh {
-            match planner::plan(&entries, graph.as_ref(), &terms_req) {
-                Ok(planner::PlanDecision::Planned {
-                    moves,
-                    predicted_value,
-                    predicted_bars,
-                    range_used,
-                    path,
-                }) => {
-                    let range_used: serde_json::Map<String, serde_json::Value> = range_used
-                        .into_iter()
-                        .map(|(param, lo, hi)| (param, serde_json::json!([lo, hi])))
-                        .collect();
-                    let plan_json = serde_json::json!({
-                        "moves": moves
-                            .iter()
-                            .map(|m| serde_json::json!({
-                                "sender": m.sender,
-                                "param": m.param,
-                                "setting": m.setting,
-                                "bars": m.bars,
-                            }))
-                            .collect::<Vec<_>>(),
-                        "predicted": { "value": predicted_value, "bars": predicted_bars },
-                        "range_used": range_used,
-                        "path": path,
-                    });
-                    let _ = wish_book::record_wish(
-                        &client,
-                        &wish_id,
-                        &row.terms,
-                        Some(&plan_json),
-                        "serving",
-                    )
-                    .await;
-                    let _ = wish_book::append_wish_event(
-                        &client,
-                        &wish_id,
-                        "replanned",
-                        None,
-                    )
-                    .await;
-                    status = "serving".to_string();
-                    row.plan = Some(plan_json);
-                }
-                Ok(planner::PlanDecision::Refused { reason, detail }) => {
-                    let payload =
-                        serde_json::json!({ "reason": reason.clone(), "detail": detail.clone() });
-                    let _ = wish_book::record_wish(
-                        &client,
-                        &wish_id,
-                        &row.terms,
-                        Some(&payload),
-                        "refused",
-                    )
-                    .await;
-                    let _ =
-                        wish_book::append_wish_event(&client, &wish_id, "refused", None).await;
-                    status = "refused".to_string();
-                    row.plan = Some(payload);
-                }
-                Err(door) => {
-                    info!("STEER GET: re-plan refused at the door for {wish_id}: {door}");
-                }
-            }
+        let out = rewalk(
+            &client,
+            &state.reader,
+            &entries,
+            graph.as_ref(),
+            &wish_id,
+            row.plan.as_ref(),
+            &row.terms,
+            &terms_req,
+            outcome_pair.as_ref(),
+            &group,
+        )
+        .await;
+        status = out.status.clone();
+        if out.plan.is_some() {
+            row.plan = out.plan.clone();
         }
+        probe_hint = out.hint;
+        walk_state = out.walk;
     }
+
+    // The page's event tail — the controller's lazy fold-in reads this.
+    let events_tail: Vec<serde_json::Value> = wish_book::list_wish_events(&client, &wish_id, 0.0)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| {
+            serde_json::json!({
+                "tsz": e.tsz, "event": e.event, "detail": e.detail,
+            })
+        })
+        .collect();
 
     Ok(Json(serde_json::json!({
         "wish_id": wish_id,
@@ -791,6 +1196,9 @@ async fn steer_plan_get(
         "instruction": wish_book::instruction_for(&status),
         "plan": row.plan,
         "verdict": verdict_detail,
+        "probe": probe_hint,
+        "walk": walk_state,
+        "events": events_tail,
     })))
 }
 
@@ -1892,6 +2300,7 @@ mod tests {
         planner::SteerPlanRequest {
             group_id: None,
             wish_id: None,
+            budget: None,
             outcome: outcome.to_string(),
             band: planner::Band {
                 lo: target - 5.0,
