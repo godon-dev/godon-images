@@ -39,6 +39,34 @@ pub struct NodeConfig {
     pub param_lower: f64,
     #[serde(default)]
     pub param_upper: f64,
+    /// Shape drift: the node's map morphs from its declared weights/base
+    /// toward each entry's target, in tick order. Travel is linear in
+    /// ticks and saturates — the world settles into the target shape.
+    /// Overlapping travel windows: a later entry supersedes the previous
+    /// one and restarts from its target.
+    #[serde(default)]
+    pub morphs: Vec<MorphConfig>,
+    /// Readout bias drift: this node's objectives slide by
+    /// `offset_drift_rate × total_ticks`. A sensor/ambient bias at THIS
+    /// node's readout — it does not cascade into other nodes. This is
+    /// the canonical drift of the re-walk design: the curve slides,
+    /// direction and slope survive.
+    #[serde(default)]
+    pub offset_drift_rate: f64,
+}
+
+/// One scheduled shape target. `travel_ticks` 0 = instant step at
+/// `at_tick`; otherwise the map travels linearly from the previous
+/// settled shape to the target over that many ticks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MorphConfig {
+    pub at_tick: u64,
+    #[serde(default)]
+    pub travel_ticks: u64,
+    #[serde(default)]
+    pub target_weights: Option<Vec<Vec<f64>>>,
+    #[serde(default)]
+    pub target_base: Option<String>,
 }
 
 fn default_base() -> String {
@@ -131,8 +159,15 @@ impl NodeState {
         }
     }
 
-    /// Compute base objective from params, before coupling and noise.
-    pub fn compute_base(&self) -> Vec<f64> {
+    /// Compute base objective from params, before coupling and noise,
+    /// under the EFFECTIVE shape (morph-aware weights and base blend).
+    pub fn compute_base_eff(
+        &self,
+        weights: &[Vec<f64>],
+        base_a: &str,
+        base_b: Option<&str>,
+        p: f64,
+    ) -> Vec<f64> {
         let n_obj = self.config.objectives;
         let mut result = vec![0.0; n_obj];
 
@@ -141,16 +176,10 @@ impl NodeState {
             .collect();
 
         for obj_idx in 0..n_obj {
-            // Per-parameter contribution (shape depends on base function)
-            if let Some(row) = self.config.weights.get(obj_idx) {
+            if let Some(row) = weights.get(obj_idx) {
                 for (param_idx, w) in row.iter().enumerate() {
                     if let Some(np) = normalized.get(param_idx) {
-                        result[obj_idx] += w * match self.config.base.as_str() {
-                            "polynomial" => np * np,
-                            "threshold" => if *np > 0.5 { 1.0 } else { 0.0 },
-                            "saturation" => np / (1.0 + (np - 0.5).abs() * 4.0),
-                            _ => *np, // linear + default
-                        };
+                        result[obj_idx] += w * blend_base(base_a, base_b, p, *np);
                     }
                 }
             }
@@ -171,14 +200,14 @@ impl NodeState {
 
     /// Weighted own contributions per objective, unshaped — the node's
     /// input into each channel before any map runs.
-    pub fn compute_channel_inputs(&self) -> Vec<f64> {
+    pub fn compute_channel_inputs_eff(&self, weights: &[Vec<f64>]) -> Vec<f64> {
         let n_obj = self.config.objectives;
         let mut result = vec![0.0; n_obj];
         let normalized: Vec<f64> = self.params.iter()
             .map(|p| normalize(*p, self.config.param_lower, self.config.param_upper))
             .collect();
         for obj_idx in 0..n_obj {
-            if let Some(row) = self.config.weights.get(obj_idx) {
+            if let Some(row) = weights.get(obj_idx) {
                 for (param_idx, w) in row.iter().enumerate() {
                     if let Some(np) = normalized.get(param_idx) {
                         result[obj_idx] += w * np;
@@ -187,16 +216,6 @@ impl NodeState {
             }
         }
         result
-    }
-
-    /// The base map applied to a single channel-input value.
-    fn shape_value(&self, v: f64) -> f64 {
-        match self.config.base.as_str() {
-            "polynomial" => v * v,
-            "threshold" => if v > 0.5 { 1.0 } else { 0.0 },
-            "saturation" => v / (1.0 + (v - 0.5).abs() * 4.0),
-            _ => v, // linear + default
-        }
     }
 
     /// Cross-parameter interaction terms, one per objective.
@@ -219,8 +238,15 @@ impl NodeState {
     /// intake "through": the door — the channel state (own weighted
     /// input + incoming coupling) meets the base map once; interaction
     /// terms stay additive after it.
-    pub fn map_channel_inputs(&self, incoming: &[f64]) -> Vec<f64> {
-        let mut u = self.compute_channel_inputs();
+    pub fn map_channel_inputs_eff(
+        &self,
+        incoming: &[f64],
+        weights: &[Vec<f64>],
+        base_a: &str,
+        base_b: Option<&str>,
+        p: f64,
+    ) -> Vec<f64> {
+        let mut u = self.compute_channel_inputs_eff(weights);
         for (ch, inc) in incoming.iter().enumerate() {
             if ch < u.len() {
                 u[ch] += inc;
@@ -228,10 +254,28 @@ impl NodeState {
         }
         let terms = self.interaction_terms();
         u.iter()
-            .map(|&v| self.shape_value(v))
+            .map(|&v| blend_base(base_a, base_b, p, v))
             .zip(terms.iter())
             .map(|(shaped, term)| shaped + term)
             .collect()
+    }
+}
+
+/// One base map evaluated at a normalized input.
+fn apply_base(name: &str, np: f64) -> f64 {
+    match name {
+        "polynomial" => np * np,
+        "threshold" => if np > 0.5 { 1.0 } else { 0.0 },
+        "saturation" => np / (1.0 + (np - 0.5).abs() * 4.0),
+        _ => np, // linear + default
+    }
+}
+
+/// The base blend: (1−p) of shape A plus p of shape B. No B → pure A.
+fn blend_base(base_a: &str, base_b: Option<&str>, p: f64, np: f64) -> f64 {
+    match base_b {
+        None => apply_base(base_a, np),
+        Some(b) => (1.0 - p) * apply_base(base_a, np) + p * apply_base(b, np),
     }
 }
 
@@ -256,8 +300,84 @@ pub struct Simulator {
 
 pub type SharedSimulator = Arc<Mutex<Simulator>>;
 
+/// The node's shape at one instant: morphed weights and, while a
+/// travel is in flight, the base blend from A toward B.
+#[derive(Debug, Clone)]
+pub struct EffShape {
+    pub weights: Vec<Vec<f64>>,
+    pub base_a: String,
+    pub base_b: String,
+    pub progress: f64,
+}
+
+/// One edge's coupling at the current tick.
+#[derive(Debug, Clone, Serialize)]
+pub struct EdgeTruth {
+    pub from: String,
+    pub to: String,
+    pub to_channel: usize,
+    pub strength_effective: f64,
+}
+
+/// The ground-truth read: noise-free objectives at the current tick
+/// (readout bias included — it is world, not measurement), the node's
+/// effective shape, and the effective coupling strengths.
+#[derive(Debug, Clone, Serialize)]
+pub struct TruthReport {
+    pub node_id: String,
+    pub total_ticks: u64,
+    pub objectives: Vec<f64>,
+    pub effective_weights: Vec<Vec<f64>>,
+    pub base_from: String,
+    pub base_to: String,
+    pub base_progress: f64,
+    pub edges: Vec<EdgeTruth>,
+}
+
+fn lerp_weights(a: &[Vec<f64>], b: &[Vec<f64>], p: f64) -> Vec<Vec<f64>> {
+    a.iter()
+        .zip(b.iter())
+        .map(|(ra, rb)| {
+            ra.iter()
+                .zip(rb.iter())
+                .map(|(x, y)| x + (y - x) * p)
+                .collect()
+        })
+        .collect()
+}
+
 impl Simulator {
     pub fn from_config(config: BenchConfig) -> Self {
+        // Fail loud at boot: a mis-declared morph would silently corrupt
+        // the ground truth the whole validation run leans on.
+        for nc in &config.nodes {
+            let mut last_tick: Option<u64> = None;
+            for m in &nc.morphs {
+                if let Some(last) = last_tick {
+                    assert!(
+                        m.at_tick >= last,
+                        "node '{}': morph at_tick {} precedes an earlier morph's window (at_tick {})",
+                        nc.id, m.at_tick, last
+                    );
+                }
+                last_tick = Some(m.at_tick + m.travel_ticks);
+                if m.target_weights.is_none() && m.target_base.is_none() {
+                    panic!(
+                        "node '{}': morph at tick {} carries no target (set target_weights and/or target_base)",
+                        nc.id, m.at_tick
+                    );
+                }
+                if let Some(w) = &m.target_weights {
+                    assert!(
+                        w.len() == nc.objectives
+                            && w.iter().all(|row| row.len() == nc.params),
+                        "node '{}': morph target_weights must be {}x{} (objectives x params)",
+                        nc.id, nc.objectives, nc.params
+                    );
+                }
+            }
+        }
+
         let mut nodes = HashMap::new();
         for nc in &config.nodes {
             nodes.insert(nc.id.clone(), NodeState::new(nc.clone()));
@@ -298,21 +418,78 @@ impl Simulator {
         self.recompute_objectives(node_id)
     }
 
-    /// Recompute objectives for a node: base + cascaded coupling + noise.
-    ///
-    /// Coupling propagates through the entire graph via iterative relaxation
-    /// (Jacobi iteration). Each pass extends signal one hop. For a graph with
-    /// N nodes, N-1 passes suffice for exact cascade in any DAG. Cyclic graphs
-    /// converge if loop gain < 1.
-    fn recompute_objectives(&mut self, requesting_node: &str) -> Vec<f64> {
-        // Initialize all nodes at their base (parameter-derived) values
-        let mut coupled: HashMap<String, Vec<f64>> = HashMap::new();
-        for (id, node) in &self.nodes {
-            coupled.insert(id.clone(), node.compute_base());
+    /// The node's shape at the current tick: declared start, advanced
+    /// through every scheduled morph. A morph reached but still
+    /// traveling leaves a blend in flight (progress < 1); a completed
+    /// morph settles into its target.
+    fn effective_shape(&self, nc: &NodeConfig) -> EffShape {
+        let mut sorted = nc.morphs.clone();
+        sorted.sort_by_key(|m| m.at_tick);
+
+        let mut weights = nc.weights.clone();
+        let mut base = nc.base.clone();
+        let mut inflight: Option<EffShape> = None;
+
+        for m in &sorted {
+            if m.at_tick > self.total_ticks {
+                break;
+            }
+            let target_w = m.target_weights.clone().unwrap_or_else(|| weights.clone());
+            let target_b = m.target_base.clone().unwrap_or_else(|| base.clone());
+            let progress = if m.travel_ticks == 0 {
+                1.0
+            } else {
+                ((self.total_ticks - m.at_tick) as f64 / m.travel_ticks as f64).clamp(0.0, 1.0)
+            };
+            if progress >= 1.0 {
+                weights = target_w;
+                base = target_b;
+                inflight = None;
+            } else {
+                inflight = Some(EffShape {
+                    weights: lerp_weights(&weights, &target_w, progress),
+                    base_a: base.clone(),
+                    base_b: target_b.clone(),
+                    progress,
+                });
+                weights = target_w;
+                base = target_b;
+            }
         }
 
-        // Iterative relaxation: propagate coupling through the graph.
-        // Noise-free — coupling is physical, noise is measurement at readout.
+        inflight.unwrap_or(EffShape {
+            weights,
+            base_a: base.clone(),
+            base_b: base,
+            progress: 1.0,
+        })
+    }
+
+    /// Signed edge drift: the coupling travels through zero and can
+    /// invert. Deterministic in the global tick count.
+    fn edge_strength(&self, e: &EdgeConfig) -> f64 {
+        e.strength * (1.0 + e.drift_rate * self.total_ticks as f64)
+    }
+
+    /// Noise-free cascade of the whole graph at the current tick, under
+    /// each node's effective shape. The coupling is physical — noise is
+    /// measurement at readout and lives only in the live paths.
+    fn cascade(&self) -> HashMap<String, Vec<f64>> {
+        let eff: HashMap<String, EffShape> = self
+            .nodes
+            .iter()
+            .map(|(id, n)| (id.clone(), self.effective_shape(&n.config)))
+            .collect();
+
+        let mut coupled: HashMap<String, Vec<f64>> = HashMap::new();
+        for (id, n) in &self.nodes {
+            let e = &eff[id];
+            coupled.insert(
+                id.clone(),
+                n.compute_base_eff(&e.weights, &e.base_a, Some(&e.base_b), e.progress),
+            );
+        }
+
         let max_iter = self.nodes.len().saturating_sub(1).max(1);
         for _ in 0..max_iter {
             let prev = coupled.clone();
@@ -320,17 +497,12 @@ impl Simulator {
 
             for (id, coupled_vals) in coupled.iter_mut() {
                 let node = &self.nodes[id];
+                let e = &eff[id];
 
-                // Incoming coupling into this node's channels, from the
-                // previous relaxation pass.
                 let mut incoming = vec![0.0; node.config.objectives];
                 for edge in &self.edges {
                     if edge.to == *id && edge.to_channel < incoming.len() {
-                        let effective_strength = if edge.drift_rate > 0.0 {
-                            edge.strength * (1.0 + edge.drift_rate * self.total_ticks as f64)
-                        } else {
-                            edge.strength
-                        };
+                        let effective_strength = self.edge_strength(edge);
                         if let Some(source) = prev.get(&edge.from) {
                             if edge.from_channel < source.len() {
                                 incoming[edge.to_channel] +=
@@ -340,14 +512,23 @@ impl Simulator {
                     }
                 }
 
-                let mut updated = if node.config.intake == "through" {
-                    // The door: incoming joins the channel state; the base
-                    // map acts on the combined level.
-                    node.map_channel_inputs(&incoming)
+                let updated = if node.config.intake == "through" {
+                    node.map_channel_inputs_eff(
+                        &incoming,
+                        &e.weights,
+                        &e.base_a,
+                        Some(&e.base_b),
+                        e.progress,
+                    )
                 } else {
                     // Legacy: coupling added to the output channel after
                     // this node's own map.
-                    let mut u = node.compute_base();
+                    let mut u = node.compute_base_eff(
+                        &e.weights,
+                        &e.base_a,
+                        Some(&e.base_b),
+                        e.progress,
+                    );
                     for (ch, inc) in incoming.iter().enumerate() {
                         if ch < u.len() {
                             u[ch] += inc;
@@ -371,10 +552,20 @@ impl Simulator {
             }
         }
 
-        // Add stacked noise to the requesting node only
-        let mut result = coupled[requesting_node].clone();
+        coupled
+    }
+
+    fn recompute_objectives(&mut self, requesting_node: &str) -> Vec<f64> {
+        let mut result = self.cascade()[requesting_node].clone();
+
+        // Readout bias drift: part of the true signal, not of noise.
+        let offset = self
+            .nodes
+            .get(requesting_node)
+            .map(|n| n.config.offset_drift_rate * self.total_ticks as f64)
+            .unwrap_or(0.0);
         for val in result.iter_mut() {
-            *val += self.generate_noise();
+            *val += offset + self.generate_noise();
         }
 
         // Update stored objectives
@@ -383,6 +574,42 @@ impl Simulator {
         }
 
         result
+    }
+
+    /// The answer key: noise-free current objectives (readout bias
+    /// included — it is world, not measurement), the node's effective
+    /// shape, and every edge's effective strength at the current tick.
+    /// Provably read-only: no RNG is touched, so truth never disturbs
+    /// the live noise stream.
+    pub fn truth(&self, node_id: &str) -> Option<TruthReport> {
+        let coupled = self.cascade();
+        let node = self.nodes.get(node_id)?;
+        let eff = self.effective_shape(&node.config);
+        let mut objectives = coupled.get(node_id)?.clone();
+        let offset = node.config.offset_drift_rate * self.total_ticks as f64;
+        for v in objectives.iter_mut() {
+            *v += offset;
+        }
+        let edges = self
+            .edges
+            .iter()
+            .map(|e| EdgeTruth {
+                from: e.from.clone(),
+                to: e.to.clone(),
+                to_channel: e.to_channel,
+                strength_effective: self.edge_strength(e),
+            })
+            .collect();
+        Some(TruthReport {
+            node_id: node_id.to_string(),
+            total_ticks: self.total_ticks,
+            objectives,
+            effective_weights: eff.weights,
+            base_from: eff.base_a,
+            base_to: eff.base_b,
+            base_progress: eff.progress,
+            edges,
+        })
     }
 
     fn generate_noise(&mut self) -> f64 {
@@ -598,5 +825,210 @@ mod tests {
         let expected = 0.5 * 0.56 / 1.24;
         assert!((c[0] - expected).abs() < 1e-9,
             "nested chain should give {}, got {}", expected, c[0]);
+    }
+
+    // ─── drift: signed edge drift, offset, morph schedule, truth ──────
+
+    fn pump(sim: &mut Simulator, params: &[f64], until_tick: u64) {
+        while sim.total_ticks < until_tick {
+            sim.apply("a", params);
+        }
+    }
+
+    fn two_node_drift_sim(drift: f64) -> Simulator {
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]]},
+                {"id": "b", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[0.0]]}
+            ],
+            "edges": [
+                {"from": "a", "from_channel": 0, "to": "b", "to_channel": 0,
+                 "strength": 0.7, "drift_rate": drift}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        })).unwrap();
+        Simulator::from_config(config)
+    }
+
+    #[test]
+    fn signed_edge_drift_decays_through_zero_and_inverts() {
+        // strength 0.7, drift −0.002/tick: 0.7×(1−0.002T) — the coupling
+        // shrinks, hits zero at T=500, and points backwards after.
+        let mut sim = two_node_drift_sim(-0.002);
+        sim.apply("a", &[100.0]); // a.obj = 1.0, T = 1
+        let b = sim.get_status("b").unwrap()[0];
+        assert!((b - 0.7 * (1.0 - 0.002)).abs() < 1e-9, "T=1: got {}", b);
+
+        pump(&mut sim, &[100.0], 500);
+        let b = sim.get_status("b").unwrap()[0];
+        assert!(b.abs() < 1e-9, "zero coupling at T=500, got {}", b);
+
+        pump(&mut sim, &[100.0], 750);
+        let b = sim.get_status("b").unwrap()[0];
+        let expected = 0.7 * (1.0 - 0.002 * 750.0);
+        assert!((b - expected).abs() < 1e-9 && expected < 0.0,
+            "inverted coupling at T=750, got {} (want {})", b, expected);
+
+        // the answer key reports the inverted effective strength
+        let t = sim.truth("b").unwrap();
+        assert!((t.edges[0].strength_effective - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn offset_drift_slides_the_readout_linearly() {
+        // the canonical re-walk drift: the curve slides, slope intact
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]],
+                 "offset_drift_rate": 0.01}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        })).unwrap();
+        let mut sim = Simulator::from_config(config);
+
+        sim.apply("a", &[50.0]); // T=1: 0.5 + 0.01×1
+        assert!((sim.get_status("a").unwrap()[0] - 0.51).abs() < 1e-9);
+        sim.apply("a", &[50.0]); // T=2: 0.5 + 0.01×2
+        let read = sim.get_status("a").unwrap()[0];
+        assert!((read - 0.52).abs() < 1e-9, "T=2: got {}", read);
+
+        // truth carries the same shifted signal — the world moved,
+        // the measurement is honest about it
+        let t = sim.truth("a").unwrap();
+        assert!((t.objectives[0] - 0.52).abs() < 1e-9);
+    }
+
+    #[test]
+    fn weights_morph_travels_then_holds() {
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 2, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0, 0.0]],
+                 "morphs": [{"at_tick": 100, "travel_ticks": 100,
+                             "target_weights": [[0.0, 1.0]]}]}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        })).unwrap();
+        let mut sim = Simulator::from_config(config);
+        let params = [20.0, 80.0]; // normalized 0.2 / 0.8
+
+        pump(&mut sim, &params, 50); // before the break: pure start shape
+        assert!((sim.get_status("a").unwrap()[0] - 0.2).abs() < 1e-9);
+
+        pump(&mut sim, &params, 150); // mid-travel: half way
+        assert!((sim.get_status("a").unwrap()[0] - 0.5).abs() < 1e-9);
+
+        pump(&mut sim, &params, 250); // settled: influence moved to param_1
+        let read = sim.get_status("a").unwrap()[0];
+        assert!((read - 0.8).abs() < 1e-9, "settled: got {}", read);
+
+        // the dial that mattered stopped mattering; the quiet one took over
+        let t = sim.truth("a").unwrap();
+        assert!((t.effective_weights[0][0]).abs() < 1e-9);
+        assert!((t.effective_weights[0][1] - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn base_morph_blends_linear_into_saturation() {
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0]],
+                 "morphs": [{"at_tick": 100, "travel_ticks": 100,
+                             "target_base": "saturation"}]}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        })).unwrap();
+        let mut sim = Simulator::from_config(config);
+        let params = [60.0]; // normalized 0.6: linear 0.6, saturation 0.6/1.4
+
+        pump(&mut sim, &params, 50);
+        assert!((sim.get_status("a").unwrap()[0] - 0.6).abs() < 1e-9);
+
+        pump(&mut sim, &params, 150);
+        let mid = 0.5 * 0.6 + 0.5 * (0.6 / 1.4);
+        assert!((sim.get_status("a").unwrap()[0] - mid).abs() < 1e-9);
+
+        pump(&mut sim, &params, 250);
+        let read = sim.get_status("a").unwrap()[0];
+        assert!((read - 0.6 / 1.4).abs() < 1e-9, "settled sat: got {}", read);
+    }
+
+    #[test]
+    fn morph_schedule_settles_through_both_targets_in_order() {
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 2, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0, 0.0]],
+                 "morphs": [
+                    {"at_tick": 100, "target_weights": [[0.0, 1.0]]},
+                    {"at_tick": 300, "target_weights": [[1.0, 0.0]]}
+                 ]}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        })).unwrap();
+        let mut sim = Simulator::from_config(config);
+        let params = [20.0, 80.0];
+
+        pump(&mut sim, &params, 50);
+        assert!((sim.get_status("a").unwrap()[0] - 0.2).abs() < 1e-9, "T=50");
+        pump(&mut sim, &params, 150);
+        assert!((sim.get_status("a").unwrap()[0] - 0.8).abs() < 1e-9, "T=150: first target settled");
+        pump(&mut sim, &params, 250);
+        assert!((sim.get_status("a").unwrap()[0] - 0.8).abs() < 1e-9, "T=250: holds");
+        pump(&mut sim, &params, 350);
+        let read = sim.get_status("a").unwrap()[0];
+        assert!((read - 0.2).abs() < 1e-9, "T=350: second target settled, got {}", read);
+    }
+
+    #[test]
+    fn truth_is_noise_free_stable_and_counts_ticks() {
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]]},
+                {"id": "b", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[0.0]]}
+            ],
+            "edges": [
+                {"from": "a", "from_channel": 0, "to": "b", "to_channel": 0, "strength": 0.7}
+            ],
+            "noise": {"gaussian_sigma": 0.1, "colored_sigma": 0.0, "drift_rate": 0.0}
+        })).unwrap();
+        let mut sim = Simulator::from_config(config);
+        for _ in 0..3 {
+            sim.apply("a", &[100.0]);
+        }
+
+        let t1 = sim.truth("b").unwrap();
+        let t2 = sim.truth("b").unwrap();
+        assert_eq!(t1.total_ticks, 3, "truth reports the global tick count");
+        assert!((t1.objectives[0] - 0.7).abs() < 1e-9,
+            "truth is noise-free cascade: got {}", t1.objectives[0]);
+        assert_eq!(t1.objectives, t2.objectives, "truth never jitters");
+
+        // the live read carries fresh noise around the same truth
+        let live = sim.get_status("b").unwrap()[0];
+        assert!((live - 0.7).abs() < 0.5, "live read near truth, got {}", live);
+    }
+
+    #[test]
+    #[should_panic(expected = "target_weights must be")]
+    fn morph_with_wrong_dimensions_fails_loud_at_boot() {
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]],
+                 "morphs": [{"at_tick": 10, "target_weights": [[1.0, 0.0]]}]}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        })).unwrap();
+        let _ = Simulator::from_config(config);
     }
 }
