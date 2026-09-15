@@ -151,6 +151,38 @@ async fn status(
     Json(build_metrics_response(&node_id, tick, &objectives))
 }
 
+/// GET /{node_id}/truth — the ground-truth read. Noise-free objectives
+/// at the current tick (readout bias included), the node's effective
+/// shape, and every edge's effective strength. This is the answer key
+/// validation runs check the engine's verdicts against. Read-only: no
+/// tick advances, no noise is drawn.
+async fn truth(
+    State(state): State<Arc<AppState>>,
+    Path(node_id): Path<String>,
+) -> Json<serde_json::Value> {
+    let sim = state.sim.lock().unwrap();
+    match sim.truth(&node_id) {
+        Some(t) => Json(serde_json::json!({
+            "node_id": t.node_id,
+            "total_ticks": t.total_ticks,
+            "objectives": t.objectives,
+            "effective_weights": t.effective_weights,
+            "base_from": t.base_from,
+            "base_to": t.base_to,
+            "base_progress": t.base_progress,
+            "edges": t.edges.iter().map(|e| serde_json::json!({
+                "from": e.from,
+                "to": e.to,
+                "to_channel": e.to_channel,
+                "strength_effective": e.strength_effective,
+            })).collect::<Vec<_>>(),
+        })),
+        None => Json(serde_json::json!({
+            "error": format!("unknown node: {node_id}")
+        })),
+    }
+}
+
 async fn reset(
     State(state): State<Arc<AppState>>,
     Path(node_id): Path<String>,
@@ -214,6 +246,7 @@ async fn main() {
         .route("/{node_id}/apply", post(apply))
         .route("/{node_id}/metrics/json", get(metrics_json))
         .route("/{node_id}/status", get(status))
+        .route("/{node_id}/truth", get(truth))
         .route("/{node_id}/reset", post(reset))
         .with_state(state);
 
@@ -241,6 +274,8 @@ fn default_config() -> BenchConfig {
                 interactions: vec![],
                 param_lower: 0.0,
                 param_upper: 100.0,
+                morphs: vec![],
+                offset_drift_rate: 0.0,
             },
             NodeConfig {
                 id: "node-2".to_string(),
@@ -252,6 +287,8 @@ fn default_config() -> BenchConfig {
                 interactions: vec![],
                 param_lower: 0.0,
                 param_upper: 100.0,
+                morphs: vec![],
+                offset_drift_rate: 0.0,
             },
         ],
         edges: vec![SimEdgeConfig {
