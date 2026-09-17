@@ -1319,67 +1319,101 @@ async fn build_graph_inner(
 // immediately. Does NOT touch the graph cache. This is the real-time
 // endpoint the observer dashboard calls for "are they coupled right now?"
 
-async fn detect_pair(
-    State(state): State<Arc<AppState>>,
-    axum::extract::Path((sender_id, receiver_id)): axum::extract::Path<(String, String)>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+/// One pair's detection over the full trial history — the same pass the
+/// graph build runs, extracted so GET /detect and the characterize-time
+/// heal share one implementation.
+pub(crate) struct PairDetection {
+    pub detected: bool,
+    pub sender: crate::trial_reader::ProbeTrials,
+    pub detections: Vec<crate::detector::DetectionResult>,
+    pub push_trials: usize,
+    pub pause_trials: usize,
+    pub receiver_hold_trials: usize,
+}
+
+fn pair_to_json(pair: &PairDetection, sender_id: &str, receiver_id: &str) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "detected": pair.detected,
+        "method": "cfar_block_step",
+        "sender_id": sender_id,
+        "receiver_id": receiver_id,
+        "push_trials": pair.push_trials,
+        "pause_trials": pair.pause_trials,
+        "receiver_hold_trials": pair.receiver_hold_trials,
+        "per_objective": pair.detections,
+    });
+    if pair.push_trials == 0 {
+        value["reason"] = serde_json::Value::from("no push trials from sender");
+    }
+    value
+}
+
+async fn detect_pair_full(
+    state: &Arc<AppState>,
+    sender_id: &str,
+    receiver_id: &str,
+) -> Result<PairDetection, String> {
     let confidence = std::env::var("GODON_DETECTION_CONFIDENCE")
         .ok()
-        .and_then(|v| v.parse().ok())
+        .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(0.95);
 
     let detector = CfarDetector::new(confidence);
 
     let sender = state
         .reader
-        .read_probe_trials(&sender_id)
+        .read_probe_trials(sender_id)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": format!("failed to read sender trials: {}", e)
-                })),
-            )
-        })?;
+        .map_err(|e| format!("failed to read sender trials: {}", e))?;
 
     let receiver = state
         .reader
-        .read_probe_trials(&receiver_id)
+        .read_probe_trials(receiver_id)
+        .await
+        .map_err(|e| format!("failed to read receiver trials: {}", e))?;
+
+    let push_trials = sender.push_trials.len();
+    let pause_trials = sender.pause_trials.len();
+    let receiver_hold_trials = receiver.receiver_hold_trials.len();
+
+    // Detection-grade evidence needs excitation: a sender that never
+    // pushed cannot speak about influence, detected or not.
+    if sender.push_trials.is_empty() {
+        return Ok(PairDetection {
+            detected: false,
+            sender,
+            detections: Vec::new(),
+            push_trials,
+            pause_trials,
+            receiver_hold_trials,
+        });
+    }
+
+    let detections = detector.detect(&sender, &receiver);
+    let detected = detections.iter().any(|d| d.detected);
+    Ok(PairDetection {
+        detected,
+        sender,
+        detections,
+        push_trials,
+        pause_trials,
+        receiver_hold_trials,
+    })
+}
+
+async fn detect_pair(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path((sender_id, receiver_id)): axum::extract::Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let pair = detect_pair_full(&state, &sender_id, &receiver_id)
         .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({
-                    "error": format!("failed to read receiver trials: {}", e)
-                })),
+                Json(serde_json::json!({ "error": e })),
             )
         })?;
-
-    if sender.push_trials.is_empty() {
-        return Ok(Json(serde_json::json!({
-            "detected": false,
-            "reason": "no push trials from sender",
-            "method": "cfar_block_step",
-            "sender_id": sender_id,
-            "receiver_id": receiver_id,
-        })));
-    }
-
-    let detections = detector.detect(&sender, &receiver);
-
-    let any_detected = detections.iter().any(|d| d.detected);
-
-    Ok(Json(serde_json::json!({
-        "detected": any_detected,
-        "method": "cfar_block_step",
-        "sender_id": sender_id,
-        "receiver_id": receiver_id,
-        "push_trials": sender.push_trials.len(),
-        "pause_trials": sender.pause_trials.len(),
-        "receiver_hold_trials": receiver.receiver_hold_trials.len(),
-        "per_objective": detections,
-    })))
+    Ok(Json(pair_to_json(&pair, &sender_id, &receiver_id)))
 }
 
 // ─── Real-Time Per-Edge Characterization ────────────────────────────
@@ -1400,6 +1434,9 @@ struct ProbeResultRequest {
     /// Declared parameter range (upper - lower) from the systemtender.
     /// Scales gap ignorance; absent → observed level span.
     param_range: Option<f64>,
+    /// The healing wire: fold this round's fresh detection into the
+    /// stored connectome. Absent/false = curves only, graph untouched.
+    heal: Option<bool>,
 }
 
 async fn probe_result(
@@ -1782,6 +1819,76 @@ async fn probe_result(
         );
     }
 
+    // The healing wire: on request, this round's fresh evidence re-runs
+    // the build-time CFAR per listening pair and folds positives into
+    // the stored connectome — the graph tracks the substrate as the walk
+    // walks it. Heal adds and refreshes; only a rebuild subtracts (a
+    // short probe window must not be able to erase a known influence).
+    let mut heal_report: Vec<serde_json::Value> = Vec::new();
+    if req.heal.unwrap_or(false) {
+        if let Some(mut graph) = state.connectomes.read().await.get(&req.group_id).cloned() {
+            for recv in &receivers {
+                match detect_pair_full(&state, &req.sender_id, recv).await {
+                    Ok(pair) if pair.detected => {
+                        let fresh: Vec<crate::graph::CharacterizedEdge> = pair
+                            .detections
+                            .iter()
+                            .filter(|d| d.detected)
+                            .map(|d| crate::characterizer::characterize(d, &pair.sender))
+                            .collect();
+                        let folded = crate::graph::fold_detected_edges(&mut graph, fresh);
+                        heal_report.push(serde_json::json!({
+                            "receiver": recv,
+                            "detected": true,
+                            "folded": folded,
+                        }));
+                    }
+                    Ok(pair) => heal_report.push(serde_json::json!({
+                        "receiver": recv,
+                        "detected": false,
+                        "folded": 0,
+                        "push_trials": pair.push_trials,
+                    })),
+                    Err(e) => {
+                        log::warn!("heal: detection failed for {}: {}", recv, e);
+                        heal_report.push(serde_json::json!({ "receiver": recv, "error": e }));
+                    }
+                }
+            }
+            let touched: usize = heal_report
+                .iter()
+                .map(|r| r.get("folded").and_then(|f| f.as_u64()).unwrap_or(0) as usize)
+                .sum();
+            if touched > 0 {
+                // Durability: the healed map persists like a build does.
+                let artifact_json =
+                    serde_json::to_string(&graph).unwrap_or_else(|_| "null".to_string());
+                if let Ok(client) = state.reader.connect_archive().await {
+                    if let Err(e) = connectome_store::upsert_connectome(
+                        &client,
+                        &req.group_id,
+                        &artifact_json,
+                    )
+                    .await
+                    {
+                        log::error!("heal persist failed: {}", e);
+                    }
+                }
+                state
+                    .connectomes
+                    .write()
+                    .await
+                    .insert(req.group_id.clone(), graph);
+                info!("heal: {} edge(s) folded into the connectome", touched);
+            }
+        } else {
+            heal_report.push(serde_json::json!({
+                "status": "no_graph",
+                "note": "no connectome for this group yet; /build first",
+            }));
+        }
+    }
+
     // Replace INFINITY with a large finite value — serde_json serializes
     // Infinity as null, which the coordinator interprets as failure.
     let delta_json = if delta.is_infinite() {
@@ -1933,6 +2040,7 @@ async fn probe_result(
         "receivers": receivers_json,
         "self": self_json,
         "ambient": ambient,
+        "heal": heal_report,
         "k_retire": crate::probe_curves::k_retire(),
     })))
 }

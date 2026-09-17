@@ -426,9 +426,107 @@ pub struct BuildResult {
     pub error: Option<String>,
 }
 
+/// The healing wire's fold: fresh per-pair detections refresh the stored
+/// connectome in place. Semantics are deliberately one-sided — a fresh
+/// round may ADD a detected influence or REFRESH an existing edge, but it
+/// never removes or downgrades one. A short probe window must not be able
+/// to erase a known influence; only a full rebuild may subtract. Returns
+/// the number of edges folded.
+pub fn fold_detected_edges(graph: &mut CausalGraph, fresh: Vec<CharacterizedEdge>) -> usize {
+    let mut folded = 0;
+    for edge in fresh {
+        if !edge.detected {
+            continue;
+        }
+        match graph
+            .edges
+            .iter_mut()
+            .find(|e| {
+                e.sender_id == edge.sender_id
+                    && e.receiver_id == edge.receiver_id
+                    && e.channel == edge.channel
+            }) {
+            Some(slot) => *slot = edge,
+            None => graph.edges.push(edge),
+        }
+        folded += 1;
+    }
+    if folded > 0 {
+        graph.edges_detected = graph.edges.iter().filter(|e| e.detected).count();
+    }
+    folded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── fold_detected_edges (the healing wire's one-sided fold) ──────
+
+    #[test]
+    fn fold_appends_detected_edge_to_empty_graph() {
+        let mut graph = CausalGraph {
+            nodes: vec![],
+            edges: vec![],
+            curves: vec![],
+            built_at: String::new(),
+            detector: String::new(),
+            detector_params: serde_json::Value::Null,
+            systemtenders_scanned: 0,
+            pairs_evaluated: 0,
+            edges_detected: 0,
+        };
+        let fresh = vec![make_edge("s-1", "r-1", 0.5, true)];
+        let folded = fold_detected_edges(&mut graph, fresh);
+        assert_eq!(folded, 1);
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.edges_detected, 1);
+    }
+
+    #[test]
+    fn fold_replaces_existing_pair_edge_without_duplicating() {
+        let mut graph = CausalGraph {
+            nodes: vec![],
+            edges: vec![make_edge("s-1", "r-1", 0.5, true)],
+            curves: vec![],
+            built_at: String::new(),
+            detector: String::new(),
+            detector_params: serde_json::Value::Null,
+            systemtenders_scanned: 0,
+            pairs_evaluated: 0,
+            edges_detected: 1,
+        };
+        let fresh = vec![make_edge("s-1", "r-1", 0.7, true)];
+        let folded = fold_detected_edges(&mut graph, fresh);
+        assert_eq!(folded, 1);
+        assert_eq!(graph.edges.len(), 1);
+        match graph.edges[0].response {
+            ResponseFunction::StepResponse { sensitivity, .. } => {
+                assert!((sensitivity - 0.7).abs() < 1e-9, "edge refreshed in place");
+            }
+            _ => panic!("expected step response"),
+        }
+    }
+
+    #[test]
+    fn fold_never_removes_on_undetected_fresh_round() {
+        let mut graph = CausalGraph {
+            nodes: vec![],
+            edges: vec![make_edge("s-1", "r-1", 0.5, true)],
+            curves: vec![],
+            built_at: String::new(),
+            detector: String::new(),
+            detector_params: serde_json::Value::Null,
+            systemtenders_scanned: 0,
+            pairs_evaluated: 0,
+            edges_detected: 1,
+        };
+        let fresh = vec![make_edge("s-1", "r-1", 0.5, false)];
+        let folded = fold_detected_edges(&mut graph, fresh);
+        assert_eq!(folded, 0, "undetected round folds nothing");
+        assert_eq!(graph.edges.len(), 1, "existing influence survives");
+        assert!(graph.edges[0].detected, "existing edge not downgraded");
+    }
 
     fn make_edge(
         sender: &str,
