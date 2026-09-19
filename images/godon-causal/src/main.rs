@@ -38,6 +38,13 @@ struct AppState {
     connectomes: RwLock<HashMap<String, CausalGraph>>,
     build_status: RwLock<BuildStatus>,
     curves: RwLock<probe_curves::CurveRegistry>,
+    /// The banked neutral reading per outcome channel, keyed
+    /// (group, receiver, channel) -> (neutral, bar): what the outcome
+    /// shows at rest. Wish bands are absolute (thermometer units);
+    /// curves are movements from this anchor. Persisted in
+    /// outcome_anchors, loaded at boot, refreshed by every probe's
+    /// pause window.
+    anchors: RwLock<HashMap<(String, String, String), (f64, f64)>>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -68,7 +75,33 @@ impl AppState {
             connectomes: RwLock::new(HashMap::new()),
             build_status: RwLock::new(BuildStatus::default()),
             curves: RwLock::new(probe_curves::CurveRegistry::new()),
+            anchors: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Bank the outcome channel's neutral reading (memory now, the
+    /// probe handler persists alongside).
+    async fn bank_anchor(
+        &self,
+        group: &str,
+        receiver: &str,
+        channel: &str,
+        neutral: f64,
+        bar: f64,
+    ) {
+        self.anchors.write().await.insert(
+            (group.to_string(), receiver.to_string(), channel.to_string()),
+            (neutral, bar),
+        );
+    }
+
+    /// The banked neutral (and its bar) for one outcome channel.
+    async fn anchor_for(&self, group: &str, receiver: &str, channel: &str) -> Option<(f64, f64)> {
+        self.anchors
+            .read()
+            .await
+            .get(&(group.to_string(), receiver.to_string(), channel.to_string()))
+            .copied()
     }
 
     /// The map this engine currently serves (the default group).
@@ -487,7 +520,19 @@ async fn steer_plan(
         .unwrap_or_else(|| connectome_store::DEFAULT_GROUP.to_string());
     let graph = state.connectomes.read().await.get(&group).cloned();
 
-    match planner::plan(&entries, graph.as_ref(), &req) {
+    // The wish band is absolute (what the outcome shows); the curves
+    // speak in movements from the banked neutral. Resolve the outcome,
+    // read its anchor, and let the planner do the one translation.
+    // A missing anchor is the planner's named refusal, not ours.
+    let anchor: Option<f64> = match planner::resolve_outcome(&entries, &req.outcome) {
+        Ok((receiver, channel)) => state
+            .anchor_for(&group, &receiver, &channel)
+            .await
+            .map(|(neutral, _bar)| neutral),
+        Err(_) => None,
+    };
+
+    match planner::plan(&entries, graph.as_ref(), &req, anchor) {
         // door refusal: malformed request or unresolvable outcome
         Err(door) => Err((
             StatusCode::BAD_REQUEST,
@@ -539,8 +584,7 @@ async fn steer_plan(
                         "planned",
                     )
                     .await;
-                    let _ =
-                        wish_book::append_wish_event(&client, wish_id, "planned", None).await;
+                    let _ = wish_book::append_wish_event(&client, wish_id, "planned", None).await;
                 }
             }
             Ok(Json(serde_json::json!({
@@ -569,8 +613,7 @@ async fn steer_plan(
                         "refused",
                     )
                     .await;
-                    let _ =
-                        wish_book::append_wish_event(&client, wish_id, "refused", None).await;
+                    let _ = wish_book::append_wish_event(&client, wish_id, "refused", None).await;
                 }
             }
             Ok(Json(serde_json::json!({
@@ -643,6 +686,9 @@ async fn rewalk(
     terms_req: &planner::SteerPlanRequest,
     outcome_pair: Option<&(String, String)>,
     group: &str,
+    // The outcome's banked neutral reading: the one translation
+    // between the wish's absolute band and the walk's movement units.
+    anchor: Option<f64>,
 ) -> RewalkOutcome {
     let keep_walking = || RewalkOutcome {
         status: "missed".to_string(),
@@ -665,10 +711,9 @@ async fn rewalk(
     else {
         return keep_walking();
     };
-    let (Some(miss_median), Some(miss_bar)) = (
-        miss_detail["median"].as_f64(),
-        miss_detail["bar"].as_f64(),
-    ) else {
+    let (Some(miss_median), Some(miss_bar)) =
+        (miss_detail["median"].as_f64(), miss_detail["bar"].as_f64())
+    else {
         return keep_walking();
     };
 
@@ -699,6 +744,21 @@ async fn rewalk(
         .band
         .target
         .unwrap_or(0.5 * (terms_req.band.lo + terms_req.band.hi));
+
+    // The wish band is absolute; the journal, slopes, and curves are
+    // movements from the neutral anchor — translate at this door only.
+    // Without a banked anchor the walk cannot voice the band in
+    // movement units — stay missed until a probe round banks it.
+    let Some(anchor) = anchor.filter(|a| a.is_finite()) else {
+        log::warn!("REWALK {wish_id}: no banked anchor for {receiver}/{channel} - walk deferred");
+        return keep_walking();
+    };
+    let (band_lo_s, band_hi_s, miss_shift, aim_s) = (
+        terms_req.band.lo - anchor,
+        terms_req.band.hi - anchor,
+        miss_median - anchor,
+        aim - anchor,
+    );
 
     // The journal: walk events since the miss are the walk's own record.
     let events = wish_book::list_wish_events(client, wish_id, miss_tsz)
@@ -768,13 +828,14 @@ async fn rewalk(
             continue;
         }
         let (response, bar) = blend(l).unwrap_or((raw_s, raw_b));
-        let side = wish_book::probe_side(response, bar, terms_req.band.lo, terms_req.band.hi);
+        let side = wish_book::probe_side(response, bar, band_lo_s, band_hi_s);
         let _ = wish_book::append_wish_event(
             client,
             wish_id,
             "walk_probe",
             Some(&serde_json::json!({
-                "level": l, "response": response, "bar": bar, "side": side,
+                "level": l, "response": response, "reading": response + anchor,
+                "bar": bar, "side": side,
             })),
         )
         .await;
@@ -801,16 +862,12 @@ async fn rewalk(
     // The payback ceiling: as many loop trials as the latest quiet spell
     // ran — a repair may not cost more than the quiet it replaces, the
     // freshest interval only, never an average.
-    let quiet_start = wish_book::latest_event_tsz(
-        client,
-        wish_id,
-        &["planned", "replanned"],
-        Some(miss_tsz),
-    )
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or(miss_tsz);
+    let quiet_start =
+        wish_book::latest_event_tsz(client, wish_id, &["planned", "replanned"], Some(miss_tsz))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(miss_tsz);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
@@ -879,7 +936,7 @@ async fn rewalk(
     // Gate: sign flip — two consecutive probes moved the reading
     // opposite to the stored curve's direction. A finding, not a failure.
     if let Some(s) = slope {
-        if wish_book::sign_flip(held, miss_median, &journal, s) {
+        if wish_book::sign_flip(held, miss_shift, &journal, s) {
             return release_wish(
                 client,
                 wish_id,
@@ -925,7 +982,7 @@ async fn rewalk(
     // The re-plan, attempted on every fresh point: decidable when the
     // plan's predicted bars fit inside the band — the walk's only stop.
     if !journal.is_empty() {
-        match planner::plan(entries, graph, terms_req) {
+        match planner::plan(entries, graph, terms_req, Some(anchor)) {
             Ok(planner::PlanDecision::Planned {
                 moves,
                 predicted_value,
@@ -1002,27 +1059,19 @@ async fn rewalk(
     // The next level: one per refresh, pure function of the evidence —
     // the same level repeats until its point lands.
     let hint = wish_book::next_hint(
-        held,
-        miss_median,
-        &journal,
-        terms_req.band.lo,
-        terms_req.band.hi,
-        range_lo,
-        range_hi,
-        slope,
-        aim,
+        held, miss_shift, &journal, band_lo_s, band_hi_s, range_lo, range_hi, slope, aim_s,
     )
     .or_else(|| {
-        journal
-            .last()
-            .map(|p| wish_book::WalkHint { level: p.level, phase: "refine" })
+        journal.last().map(|p| wish_book::WalkHint {
+            level: p.level,
+            phase: "refine",
+        })
     });
     RewalkOutcome {
         status: "missed".to_string(),
         plan: plan_json.cloned(),
-        hint: hint.map(|h| {
-            serde_json::json!({ "param": param, "level": h.level, "phase": h.phase })
-        }),
+        hint: hint
+            .map(|h| serde_json::json!({ "param": param, "level": h.level, "phase": h.phase })),
         walk: walk_view(),
     }
 }
@@ -1062,8 +1111,8 @@ async fn steer_plan_get(
         .map(str::to_string)
         .unwrap_or_else(|| connectome_store::DEFAULT_GROUP.to_string());
     let graph = state.connectomes.read().await.get(&group).cloned();
-    let terms_req: planner::SteerPlanRequest = serde_json::from_value(row.terms.clone())
-        .map_err(|e| {
+    let terms_req: planner::SteerPlanRequest =
+        serde_json::from_value(row.terms.clone()).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({ "error": format!("stored terms unreadable: {e}") })),
@@ -1096,11 +1145,7 @@ async fn steer_plan_get(
                     // at the NEW setting count toward its verdict
                     wish_book::last_event_tsz(&client, &wish_id, "replanned").await,
                 ];
-                marks
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .fold(0.0f64, f64::max)
+                marks.into_iter().flatten().flatten().fold(0.0f64, f64::max)
             };
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1135,15 +1180,10 @@ async fn steer_plan_get(
                                 "bar": bar,
                                 "n": series.len(),
                             });
+                            let _ = wish_book::set_wish_status(&client, &wish_id, v).await;
                             let _ =
-                                wish_book::set_wish_status(&client, &wish_id, v).await;
-                            let _ = wish_book::append_wish_event(
-                                &client,
-                                &wish_id,
-                                v,
-                                Some(&detail),
-                            )
-                            .await;
+                                wish_book::append_wish_event(&client, &wish_id, v, Some(&detail))
+                                    .await;
                             status = v.to_string();
                             verdict_detail = Some(detail);
                         }
@@ -1157,6 +1197,15 @@ async fn steer_plan_get(
     let mut probe_hint: Option<serde_json::Value> = None;
     let mut walk_state: Option<serde_json::Value> = None;
     if status == "missed" {
+        // The walk speaks movement units; the wish band is absolute.
+        // The outcome's banked neutral is the one translation.
+        let walk_anchor: Option<f64> = match outcome_pair.as_ref() {
+            Some((receiver, channel)) => state
+                .anchor_for(&group, receiver, channel)
+                .await
+                .map(|(neutral, _bar)| neutral),
+            None => None,
+        };
         let out = rewalk(
             &client,
             &state.reader,
@@ -1168,6 +1217,7 @@ async fn steer_plan_get(
             &terms_req,
             outcome_pair.as_ref(),
             &group,
+            walk_anchor,
         )
         .await;
         status = out.status.clone();
@@ -1543,6 +1593,27 @@ async fn probe_result(
             let pause_mad = mad(&pause_obs);
             let shift_bar = (push_mad * push_mad + pause_mad * pause_mad).sqrt();
 
+            // The pause window is the walked dial at neutral: its median
+            // is what this outcome channel shows at rest — the anchor
+            // that voices absolute wish bands in the curves' movement
+            // units. Banked on every probe round, freshest wins.
+            if !pause_obs.is_empty() {
+                state
+                    .bank_anchor(&req.group_id, recv, ch, pause_median, pause_mad)
+                    .await;
+                if let Ok(client) = state.reader.connect_archive().await {
+                    let _ = wish_book::bank_outcome_anchor(
+                        &client,
+                        &req.group_id,
+                        recv,
+                        ch,
+                        pause_median,
+                        pause_mad,
+                    )
+                    .await;
+                }
+            }
+
             let outcome = {
                 let mut curves = state.curves.write().await;
                 curves.probe(
@@ -1698,6 +1769,24 @@ async fn probe_result(
             let p_mad = mad(&p);
             let q_mad = mad(&q);
             let bar = (p_mad * p_mad + q_mad * q_mad).sqrt();
+
+            // The self channel's own anchor: the sender's reading at
+            // neutral, from the same pause window.
+            state
+                .bank_anchor(&req.group_id, &req.sender_id, &ch, median_f64(&q), mad(&q))
+                .await;
+            if let Ok(client) = state.reader.connect_archive().await {
+                let _ = wish_book::bank_outcome_anchor(
+                    &client,
+                    &req.group_id,
+                    &req.sender_id,
+                    &ch,
+                    median_f64(&q),
+                    mad(&q),
+                )
+                .await;
+            }
+
             state.curves.write().await.probe(
                 &req.sender_id,
                 &req.sender_id,
@@ -2199,6 +2288,20 @@ async fn main() {
                 }
                 Err(e) => log::error!("curve point load failed: {}", e),
             }
+            // Restart recovery for the anchors: the wish doors read the
+            // in-memory map; without this, a restart would forget every
+            // banked neutral and wishes would refuse until re-probed.
+            match wish_book::load_outcome_anchors(&client).await {
+                Ok(rows) => {
+                    let n = rows.len();
+                    let mut anchors = state.anchors.write().await;
+                    for (group, receiver, channel, neutral, bar) in rows {
+                        anchors.insert((group, receiver, channel), (neutral, bar));
+                    }
+                    info!("loaded {} banked outcome anchors", n);
+                }
+                Err(e) => log::error!("outcome anchor load failed: {}", e),
+            }
         }
         Err(e) => {
             log::error!(
@@ -2293,6 +2396,17 @@ mod tests {
             curves.probe("a", "R", "p", "objective_0", 0.0, 0.0, 0.02, 0.01, None);
             curves.probe("a", "R", "p", "objective_0", 100.0, 50.0, 0.02, 0.01, None);
         }
+        // The outcome's banked neutral: the reading at rest is 0.0, so
+        // thermometer units and movement units coincide here.
+        state
+            .bank_anchor(
+                connectome_store::DEFAULT_GROUP,
+                "R",
+                "objective_0",
+                0.0,
+                0.02,
+            )
+            .await;
         state
     }
 
