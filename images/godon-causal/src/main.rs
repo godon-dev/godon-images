@@ -801,7 +801,7 @@ async fn rewalk(
 
     // The dial's measured history: old map (≤ miss) carries the slope
     // and direction; fresh rows (> miss) are the walk's new evidence.
-    let dial = wish_book::read_dial_points(client, group, sender, receiver, param, channel)
+    let dial = wish_book::read_dial_points(client, sender, receiver, param, channel)
         .await
         .unwrap_or_default();
     let old_points: Vec<wish_book::WalkPoint> = dial
@@ -1177,14 +1177,15 @@ async fn steer_plan_get(
             } else {
                 now - wish_book::JUDGE_LOOKBACK_SECS
             };
-            if let Ok(by_recv) = state
+            // The judge reads by uuid, not by room: the wish names no
+            // group, and the readings live wherever they were banked.
+            let _ = &sender;
+            if let Ok(by_ch) = state
                 .reader
-                .read_receiver_observations(&group, &sender, since, now)
+                .read_receiver_observations_for(receiver, since, now)
                 .await
             {
-                let series = by_recv
-                    .get(receiver.as_str())
-                    .and_then(|per_ch| per_ch.get(channel.as_str()));
+                let series = by_ch.get(channel.as_str());
                 if let Some(series) = series {
                     if let Some(bar) = wish_book::reading_bar(series) {
                         let m = trial_reader::median(series);
