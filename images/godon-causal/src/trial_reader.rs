@@ -429,6 +429,15 @@ impl ProbeTrials {
                 None => continue,
             };
 
+            // The coordinator's stamps renamed once already (push ->
+            // probe_push, the re-walk rung) and the reader starved
+            // silently for two days of runs. Normalize the family
+            // prefix instead of matching literals twice: any future
+            // probe_-prefixed rename classifies by what it IS.
+            let phase = match phase.strip_prefix("probe_") {
+                Some(stripped) => stripped,
+                None => phase,
+            };
             match phase {
                 "push" => push_trials.push(ProbeTrial {
                     timestamp,
@@ -631,4 +640,63 @@ pub fn mad(v: &[f64]) -> f64 {
     let m = median(v);
     let deviations: Vec<f64> = v.iter().map(|x| (x - m).abs()).collect();
     median(&deviations) * 1.4826
+}
+
+#[cfg(test)]
+mod impulse_phase_vocabulary_tests {
+    //! The re-walk rung renamed the coordinator's phase stamps to
+    //! probe_push / probe_pause; the reader kept the original push /
+    //! pause vocabulary and classified every sender trial as nothing —
+    //! builds read receivers but zero senders (run 35389267669: "0
+    //! push, 0 pause, 160 receiver_hold", 0 edges on a full walk).
+    //! These tests pin BOTH vocabularies so no renaming can starve
+    //! detection silently again.
+
+    use super::*;
+
+    fn trial(phase: &str) -> TrialRecord {
+        let mut user_attrs = HashMap::new();
+        if !phase.is_empty() {
+            user_attrs.insert(
+                "impulse_phase".to_string(),
+                serde_json::json!(phase),
+            );
+        }
+        TrialRecord {
+            number: 1,
+            state: "COMPLETE".to_string(),
+            datetime_start: Some("2026-09-18 20:00:00".to_string()),
+            datetime_complete: None,
+            params: HashMap::new(),
+            values: vec![Some(0.5)],
+            user_attrs,
+        }
+    }
+
+    #[test]
+    fn both_push_vocabularies_classify() {
+        for phase in ["push", "probe_push"] {
+            let trials = vec![trial(phase)];
+            let probe = ProbeTrials::from_trials("s", &trials);
+            assert_eq!(probe.push_trials.len(), 1, "phase={phase} must classify as push");
+        }
+    }
+
+    #[test]
+    fn both_pause_vocabularies_classify() {
+        for phase in ["pause", "probe_pause"] {
+            let trials = vec![trial(phase)];
+            let probe = ProbeTrials::from_trials("s", &trials);
+            assert_eq!(probe.pause_trials.len(), 1, "phase={phase} must classify as pause");
+        }
+    }
+
+    #[test]
+    fn unknown_phase_still_classifies_nothing() {
+        let trials = vec![trial("gibberish")];
+        let probe = ProbeTrials::from_trials("s", &trials);
+        assert!(probe.push_trials.is_empty());
+        assert!(probe.pause_trials.is_empty());
+        assert!(probe.hold_calib_trials.is_empty());
+    }
 }
