@@ -677,9 +677,11 @@ pub async fn latest_event_detail(
 /// Every raw curve point of the walk's dial tuple, newest last:
 /// (written_tsz, level, shift, bar). Raw rows, one per probe write —
 /// the registry holds the blends; this is the log with timestamps.
+/// The dial's measured history, keyed by the globally-unique uuids
+/// (sender, receiver) — never by group. The wish doors speak uuids;
+/// groups are probe isolation, not identity (found live, Sep 19).
 pub async fn read_dial_points(
     client: &tokio_postgres::Client,
-    group_id: &str,
     sender_id: &str,
     receiver_id: &str,
     param: &str,
@@ -689,9 +691,9 @@ pub async fn read_dial_points(
         .query(
             "SELECT EXTRACT(EPOCH FROM written_at), probe_level, shift, bar \
              FROM curve_points \
-             WHERE group_id = $1 AND sender_id = $2 AND receiver_id = $3 \
-             AND probe_param = $4 AND channel = $5 ORDER BY written_at",
-            &[&group_id, &sender_id, &receiver_id, &param, &channel],
+             WHERE sender_id = $1 AND receiver_id = $2 \
+             AND probe_param = $3 AND channel = $4 ORDER BY written_at",
+            &[&sender_id, &receiver_id, &param, &channel],
         )
         .await?;
     Ok(rows
