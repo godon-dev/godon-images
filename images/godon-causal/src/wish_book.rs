@@ -68,7 +68,82 @@ pub async fn ensure_wish_tables(client: &tokio_postgres::Client) -> Result<(), E
             &[],
         )
         .await?;
+    client
+        .execute(
+            "CREATE TABLE IF NOT EXISTS outcome_anchors (\
+             group_id TEXT NOT NULL, \
+             receiver_id TEXT NOT NULL, \
+             channel TEXT NOT NULL, \
+             neutral DOUBLE PRECISION NOT NULL, \
+             bar DOUBLE PRECISION NOT NULL, \
+             updated_tsz DOUBLE PRECISION NOT NULL, \
+             PRIMARY KEY (group_id, receiver_id, channel))",
+            &[],
+        )
+        .await?;
     Ok(())
+}
+
+/// Bank the outcome channel's neutral reading: what the outcome shows
+/// when the walked dial sits at rest. Every probe round's pause window
+/// measures it; this upsert keeps the freshest. The wish band speaks in
+/// these units (thermometer readings) — the wish door reads the anchor
+/// to voice it in the curves' movement units. One anchor, one
+/// translation, never a second unit in the wish itself.
+pub async fn bank_outcome_anchor(
+    client: &tokio_postgres::Client,
+    group_id: &str,
+    receiver_id: &str,
+    channel: &str,
+    neutral: f64,
+    bar: f64,
+) -> Result<(), Error> {
+    client
+        .execute(
+            "INSERT INTO outcome_anchors (group_id, receiver_id, channel, neutral, bar, updated_tsz) \
+             VALUES ($1, $2, $3, $4, $5, EXTRACT(EPOCH FROM now())) \
+             ON CONFLICT (group_id, receiver_id, channel) DO UPDATE SET \
+             neutral = EXCLUDED.neutral, bar = EXCLUDED.bar, \
+             updated_tsz = EXTRACT(EPOCH FROM now())",
+            &[&group_id, &receiver_id, &channel, &neutral, &bar],
+        )
+        .await
+        .map(|_| ())
+}
+
+/// The freshest banked neutral for the outcome channel, with its bar.
+/// None = no probe round has paused at neutral yet.
+pub async fn read_outcome_anchor(
+    client: &tokio_postgres::Client,
+    group_id: &str,
+    receiver_id: &str,
+    channel: &str,
+) -> Result<Option<(f64, f64)>, Error> {
+    let row = client
+        .query_opt(
+            "SELECT neutral, bar FROM outcome_anchors \
+             WHERE group_id = $1 AND receiver_id = $2 AND channel = $3",
+            &[&group_id, &receiver_id, &channel],
+        )
+        .await?;
+    Ok(row.map(|r| (r.get(0), r.get(1))))
+}
+
+/// All banked anchors — the boot recovery read. One row per outcome
+/// channel (the table's primary key), freshest write per channel.
+pub async fn load_outcome_anchors(
+    client: &tokio_postgres::Client,
+) -> Result<Vec<(String, String, String, f64, f64)>, Error> {
+    let rows = client
+        .query(
+            "SELECT group_id, receiver_id, channel, neutral, bar FROM outcome_anchors",
+            &[],
+        )
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4)))
+        .collect())
 }
 
 /// Upsert the wish's operative record. Called when a plan ask completes —
@@ -174,7 +249,13 @@ pub async fn last_event_tsz(
 /// error bar decides: bar fully inside the half-band -> landed, bar clearly
 /// outside -> missed, bar straddling the edge -> undecidable (measure more,
 /// never punish the wish for our own blur).
-pub fn band_verdict(median: f64, bar: f64, band_lo: f64, band_hi: f64, target: Option<f64>) -> &'static str {
+pub fn band_verdict(
+    median: f64,
+    bar: f64,
+    band_lo: f64,
+    band_hi: f64,
+    target: Option<f64>,
+) -> &'static str {
     let aim = target.unwrap_or((band_lo + band_hi) / 2.0);
     let half = (band_hi - band_lo) / 2.0;
     let dev = (median - aim).abs();
@@ -259,7 +340,11 @@ pub struct WalkPoint {
 
 impl WalkPoint {
     pub fn new(level: f64, response: f64, bar: f64) -> Self {
-        Self { level, response, bar }
+        Self {
+            level,
+            response,
+            bar,
+        }
     }
 }
 
@@ -302,7 +387,11 @@ pub fn local_slope(points: &[WalkPoint], at: f64) -> Option<f64> {
         return None;
     }
     let mut pts = points.to_vec();
-    pts.sort_by(|a, b| a.level.partial_cmp(&b.level).unwrap_or(std::cmp::Ordering::Equal));
+    pts.sort_by(|a, b| {
+        a.level
+            .partial_cmp(&b.level)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     for w in pts.windows(2) {
         if w[0].level <= at + 1e-9 && w[1].level >= at - 1e-9 {
             let dl = w[1].level - w[0].level;
@@ -336,6 +425,11 @@ pub fn local_slope(points: &[WalkPoint], at: f64) -> Option<f64> {
 /// the closed bracket. The bracket's inner gap contains the crossing,
 /// so narrowing it IS the doorstep-first ordering — disagreement far
 /// from the doorstep is trivia for this wish.
+///
+/// Units: every position here (band bounds, miss reading, aim) is a
+/// MOVEMENT from the neutral anchor, not a thermometer reading — the
+/// caller translates the wish's absolute band once at its own door.
+/// Deltas are space-invariant and pass through untouched.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WalkHint {
     pub level: f64,
@@ -391,7 +485,10 @@ pub fn next_hint(
             if s.abs() > 1e-12 {
                 let level = (held + (aim - miss_median) / s).clamp(range_lo, range_hi);
                 if (level - held).abs() > 1e-9 {
-                    return Some(WalkHint { level, phase: "slope" });
+                    return Some(WalkHint {
+                        level,
+                        phase: "slope",
+                    });
                 }
             }
         }
@@ -416,26 +513,36 @@ pub fn next_hint(
     if let (Some(lo), Some(hi)) = (highest_below, lowest_above) {
         // Bracketed: bisect the gap that contains the doorstep.
         if hi - lo > 1e-9 {
-            return Some(WalkHint { level: 0.5 * (lo + hi), phase: "bisect" });
+            return Some(WalkHint {
+                level: 0.5 * (lo + hi),
+                phase: "bisect",
+            });
         }
         return None;
     }
     // Bracket still open: explore from the frontier toward the boundary.
     let Some(boundary) = explore_boundary(seed_below) else {
-        return Some(WalkHint { level: 0.5 * (range_lo + range_hi), phase: "blind" });
-    };
-    let frontier = journal
-        .iter()
-        .map(|p| p.level)
-        .fold(held, |acc, l| {
-            if (l - boundary).abs() < (acc - boundary).abs() { l } else { acc }
+        return Some(WalkHint {
+            level: 0.5 * (range_lo + range_hi),
+            phase: "blind",
         });
+    };
+    let frontier = journal.iter().map(|p| p.level).fold(held, |acc, l| {
+        if (l - boundary).abs() < (acc - boundary).abs() {
+            l
+        } else {
+            acc
+        }
+    });
     if (frontier - boundary).abs() <= 1e-9 {
         // The frontier IS the boundary and still no crossing — the
         // re-plan's refusal is the authority (no keepable point).
         return None;
     }
-    Some(WalkHint { level: 0.5 * (frontier + boundary), phase: "explore" })
+    Some(WalkHint {
+        level: 0.5 * (frontier + boundary),
+        phase: "explore",
+    })
 }
 
 /// Two consecutive probes moved the reading OPPOSITE to the stored
@@ -448,7 +555,9 @@ pub fn sign_flip(held: f64, miss_median: f64, journal: &[WalkPoint], slope: f64)
         let dl = p.level - prev.0;
         let dr = p.response - prev.1;
         let implied = slope * dl;
-        if dl.abs() > 1e-9 && dr.abs() > p.bar && implied.abs() > 1e-12
+        if dl.abs() > 1e-9
+            && dr.abs() > p.bar
+            && implied.abs() > 1e-12
             && dr.signum() != implied.signum()
         {
             wrong += 1;
@@ -585,7 +694,10 @@ pub async fn read_dial_points(
             &[&group_id, &sender_id, &receiver_id, &param, &channel],
         )
         .await?;
-    Ok(rows.iter().map(|r| (r.get(0), r.get(1), r.get(2), r.get(3))).collect())
+    Ok(rows
+        .iter()
+        .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3)))
+        .collect())
 }
 
 #[cfg(test)]
@@ -595,20 +707,29 @@ mod tests {
     #[test]
     fn verdict_dead_center_is_landed() {
         // the walkthrough numbers: target −0.10, band ±0.04, reading −0.1038 ± 0.0128
-        assert_eq!(band_verdict(-0.1038, 0.0128, -0.14, -0.06, Some(-0.10)), "landed");
+        assert_eq!(
+            band_verdict(-0.1038, 0.0128, -0.14, -0.06, Some(-0.10)),
+            "landed"
+        );
     }
 
     #[test]
     fn verdict_clearly_outside_is_missed() {
         // reading −0.19 ± 0.02 vs band [−0.14, −0.06]: dev 0.09, dev − bar 0.07 > 0.04
-        assert_eq!(band_verdict(-0.19, 0.02, -0.14, -0.06, Some(-0.10)), "missed");
+        assert_eq!(
+            band_verdict(-0.19, 0.02, -0.14, -0.06, Some(-0.10)),
+            "missed"
+        );
     }
 
     #[test]
     fn verdict_bar_straddling_edge_is_undecidable() {
         // reading −0.135 ± 0.030: dev 0.035, bar 0.030 — dev + bar 0.065 > 0.04,
         // dev − bar 0.005 ≤ 0.04: the bar straddles the band edge
-        assert_eq!(band_verdict(-0.135, 0.030, -0.14, -0.06, Some(-0.10)), "undecidable");
+        assert_eq!(
+            band_verdict(-0.135, 0.030, -0.14, -0.06, Some(-0.10)),
+            "undecidable"
+        );
     }
 
     #[test]
@@ -673,12 +794,23 @@ mod tests {
     fn walkthrough_first_probe_is_the_slope_jump() {
         // steepness 0.9: to lift +0.07, open ~0.08 → 0.70
         let slope = local_slope(
-            &[WalkPoint::new(0.62, -0.10, 0.01), WalkPoint::new(0.70, -0.028, 0.01)],
+            &[
+                WalkPoint::new(0.62, -0.10, 0.01),
+                WalkPoint::new(0.70, -0.028, 0.01),
+            ],
             HELD,
         );
         assert!((slope.unwrap() - 0.9).abs() < 1e-9);
         let h = next_hint(
-            HELD, MISS_MEDIAN, &[], BAND_LO, BAND_HI, RANGE.0, RANGE.1, slope, AIM,
+            HELD,
+            MISS_MEDIAN,
+            &[],
+            BAND_LO,
+            BAND_HI,
+            RANGE.0,
+            RANGE.1,
+            slope,
+            AIM,
         )
         .unwrap();
         assert_eq!(h.phase, "slope");
@@ -688,7 +820,15 @@ mod tests {
     #[test]
     fn walkthrough_first_probe_blind_without_a_prior() {
         let h = next_hint(
-            HELD, MISS_MEDIAN, &[], BAND_LO, BAND_HI, RANGE.0, RANGE.1, None, AIM,
+            HELD,
+            MISS_MEDIAN,
+            &[],
+            BAND_LO,
+            BAND_HI,
+            RANGE.0,
+            RANGE.1,
+            None,
+            AIM,
         )
         .unwrap();
         assert_eq!(h.phase, "blind");
@@ -703,7 +843,15 @@ mod tests {
         let journal = [WalkPoint::new(0.70, -0.155, 0.01)];
         assert_eq!(probe_side(-0.155, 0.01, BAND_LO, BAND_HI), "below");
         let h = next_hint(
-            HELD, MISS_MEDIAN, &journal, BAND_LO, BAND_HI, RANGE.0, RANGE.1, Some(0.9), AIM,
+            HELD,
+            MISS_MEDIAN,
+            &journal,
+            BAND_LO,
+            BAND_HI,
+            RANGE.0,
+            RANGE.1,
+            Some(0.9),
+            AIM,
         )
         .unwrap();
         assert_eq!(h.phase, "explore");
@@ -720,7 +868,15 @@ mod tests {
         ];
         assert_eq!(probe_side(-0.03, 0.01, BAND_LO, BAND_HI), "above");
         let h = next_hint(
-            HELD, MISS_MEDIAN, &journal, BAND_LO, BAND_HI, RANGE.0, RANGE.1, Some(0.9), AIM,
+            HELD,
+            MISS_MEDIAN,
+            &journal,
+            BAND_LO,
+            BAND_HI,
+            RANGE.0,
+            RANGE.1,
+            Some(0.9),
+            AIM,
         )
         .unwrap();
         assert_eq!(h.phase, "bisect");
@@ -741,10 +897,16 @@ mod tests {
         // slope says reading rises with the dial; reality falls instead
         let one = [WalkPoint::new(0.65, -0.20, 0.01)];
         assert!(!sign_flip(HELD, MISS_MEDIAN, &one, 0.9));
-        let two = [WalkPoint::new(0.65, -0.20, 0.01), WalkPoint::new(0.68, -0.23, 0.01)];
+        let two = [
+            WalkPoint::new(0.65, -0.20, 0.01),
+            WalkPoint::new(0.68, -0.23, 0.01),
+        ];
         assert!(sign_flip(HELD, MISS_MEDIAN, &two, 0.9));
         // one wrong then one right: noise, not a flip
-        let mixed = [WalkPoint::new(0.65, -0.20, 0.01), WalkPoint::new(0.68, -0.17, 0.01)];
+        let mixed = [
+            WalkPoint::new(0.65, -0.20, 0.01),
+            WalkPoint::new(0.68, -0.17, 0.01),
+        ];
         assert!(!sign_flip(HELD, MISS_MEDIAN, &mixed, 0.9));
     }
 
@@ -752,7 +914,10 @@ mod tests {
     fn budget_first_round_free_then_the_allowance_counts() {
         assert!(!budget_exhausted(None, 1000), "standing never exhausts");
         assert!(!budget_exhausted(Some(0), 0), "the first round is free");
-        assert!(budget_exhausted(Some(0), 1), "budget 0 buys exactly the free round");
+        assert!(
+            budget_exhausted(Some(0), 1),
+            "budget 0 buys exactly the free round"
+        );
         assert!(!budget_exhausted(Some(2), 2));
         assert!(budget_exhausted(Some(2), 3));
     }
@@ -760,8 +925,14 @@ mod tests {
     #[test]
     fn slope_is_none_on_a_flat_or_thin_old_map() {
         assert_eq!(local_slope(&[], HELD), None);
-        assert_eq!(local_slope(&[WalkPoint::new(0.62, -0.10, 0.01)], HELD), None);
-        let flat = [WalkPoint::new(0.62, -0.10, 0.01), WalkPoint::new(0.70, -0.10, 0.01)];
+        assert_eq!(
+            local_slope(&[WalkPoint::new(0.62, -0.10, 0.01)], HELD),
+            None
+        );
+        let flat = [
+            WalkPoint::new(0.62, -0.10, 0.01),
+            WalkPoint::new(0.70, -0.10, 0.01),
+        ];
         assert_eq!(local_slope(&flat, HELD), None);
     }
 
@@ -771,7 +942,17 @@ mod tests {
         // refusal is the authority, not another probe
         let journal = [WalkPoint::new(RANGE.1, -0.155, 0.01)];
         assert_eq!(
-            next_hint(HELD, MISS_MEDIAN, &journal, BAND_LO, BAND_HI, RANGE.0, RANGE.1, Some(0.9), AIM),
+            next_hint(
+                HELD,
+                MISS_MEDIAN,
+                &journal,
+                BAND_LO,
+                BAND_HI,
+                RANGE.0,
+                RANGE.1,
+                Some(0.9),
+                AIM
+            ),
             None
         );
     }
