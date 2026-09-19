@@ -22,8 +22,7 @@ impl TrialReader {
     pub fn from_env() -> Self {
         Self {
             config: DbConfig {
-                user: std::env::var("GODON_ARCHIVE_DB_USER")
-                    .unwrap_or_else(|_| "yugabyte".into()),
+                user: std::env::var("GODON_ARCHIVE_DB_USER").unwrap_or_else(|_| "yugabyte".into()),
                 password: std::env::var("GODON_ARCHIVE_DB_PASSWORD")
                     .unwrap_or_else(|_| "yugabyte".into()),
                 host: std::env::var("GODON_ARCHIVE_DB_SERVICE_HOST")
@@ -76,6 +75,57 @@ impl TrialReader {
 
     // ─── Read receiver observations within a time window ────────────
 
+    /// Groupless observation read for the wish doors: rows of ONE
+    /// receiver, keyed by its globally-unique uuid, regardless of
+    /// which inference group banked them. The wish speaks uuids, not
+    /// rooms — the judge must not be blind to readings taken in a
+    /// group the groupless wish never named (found live, Sep 19:
+    /// judge read group 'default', world banked under
+    /// 'bench-characterization').
+    pub async fn read_receiver_observations_for(
+        &self,
+        receiver_id: &str,
+        start_epoch: f64,
+        end_epoch: f64,
+    ) -> Result<std::collections::HashMap<String, Vec<f64>>, Error> {
+        let client = self.connect("archive_db").await?;
+
+        let rows = client
+            .query(
+                "SELECT CAST(objective_values AS TEXT) FROM receiver_observations \
+                 WHERE receiver_id = $3::varchar \
+                 AND lease_phase IS NOT NULL \
+                 AND EXTRACT(EPOCH FROM written_at) >= $1::double precision \
+                 AND EXTRACT(EPOCH FROM written_at) <= $2::double precision \
+                 ORDER BY written_at",
+                &[&start_epoch, &end_epoch, &receiver_id],
+            )
+            .await?;
+
+        let mut values: std::collections::HashMap<String, Vec<f64>> =
+            std::collections::HashMap::new();
+        for row in &rows {
+            let json_str: String = row.get(0);
+            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                if let Some(map) = obj.as_object() {
+                    for (ch, vv) in map {
+                        if let Some(v) = vv.as_f64() {
+                            values.entry(ch.clone()).or_default().push(v);
+                        }
+                    }
+                }
+            }
+        }
+        debug!(
+            "read_receiver_observations_for: receiver={} window=[{:.0}, {:.0}] -> {} channels",
+            receiver_id,
+            start_epoch,
+            end_epoch,
+            values.len()
+        );
+        Ok(values)
+    }
+
     /// Per-receiver, per-channel series: receiver_id -> channel -> ordered
     /// readings. The probe window holds rows from EVERY holding receiver;
     /// grouping by receiver keeps each listener's response its own — the
@@ -86,7 +136,8 @@ impl TrialReader {
         sender_id: &str,
         start_epoch: f64,
         end_epoch: f64,
-    ) -> Result<std::collections::HashMap<String, std::collections::HashMap<String, Vec<f64>>>, Error> {
+    ) -> Result<std::collections::HashMap<String, std::collections::HashMap<String, Vec<f64>>>, Error>
+    {
         let client = self.connect("archive_db").await?;
 
         // Receiver rows only: same group, not the sender's own self-reads,
@@ -186,10 +237,7 @@ impl TrialReader {
     /// refreshed per trial in the heartbeat table. This IS the
     /// constellation, assembled from purely local publications.
     /// Returns {systemtender_id: params} as a JSON value.
-    pub async fn read_standing_params(
-        &self,
-        group_id: &str,
-    ) -> Result<serde_json::Value, Error> {
+    pub async fn read_standing_params(&self, group_id: &str) -> Result<serde_json::Value, Error> {
         let client = self.connect("archive_db").await?;
 
         let rows = client
@@ -259,7 +307,11 @@ impl TrialReader {
             trials.push(record);
         }
 
-        info!("Loaded {} trials for systemtender {}", trials.len(), systemtender_id);
+        info!(
+            "Loaded {} trials for systemtender {}",
+            trials.len(),
+            systemtender_id
+        );
         Ok(trials)
     }
 
@@ -472,11 +524,7 @@ impl ProbeTrials {
                     .user_attrs
                     .get("lease_phase")
                     .and_then(|v| v.as_str())
-                    .or_else(|| {
-                        t.user_attrs
-                            .get("impulse_phase")
-                            .and_then(|v| v.as_str())
-                    })
+                    .or_else(|| t.user_attrs.get("impulse_phase").and_then(|v| v.as_str()))
                     .unwrap_or("")
                     .to_string();
 
@@ -657,10 +705,7 @@ mod impulse_phase_vocabulary_tests {
     fn trial(phase: &str) -> TrialRecord {
         let mut user_attrs = HashMap::new();
         if !phase.is_empty() {
-            user_attrs.insert(
-                "impulse_phase".to_string(),
-                serde_json::json!(phase),
-            );
+            user_attrs.insert("impulse_phase".to_string(), serde_json::json!(phase));
         }
         TrialRecord {
             number: 1,
@@ -678,7 +723,11 @@ mod impulse_phase_vocabulary_tests {
         for phase in ["push", "probe_push"] {
             let trials = vec![trial(phase)];
             let probe = ProbeTrials::from_trials("s", &trials);
-            assert_eq!(probe.push_trials.len(), 1, "phase={phase} must classify as push");
+            assert_eq!(
+                probe.push_trials.len(),
+                1,
+                "phase={phase} must classify as push"
+            );
         }
     }
 
@@ -687,7 +736,11 @@ mod impulse_phase_vocabulary_tests {
         for phase in ["pause", "probe_pause"] {
             let trials = vec![trial(phase)];
             let probe = ProbeTrials::from_trials("s", &trials);
-            assert_eq!(probe.pause_trials.len(), 1, "phase={phase} must classify as pause");
+            assert_eq!(
+                probe.pause_trials.len(),
+                1,
+                "phase={phase} must classify as pause"
+            );
         }
     }
 
