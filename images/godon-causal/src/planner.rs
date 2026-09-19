@@ -72,6 +72,9 @@ pub struct SteerPlanRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Band {
+    /// Bounds are in outcome units — what the outcome shows (the
+    /// thermometer reading), never a movement. The planner translates
+    /// to movement units internally via the banked neutral anchor.
     pub lo: f64,
     pub hi: f64,
     /// Receipt/reporting only - the planner aims here when present,
@@ -359,6 +362,7 @@ pub fn plan(
     entries: &[CurveEntry],
     graph: Option<&CausalGraph>,
     req: &SteerPlanRequest,
+    anchor: Option<f64>,
 ) -> Result<PlanDecision, String> {
     // door checks: malformed is refused before anything is planned
     if !req.band.lo.is_finite() || !req.band.hi.is_finite() || req.band.lo >= req.band.hi {
@@ -397,6 +401,22 @@ pub fn plan(
 
     let (receiver, channel) = resolve_outcome(entries, &req.outcome)?;
     let target = req.band.target.unwrap_or(0.5 * (req.band.lo + req.band.hi));
+
+    // The wish speaks in what the outcome shows (thermometer units);
+    // the curves speak in movements from the banked neutral. The anchor
+    // is the one translation point — and without it the wish cannot be
+    // voiced in curve units at all: refuse, named, never guessed.
+    let Some(anchor) = anchor.filter(|a| a.is_finite()) else {
+        return Ok(PlanDecision::Refused {
+            reason: "unanchored_outcome".to_string(),
+            detail: format!(
+                "outcome '{}' has no banked neutral reading yet - a probe round \
+                 must pause at neutral before a wish on it can be planned",
+                req.outcome
+            ),
+        });
+    };
+    let shift_target = target - anchor;
 
     // single-hop candidates: curves whose listener IS the outcome
     let mut candidates: Vec<(String, String, Vec<CurvePoint>)> = entries
@@ -450,12 +470,15 @@ pub fn plan(
                 .map(|e| e.shift)
                 .unwrap_or(f64::NAN)
         };
-        match steer::invert(target, bracket.lo, bracket.hi, &eval, BISECTION_ITERS) {
+        match steer::invert(shift_target, bracket.lo, bracket.hi, &eval, BISECTION_ITERS) {
             None => {
                 let reason_detail = format!(
-                    "param '{}': target {} outside the curve's evaluated range [{}, {}] on the allowed bracket [{}, {}]",
+                    "param '{}': band [{}, {}] with anchor {} wants a move to {}, outside the curve's evaluated range [{}, {}] on the allowed bracket [{}, {}]",
                     param,
-                    target,
+                    req.band.lo,
+                    req.band.hi,
+                    anchor,
+                    shift_target,
                     eval(bracket.lo),
                     eval(bracket.hi),
                     bracket.lo,
@@ -474,11 +497,13 @@ pub fn plan(
                 let evaluated = steer::eval_level(points, setting)
                     .expect("setting inside verified bracket must evaluate");
                 log::info!(
-                    "STEER plan: single-hop {} param '{}' -> setting {} predicts {} +/- {}",
+                    "STEER plan: single-hop {} param '{}' -> setting {} predicts {} (move {} from anchor {}) +/- {}",
                     sender,
                     param,
                     setting,
+                    anchor + evaluated.shift,
                     evaluated.shift,
+                    anchor,
                     evaluated.bar
                 );
                 plans.push((
@@ -493,7 +518,7 @@ pub fn plan(
                             setting,
                             bars: evaluated.bar,
                         }],
-                        predicted_value: evaluated.shift,
+                        predicted_value: anchor + evaluated.shift,
                         predicted_bars: evaluated.bar,
                         range_used: vec![(param.clone(), bracket.lo, bracket.hi)],
                         path: vec![sender.clone(), receiver.clone()],
@@ -638,7 +663,7 @@ mod tests {
     fn single_hop_lands_on_target() {
         let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
         let r = req("R", 25.0, None, None);
-        match plan(&entries, None, &r).unwrap() {
+        match plan(&entries, None, &r, Some(0.0)).unwrap() {
             PlanDecision::Planned {
                 moves,
                 predicted_value,
@@ -664,8 +689,62 @@ mod tests {
     fn target_outside_measured_range_refuses() {
         let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
         let r = req("R", 75.0, None, None); // shift range is [0, 50]
-        match plan(&entries, None, &r).unwrap() {
+        match plan(&entries, None, &r, Some(0.0)).unwrap() {
             PlanDecision::Refused { reason, .. } => assert_eq!(reason, "outside_measured_range"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anchor_translates_absolute_band_to_move() {
+        // The customer's wish: the reading sits at 90 at rest and should
+        // stand at 115 (band 110-120). The curve only moves the reading
+        // by up to +50 from that rest: the planner must hear "115" as
+        // "move +25" and aim the dial where the move is +25 (level 50).
+        let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
+        let r = req("R", 115.0, None, None);
+        match plan(&entries, None, &r, Some(90.0)).unwrap() {
+            PlanDecision::Planned {
+                moves,
+                predicted_value,
+                ..
+            } => {
+                assert!(
+                    (moves[0].setting - 50.0).abs() < 1e-6,
+                    "setting {:?} should be 50",
+                    moves[0].setting
+                );
+                assert!(
+                    (predicted_value - 115.0).abs() < 1e-6,
+                    "prediction {predicted_value} must be in thermometer units"
+                );
+            }
+            other => panic!("expected a plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sane_absolute_band_far_from_anchor_refuses_by_move_span() {
+        // Band 160-170 with anchor 90 asks a move of +75; the curve
+        // spans moves [0, 50] — refused on the move span, not the
+        // thermometer numbers.
+        let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
+        let r = req("R", 165.0, None, None);
+        match plan(&entries, None, &r, Some(90.0)).unwrap() {
+            PlanDecision::Refused { reason, .. } => assert_eq!(reason, "outside_measured_range"),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unanchored_outcome_refuses_named() {
+        let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
+        let r = req("R", 25.0, None, None);
+        match plan(&entries, None, &r, None).unwrap() {
+            PlanDecision::Refused { reason, detail } => {
+                assert_eq!(reason, "unanchored_outcome");
+                assert!(detail.contains("neutral"), "detail should teach: {detail}");
+            }
             other => panic!("expected a refusal, got {other:?}"),
         }
     }
@@ -687,7 +766,7 @@ mod tests {
             max_change: Some(0.2),
         };
         let r = req("R", 10.0, Some(limits), Some(ranges));
-        match plan(&entries, None, &r).unwrap() {
+        match plan(&entries, None, &r, Some(0.0)).unwrap() {
             PlanDecision::Refused { reason, .. } => assert_eq!(reason, "magnitude_bound"),
             other => panic!("expected magnitude_bound, got {other:?}"),
         }
@@ -701,7 +780,7 @@ mod tests {
             max_change: None,
         };
         let r = req("R", 25.0, Some(limits), None);
-        match plan(&entries, None, &r).unwrap() {
+        match plan(&entries, None, &r, Some(0.0)).unwrap() {
             PlanDecision::Refused { reason, detail } => {
                 assert_eq!(reason, "excluded_input");
                 assert!(detail.contains('p'), "detail must name the excluded param");
@@ -720,7 +799,7 @@ mod tests {
         ];
         let entries = vec![entry("a", "R", "p", "objective_0", pts)];
         let r = req("R", 20.0, None, None);
-        match plan(&entries, None, &r).unwrap() {
+        match plan(&entries, None, &r, Some(0.0)).unwrap() {
             PlanDecision::Refused { reason, .. } => assert_eq!(reason, "unmeasured_path"),
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -742,7 +821,7 @@ mod tests {
             ),
         ];
         let r = req("R", 20.0, None, None);
-        match plan(&entries, None, &r).unwrap() {
+        match plan(&entries, None, &r, Some(0.0)).unwrap() {
             PlanDecision::Planned { moves, path, .. } => {
                 assert_eq!(moves[0].sender, "M", "direct dial on the middle node");
                 assert_eq!(moves[0].param, "t");
@@ -766,7 +845,7 @@ mod tests {
             entry("aa_early", "R", "p1", "objective_0", loose),
         ];
         let r = req("R", 50.0, None, None);
-        match plan(&entries, None, &r).unwrap() {
+        match plan(&entries, None, &r, Some(0.0)).unwrap() {
             PlanDecision::Planned {
                 moves,
                 predicted_bars,
@@ -785,7 +864,10 @@ mod tests {
         // bare receiver, dotted pair, slashed pair - all resolve the same
         for outcome in ["R", "R.objective_0", "R/objective_0"] {
             let r = req(outcome, 25.0, None, None);
-            assert!(plan(&entries, None, &r).is_ok(), "'{outcome}' must resolve");
+            assert!(
+                plan(&entries, None, &r, Some(0.0)).is_ok(),
+                "'{outcome}' must resolve"
+            );
         }
     }
 
@@ -796,12 +878,12 @@ mod tests {
             entry("b", "R", "q", "objective_1", GAIN_UP),
         ];
         let r = req("R", 25.0, None, None);
-        let err = plan(&entries, None, &r).unwrap_err();
+        let err = plan(&entries, None, &r, Some(0.0)).unwrap_err();
         assert!(err.contains("ambiguous"), "two channels: {err}");
         assert!(err.contains("objective_0") && err.contains("objective_1"));
 
         let r = req("nowhere", 25.0, None, None);
-        let err = plan(&entries, None, &r).unwrap_err();
+        let err = plan(&entries, None, &r, Some(0.0)).unwrap_err();
         assert!(
             err.contains("resolvable"),
             "unknown outcome lists what exists: {err}"
@@ -825,7 +907,7 @@ mod tests {
             limits: None,
             param_ranges: None,
         };
-        assert!(plan(&entries, None, &bad_band).is_err());
+        assert!(plan(&entries, None, &bad_band, Some(0.0)).is_err());
         // maxChange outside (0, 1)
         let r = req(
             "R",
@@ -836,11 +918,11 @@ mod tests {
             }),
             None,
         );
-        assert!(plan(&entries, None, &r).is_err());
+        assert!(plan(&entries, None, &r, Some(0.0)).is_err());
         // inverted declared range
         let mut ranges = HashMap::new();
         ranges.insert("p".to_string(), [100.0, 0.0]);
         let r = req("R", 25.0, None, Some(ranges));
-        assert!(plan(&entries, None, &r).is_err());
+        assert!(plan(&entries, None, &r, Some(0.0)).is_err());
     }
 }
