@@ -39,12 +39,21 @@ struct AppState {
     build_status: RwLock<BuildStatus>,
     curves: RwLock<probe_curves::CurveRegistry>,
     /// The banked neutral reading per outcome channel, keyed
-    /// (group, receiver, channel) -> (neutral, bar): what the outcome
+    /// (receiver, channel) -> (neutral, bar): what the outcome
     /// shows at rest. Wish bands are absolute (thermometer units);
-    /// curves are movements from this anchor. Persisted in
-    /// outcome_anchors, loaded at boot, refreshed by every probe's
-    /// pause window.
-    anchors: RwLock<HashMap<(String, String, String), (f64, f64)>>,
+    /// curves are movements from this anchor. Keyed by outcome
+    /// channel alone, like the curve registry — the receiver's uuid
+    /// is globally unique, and a group-tagged key split the banking
+    /// group from the wish's asking group (found live, Sep 19).
+    /// Persisted in outcome_anchors with group kept as provenance,
+    /// loaded at boot, refreshed by every probe's pause window.
+    anchors: RwLock<HashMap<(String, String), (f64, f64)>>,
+    /// One-shot guard: the wish book tables are ensured on the first
+    /// SUCCESSFUL archive connection of the process. A boot that
+    /// races ahead of the DB must not leave the book tableless
+    /// forever (found live, Sep 19: "archive DB unavailable at
+    /// startup" skipped ensure_wish_tables entirely).
+    tables_ensured: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -76,31 +85,43 @@ impl AppState {
             build_status: RwLock::new(BuildStatus::default()),
             curves: RwLock::new(probe_curves::CurveRegistry::new()),
             anchors: RwLock::new(HashMap::new()),
+            tables_ensured: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Connect to the archive DB, ensuring the wish book tables once
+    /// per process on the first success. Boot's ensure is best-effort
+    /// (the DB may still be booting); this is the guarantee behind it.
+    pub async fn connect_archive_ensured(
+        &self,
+    ) -> Result<tokio_postgres::Client, tokio_postgres::Error> {
+        let client = self.reader.connect_archive().await?;
+        if !self
+            .tables_ensured
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && wish_book::ensure_wish_tables(&client).await.is_ok()
+        {
+            self.tables_ensured
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(client)
     }
 
     /// Bank the outcome channel's neutral reading (memory now, the
     /// probe handler persists alongside).
-    async fn bank_anchor(
-        &self,
-        group: &str,
-        receiver: &str,
-        channel: &str,
-        neutral: f64,
-        bar: f64,
-    ) {
-        self.anchors.write().await.insert(
-            (group.to_string(), receiver.to_string(), channel.to_string()),
-            (neutral, bar),
-        );
+    async fn bank_anchor(&self, receiver: &str, channel: &str, neutral: f64, bar: f64) {
+        self.anchors
+            .write()
+            .await
+            .insert((receiver.to_string(), channel.to_string()), (neutral, bar));
     }
 
     /// The banked neutral (and its bar) for one outcome channel.
-    async fn anchor_for(&self, group: &str, receiver: &str, channel: &str) -> Option<(f64, f64)> {
+    async fn anchor_for(&self, receiver: &str, channel: &str) -> Option<(f64, f64)> {
         self.anchors
             .read()
             .await
-            .get(&(group.to_string(), receiver.to_string(), channel.to_string()))
+            .get(&(receiver.to_string(), channel.to_string()))
             .copied()
     }
 
@@ -526,7 +547,7 @@ async fn steer_plan(
     // A missing anchor is the planner's named refusal, not ours.
     let anchor: Option<f64> = match planner::resolve_outcome(&entries, &req.outcome) {
         Ok((receiver, channel)) => state
-            .anchor_for(&group, &receiver, &channel)
+            .anchor_for(&receiver, &channel)
             .await
             .map(|(neutral, _bar)| neutral),
         Err(_) => None,
@@ -574,7 +595,7 @@ async fn steer_plan(
             // The ask that computed the plan also seeds the book: terms in,
             // plan in, status set. The controller minted the wish_id.
             if let Some(wish_id) = &req.wish_id {
-                if let Ok(client) = state.reader.connect_archive().await {
+                if let Ok(client) = state.connect_archive_ensured().await {
                     let terms = serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
                     let _ = wish_book::record_wish(
                         &client,
@@ -601,7 +622,7 @@ async fn steer_plan(
             info!("STEER /steer/plan: refused ({reason}) - {detail}");
             // refusals are book entries too: the wish stood, the map said no
             if let Some(wish_id) = &req.wish_id {
-                if let Ok(client) = state.reader.connect_archive().await {
+                if let Ok(client) = state.connect_archive_ensured().await {
                     let terms = serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
                     let plan_json =
                         serde_json::json!({ "reason": reason.clone(), "detail": detail.clone() });
@@ -1084,7 +1105,7 @@ async fn steer_plan_get(
     State(state): State<Arc<AppState>>,
     Path(wish_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let client = state.reader.connect_archive().await.map_err(|e| {
+    let client = state.connect_archive_ensured().await.map_err(|e| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({ "error": format!("archive DB unavailable: {e}") })),
@@ -1201,7 +1222,7 @@ async fn steer_plan_get(
         // The outcome's banked neutral is the one translation.
         let walk_anchor: Option<f64> = match outcome_pair.as_ref() {
             Some((receiver, channel)) => state
-                .anchor_for(&group, receiver, channel)
+                .anchor_for(receiver, channel)
                 .await
                 .map(|(neutral, _bar)| neutral),
             None => None,
@@ -1598,10 +1619,8 @@ async fn probe_result(
             // that voices absolute wish bands in the curves' movement
             // units. Banked on every probe round, freshest wins.
             if !pause_obs.is_empty() {
-                state
-                    .bank_anchor(&req.group_id, recv, ch, pause_median, pause_mad)
-                    .await;
-                if let Ok(client) = state.reader.connect_archive().await {
+                state.bank_anchor(recv, ch, pause_median, pause_mad).await;
+                if let Ok(client) = state.connect_archive_ensured().await {
                     let _ = wish_book::bank_outcome_anchor(
                         &client,
                         &req.group_id,
@@ -1773,9 +1792,9 @@ async fn probe_result(
             // The self channel's own anchor: the sender's reading at
             // neutral, from the same pause window.
             state
-                .bank_anchor(&req.group_id, &req.sender_id, &ch, median_f64(&q), mad(&q))
+                .bank_anchor(&req.sender_id, &ch, median_f64(&q), mad(&q))
                 .await;
-            if let Ok(client) = state.reader.connect_archive().await {
+            if let Ok(client) = state.connect_archive_ensured().await {
                 let _ = wish_book::bank_outcome_anchor(
                     &client,
                     &req.group_id,
@@ -2295,8 +2314,8 @@ async fn main() {
                 Ok(rows) => {
                     let n = rows.len();
                     let mut anchors = state.anchors.write().await;
-                    for (group, receiver, channel, neutral, bar) in rows {
-                        anchors.insert((group, receiver, channel), (neutral, bar));
+                    for (_group, receiver, channel, neutral, bar) in rows {
+                        anchors.insert((receiver, channel), (neutral, bar));
                     }
                     info!("loaded {} banked outcome anchors", n);
                 }
@@ -2398,15 +2417,7 @@ mod tests {
         }
         // The outcome's banked neutral: the reading at rest is 0.0, so
         // thermometer units and movement units coincide here.
-        state
-            .bank_anchor(
-                connectome_store::DEFAULT_GROUP,
-                "R",
-                "objective_0",
-                0.0,
-                0.02,
-            )
-            .await;
+        state.bank_anchor("R", "objective_0", 0.0, 0.02).await;
         state
     }
 
