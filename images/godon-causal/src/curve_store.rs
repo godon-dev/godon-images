@@ -99,7 +99,7 @@ pub async fn insert_curve_point(
         .execute(
             "INSERT INTO curve_points \
              (group_id, sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, convergence_threshold, ambient) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, ($10::text)::jsonb)",
             &[
                 &group_id,
                 &sender_id,
