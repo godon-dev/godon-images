@@ -1150,7 +1150,12 @@ async fn steer_plan_get(
     // level from readings at the held one — a probe landing in band
     // would stamp "landed" at a setting that still misses. The walk's
     // own rule (a decidable re-plan) is the only verdict then.
-    if matches!(status.as_str(), "planned" | "serving" | "undecidable") {
+    // "landed" is judged too: a standing wish holds UNTIL drift breaks
+    // it. A landed wish that is never re-read can never miss — the
+    // gavel, the walk, and the re-plan would be unreachable from the
+    // one state a successful hold lives in (found live Sep 20, flight
+    // 7: 6x drift, 60 minutes, landed throughout).
+    if matches!(status.as_str(), "planned" | "serving" | "undecidable" | "landed") {
         if let (Some(sender), Some((receiver, channel))) = (
             row.plan
                 .as_ref()
