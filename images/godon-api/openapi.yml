@@ -1158,72 +1158,21 @@ components:
         $ref: '#/components/schemas/SystemtenderSummary'
       description: Array of systemtender summary objects (without configuration details)
 
-    SteerwishBand:
-      type: object
-      required:
-        - lo
-        - hi
-      properties:
-        lo:
-          type: number
-          format: double
-          description: Lower edge of the acceptable band (in the outcome's measurement units)
-          example: -0.14
-        hi:
-          type: number
-          format: double
-          description: Upper edge of the acceptable band (in the outcome's measurement units)
-          example: -0.06
-        target:
-          type: number
-          format: double
-          description: Aim point inside the band - receipt and reporting only, never judged
-          example: -0.10
-
-    SteerwishLimits:
-      type: object
-      description: Guardrails on how the wish may be served - checked at plan time, refusal names the binding one
-      properties:
-        exclude:
-          type: array
-          items:
-            type: string
-          description: Param names that may not be moved at all
-          example: []
-        maxChange:
-          type: number
-          format: double
-          minimum: 0
-          maximum: 1
-          exclusiveMinimum: true
-          description: No input may end further from its neutral point than this fraction of its own range
-          example: 0.5
-
     SteerwishCreate:
       type: object
-      required:
-        - outcome
-        - band
-      properties:
-        outcome:
-          type: string
-          minLength: 1
-          description: Plain name of the measured value this wish is about - must resolve to exactly one entry in the connectome's outcome registry
-          example: "chainend.shift"
+      additionalProperties: true
+      description: |
+        The wish body, verbatim - the declarer's own. Wish-shape freedom
+        (ruled 2026-09-19): this surface does not validate the grammar;
+        the controller owns validation (the door). Today the grammar is
+        outcome + band (the chainend example below); richer grammars
+        (claims, terms) arrive through this same door without API changes.
+      example:
+        outcome: "chainend.shift"
         band:
-          $ref: '#/components/schemas/SteerwishBand'
-        limits:
-          $ref: '#/components/schemas/SteerwishLimits'
-        budget:
-          type: integer
-          minimum: 0
-          description: Re-act allowance after drift events; omitted means upkeep indefinitely
-          example: 2
-        regime:
-          type: string
-          enum: [standing]
-          default: standing
-          description: Closing rule of the wish. Only standing exists today (held until closed); time-bound and event-bound close rules are planned
+          lo: -0.14
+          hi: -0.06
+          target: -0.10
 
     SteerwishEvent:
       type: object
@@ -1248,10 +1197,15 @@ components:
 
     Steerwish:
       type: object
+      description: |
+        The wish as the API carries it: a lifecycle envelope plus the body
+        verbatim (wish-shape freedom, 2026-09-21). The envelope fields are
+        the front door's concern - addressing and the book; the body is the
+        controller's object, carried unshaped in both directions. Today the
+        body carries outcome + band (and optional limits/budget/regime);
+        richer grammars (claims, terms) arrive without API changes.
       required:
         - id
-        - outcome
-        - band
         - state
         - createdAt
       properties:
@@ -1261,24 +1215,6 @@ components:
           description: Unique identifier for the steerwish
           readOnly: true
           example: "550e8400-e29b-41d4-a716-446655440000"
-        outcome:
-          type: string
-          description: Plain name of the measured value this wish holds
-          example: "chainend.shift"
-        band:
-          $ref: '#/components/schemas/SteerwishBand'
-        limits:
-          $ref: '#/components/schemas/SteerwishLimits'
-        budget:
-          type: integer
-          minimum: 0
-          description: Remaining re-act allowance; omitted means upkeep indefinitely
-          example: 2
-        regime:
-          type: string
-          enum: [standing]
-          description: Closing rule; standing today
-          example: "standing"
         state:
           type: string
           enum: [declared, planned, refused, acted, landed, missed, re_opened, closed]
@@ -1303,12 +1239,15 @@ components:
             $ref: '#/components/schemas/SteerwishEvent'
           description: Full lifecycle history - truth lives here, state derives from it
           readOnly: true
+      additionalProperties: true
 
     SteerwishSummary:
       type: object
+      description: |
+        List view: the lifecycle envelope plus the wish body verbatim
+        (see Steerwish - the body is the controller's object).
       required:
         - id
-        - outcome
         - state
         - createdAt
       properties:
@@ -1318,10 +1257,6 @@ components:
           description: Unique identifier for the steerwish
           readOnly: true
           example: "550e8400-e29b-41d4-a716-446655440000"
-        outcome:
-          type: string
-          description: Plain name of the measured value this wish holds
-          example: "chainend.shift"
         state:
           type: string
           enum: [declared, planned, refused, acted, landed, missed, re_opened, closed]
@@ -1334,6 +1269,7 @@ components:
           description: When the wish was declared
           readOnly: true
           example: "2026-09-10T10:30:00Z"
+      additionalProperties: true
 
     SteerwishList:
       type: array

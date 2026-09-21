@@ -201,6 +201,7 @@ impl ToolRegistry {
                 description: "Declare a steerwish: a named measured outcome the system should bring into a band and hold. The map plans the input setting; refusals name their binding constraint. Omitted budget means upkeep indefinitely; omitted regime means standing. Judging is in/out of band only - the target is receipt and reporting.",
                 input_schema: serde_json::json!({
                     "type": "object",
+                    "description": "The wish body, verbatim - the controller validates the grammar (the door). Today: outcome + band; richer grammars (claims, terms) arrive through this same door.",
                     "properties": {
                         "outcome": { "type": "string", "description": "Plain name of the measured value this wish is about - must resolve to exactly one entry in the map's outcome registry, e.g. 'chainend.shift'" },
                         "band": {
@@ -210,8 +211,7 @@ impl ToolRegistry {
                                 "lo": { "type": "number", "description": "Lower edge of the acceptable band" },
                                 "hi": { "type": "number", "description": "Upper edge of the acceptable band" },
                                 "target": { "type": "number", "description": "Aim point inside the band - receipt and reporting only, never judged" }
-                            },
-                            "required": ["lo", "hi"]
+                            }
                         },
                         "limits": {
                             "type": "object",
@@ -224,8 +224,7 @@ impl ToolRegistry {
                         "budget": { "type": "integer", "description": "Re-act allowance after drift events; omitted means upkeep indefinitely" },
                         "regime": { "type": "string", "enum": ["standing"], "description": "Closing rule of the wish; only standing exists today (held until closed)" }
                     },
-                    "required": ["outcome", "band"],
-                    "additionalProperties": false
+                    "additionalProperties": true
                 }),
             },
             ToolDef {

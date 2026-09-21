@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::types::{
-    Steerwish, SteerwishCreate, SteerwishSummary, Systemtender, SystemtenderCreate,
+    Steerwish, SteerwishSummary, Systemtender, SystemtenderCreate,
     SystemtenderSummary, SystemtenderUpdate, Credential, CredentialCreate, DeleteResponse,
     ErrorResponse, Target, TargetCreate,
 };
@@ -626,39 +626,9 @@ pub async fn delete_target(
 }
 
 // ─── Steerwishes ────────────────────────────────────────────────────
-
-fn validate_steerwish_create(payload: &SteerwishCreate) -> Result<(), String> {
-    if payload.outcome.trim().is_empty() {
-        return Err("outcome must be a non-empty resolvable name".into());
-    }
-    if !payload.band.lo.is_finite() || !payload.band.hi.is_finite() {
-        return Err("band lo/hi must be finite numbers".into());
-    }
-    if payload.band.lo >= payload.band.hi {
-        return Err("band lo must be < hi".into());
-    }
-    if let Some(t) = payload.band.target {
-        if !t.is_finite() {
-            return Err("band target must be finite".into());
-        }
-    }
-    if let Some(mc) = payload.limits.max_change {
-        if !(mc > 0.0 && mc <= 1.0) {
-            return Err("limits.max_change must be in (0, 1] - fraction of a param's range from neutral".into());
-        }
-    }
-    if let Some(b) = payload.budget {
-        if b < 0 {
-            return Err("budget must be >= 0".into());
-        }
-    }
-    if let Some(r) = &payload.regime {
-        if r != "standing" {
-            return Err("regime must be 'standing' (the only value today)".into());
-        }
-    }
-    Ok(())
-}
+// Wish-shape freedom (ruled 2026-09-19, the wish-stack note): the body
+// is the declarer's own; the controller owns validation (the door).
+// The API forwards it verbatim - transport hygiene only.
 
 pub async fn list_steerwishes(
     State(_config): State<Config>,
@@ -683,30 +653,25 @@ pub async fn list_steerwishes(
 
 pub async fn declare_steerwish(
     State(_config): State<Config>,
-    Json(payload): Json<SteerwishCreate>,
+    Json(payload): Json<serde_json::Value>,
 ) -> Result<(StatusCode, Json<Steerwish>), (StatusCode, Json<ErrorResponse>)> {
-    if let Err(msg) = validate_steerwish_create(&payload) {
+    // The wish body is not shaped here: the controller validates (the
+    // door), the same arrangement as systemtender configs. Only transport
+    // hygiene: a JSON object, so the declaration is addressable at all.
+    if !payload.is_object() {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::with_details(
-                format!("Invalid steerwish: {}", msg).as_str(),
-                "BAD_REQUEST",
-                json!({"outcome": payload.outcome})
+            Json(ErrorResponse::new(
+                "The wish body must be a JSON object; its grammar is validated at the door",
+                "BAD_REQUEST"
             ))
         ));
     }
 
     let client = get_client()?;
-    let wish_data = json!({
-        "outcome": payload.outcome,
-        "band": payload.band,
-        "limits": payload.limits,
-        "budget": payload.budget,
-        "regime": payload.regime.unwrap_or_else(|| "standing".to_string()),
-    });
 
     tokio::task::spawn_blocking(move || {
-        client.create_steerwish(wish_data)
+        client.create_steerwish(payload)
             .map(|w| (StatusCode::CREATED, Json(w)))
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,
