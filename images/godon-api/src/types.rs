@@ -120,34 +120,6 @@ impl ErrorResponse {
 // ─── Steerwish ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SteerwishBand {
-    pub lo: f64,
-    pub hi: f64,
-    #[serde(rename = "target", skip_serializing_if = "Option::is_none")]
-    pub target: Option<f64>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SteerwishLimits {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub exclude: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_change: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SteerwishCreate {
-    pub outcome: String,
-    pub band: SteerwishBand,
-    #[serde(default)]
-    pub limits: SteerwishLimits,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub regime: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SteerwishEvent {
     #[serde(rename = "type")]
     pub event_type: String,
@@ -157,17 +129,15 @@ pub struct SteerwishEvent {
     pub detail: Option<String>,
 }
 
+/// The wish as the API carries it: a lifecycle envelope plus the body
+/// verbatim. The envelope (id, state, timestamps, events) is the front
+/// door's own concern - addressing and the book. The body is the
+/// controller's object (wish-shape freedom, 2026-09-21): whatever
+/// grammar the door validates - today outcome+band, later claims and
+/// terms - passes through unshaped, in both directions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Steerwish {
     pub id: String,
-    pub outcome: String,
-    pub band: SteerwishBand,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limits: Option<SteerwishLimits>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub regime: Option<String>,
     pub state: String,
     #[serde(rename = "createdAt")]
     pub created_at: String,
@@ -175,13 +145,16 @@ pub struct Steerwish {
     pub updated_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<SteerwishEvent>,
+    #[serde(flatten)]
+    pub body: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SteerwishSummary {
     pub id: String,
-    pub outcome: String,
     pub state: String,
     #[serde(rename = "createdAt")]
     pub created_at: String,
+    #[serde(flatten)]
+    pub body: serde_json::Map<String, serde_json::Value>,
 }
