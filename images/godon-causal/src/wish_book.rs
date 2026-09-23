@@ -321,7 +321,11 @@ pub fn instruction_for(status: &str) -> &'static str {
 pub const JUDGE_MIN_READINGS: usize = 3;
 /// Fresh plan, no verdict yet: the judge looks at this much hold history
 /// before concluding anything (bounded window instead of all-of-history).
-pub const JUDGE_LOOKBACK_SECS: f64 = 1800.0;
+/// Short by design: the first stamp has no watermark, so on a drifting
+/// channel a long lookback judges where the reading WAS, not where it IS
+/// (1800s on the 6e-3 edge drifted the median two bands below the live
+/// reading — every wish missed at plan, born released).
+pub const JUDGE_LOOKBACK_SECS: f64 = 90.0;
 
 /// The reading's own error bar: 2σ of the hold readings over √n — the 2σ
 /// judge. None until JUDGE_MIN_READINGS readings exist (undecidable by
@@ -636,8 +640,8 @@ pub async fn list_wish_events(
 ) -> Result<Vec<WalkEventRow>, Error> {
     let rows = client
         .query(
-            "SELECT (EXTRACT(EPOCH FROM tsz))::double precision, event, detail FROM wish_events \
-             WHERE wish_id = $1 AND tsz >= TO_TIMESTAMP($2) ORDER BY tsz",
+            "SELECT tsz, event, detail FROM wish_events \
+             WHERE wish_id = $1 AND tsz >= $2 ORDER BY tsz",
             &[&wish_id, &since],
         )
         .await?;
@@ -681,9 +685,9 @@ pub async fn latest_event_tsz(
 ) -> Result<Option<f64>, Error> {
     let rows = client
         .query(
-            "SELECT MAX((EXTRACT(EPOCH FROM tsz))::double precision) FROM wish_events \
+            "SELECT MAX(tsz) FROM wish_events \
              WHERE wish_id = $1 AND event = ANY($2) \
-             AND ($3::double precision IS NULL OR tsz < TO_TIMESTAMP($3))",
+             AND ($3::double precision IS NULL OR tsz < $3)",
             &[&wish_id, &events, &before],
         )
         .await?;
