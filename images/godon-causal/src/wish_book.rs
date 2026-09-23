@@ -351,7 +351,7 @@ pub async fn latest_receiver_point_tsz(
 ) -> Result<Option<f64>, Error> {
     let rows = client
         .query(
-            "SELECT MAX(EXTRACT(EPOCH FROM written_at)) FROM curve_points \
+            "SELECT MAX(EXTRACT(EPOCH FROM written_at)::double precision) FROM curve_points \
              WHERE receiver_id = $1",
             &[&receiver_id],
         )
@@ -636,7 +636,7 @@ pub async fn list_wish_events(
 ) -> Result<Vec<WalkEventRow>, Error> {
     let rows = client
         .query(
-            "SELECT EXTRACT(EPOCH FROM tsz), event, detail FROM wish_events \
+            "SELECT (EXTRACT(EPOCH FROM tsz))::double precision, event, detail FROM wish_events \
              WHERE wish_id = $1 AND tsz >= TO_TIMESTAMP($2) ORDER BY tsz",
             &[&wish_id, &since],
         )
@@ -681,7 +681,7 @@ pub async fn latest_event_tsz(
 ) -> Result<Option<f64>, Error> {
     let rows = client
         .query(
-            "SELECT MAX(EXTRACT(EPOCH FROM tsz)) FROM wish_events \
+            "SELECT MAX((EXTRACT(EPOCH FROM tsz))::double precision) FROM wish_events \
              WHERE wish_id = $1 AND event = ANY($2) \
              AND ($3::double precision IS NULL OR tsz < TO_TIMESTAMP($3))",
             &[&wish_id, &events, &before],
@@ -726,7 +726,7 @@ pub async fn read_dial_points(
 ) -> Result<Vec<(f64, f64, f64, f64)>, Error> {
     let rows = client
         .query(
-            "SELECT EXTRACT(EPOCH FROM written_at), probe_level, shift, bar \
+            "SELECT (EXTRACT(EPOCH FROM written_at))::double precision AS written_epoch, probe_level, shift, bar \
              FROM curve_points \
              WHERE sender_id = $1 AND receiver_id = $2 \
              AND probe_param = $3 AND channel = $4 ORDER BY written_at",
