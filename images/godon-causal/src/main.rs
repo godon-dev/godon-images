@@ -1279,6 +1279,78 @@ async fn steer_plan_get(
     })))
 }
 
+/// Discovery — the tender's per-beat ask: any open wish naming me?
+/// Replaces the assignment row: nothing is ever delivered to a dead
+/// address, because nothing is delivered at all — the living hand asks.
+async fn steer_for(
+    State(state): State<Arc<AppState>>,
+    Path(uuid): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let client = state.connect_archive_ensured().await.map_err(|e| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": format!("archive DB unavailable: {e}") })),
+        )
+    })?;
+    let found = wish_book::wish_for(&client, &uuid).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("wish discovery failed: {e}") })),
+        )
+    })?;
+    let body = match found {
+        Some((wish_id, role)) => serde_json::json!({ "wish_id": wish_id, "role": role }),
+        None => serde_json::json!({ "wish_id": null }),
+    };
+    Ok(Json(body))
+}
+
+/// Owner close, from the book's side: the registry stamped 'closed' and
+/// now the book must stop offering the wish to hands. Idempotent — a
+/// second close for an already-released wish is a no-op, not a dup event.
+async fn steer_close(
+    State(state): State<Arc<AppState>>,
+    Path(wish_id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let client = state.connect_archive_ensured().await.map_err(|e| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": format!("archive DB unavailable: {e}") })),
+        )
+    })?;
+    let row = wish_book::get_wish(&client, &wish_id).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("wish book read failed: {e}") })),
+        )
+    })?;
+    let Some(row) = row else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("unknown wish: {wish_id}") })),
+        ));
+    };
+    if row.status != "released" {
+        wish_book::set_wish_status(&client, &wish_id, "released")
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("wish release failed: {e}") })),
+                )
+            })?;
+        wish_book::append_wish_event(&client, &wish_id, "released", None)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("wish event failed: {e}") })),
+                )
+            })?;
+    }
+    Ok(Json(serde_json::json!({ "wish_id": wish_id, "status": "released" })))
+}
+
 // ─── Graph Building ─────────────────────────────────────────────────
 
 async fn build_graph_inner(
@@ -2384,6 +2456,8 @@ async fn main() {
         .route("/predict/multihop", post(predict_multihop))
         .route("/steer/plan", post(steer_plan))
         .route("/steer/plan/{wish_id}", get(steer_plan_get))
+        .route("/steer/for/{uuid}", get(steer_for))
+        .route("/steer/close/{wish_id}", post(steer_close))
         .route("/impact/{systemtender_id}", get(impact))
         .route("/causes/{systemtender_id}", get(causes))
         .layer(CorsLayer::very_permissive())
