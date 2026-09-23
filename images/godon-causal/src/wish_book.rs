@@ -228,6 +228,43 @@ pub async fn get_wish(
     }))
 }
 
+/// Discovery — the ask that replaced the assignment row. Returns the one
+/// open wish naming this uuid (as sender via the plan's first move, or as
+/// receiver via the plan's path tail), newest first. Wishes are a handful;
+/// the scan cap keeps the ask O(handful). Terminal wishes (refused,
+/// released) and pre-plan wishes (declared) are nobody's to serve.
+pub const DISCOVERY_SCAN_LIMIT: i64 = 64; // wishes are a handful per stack; cap the scan
+
+pub async fn wish_for(
+    client: &tokio_postgres::Client,
+    uuid: &str,
+) -> Result<Option<(String, &'static str)>, Error> {
+    let rows = client
+        .query(
+            "SELECT wish_id, plan FROM wishes \
+             WHERE status NOT IN ('refused', 'released', 'declared') \
+             ORDER BY created_tsz DESC LIMIT $1",
+            &[&DISCOVERY_SCAN_LIMIT],
+        )
+        .await?;
+    for row in rows {
+        let Some(plan_s) = row.get::<_, Option<String>>(1) else {
+            continue;
+        };
+        let Ok(plan) = serde_json::from_str::<Value>(&plan_s) else {
+            continue;
+        };
+        if plan["moves"][0]["sender"].as_str() == Some(uuid) {
+            return Ok(Some((row.get::<_, String>(0), "sender")));
+        }
+        let receiver = plan["path"].as_array().and_then(|p| p.last());
+        if receiver.and_then(|v| v.as_str()) == Some(uuid) {
+            return Ok(Some((row.get::<_, String>(0), "receiver")));
+        }
+    }
+    Ok(None)
+}
+
 /// Timestamp of the most recent `event` for this wish, if any — the judge's
 /// watermark (only trials written after it count toward the next verdict).
 pub async fn last_event_tsz(
