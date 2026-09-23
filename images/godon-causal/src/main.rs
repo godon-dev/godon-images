@@ -882,7 +882,9 @@ async fn rewalk(
 
     // The payback ceiling: as many loop trials as the latest quiet spell
     // ran — a repair may not cost more than the quiet it replaces, the
-    // freshest interval only, never an average.
+    // freshest interval only, never an average. The spell's whole loop
+    // counts: once a wish is adopted the tender serves in hold mode, so
+    // the spell's trials classify as receiver holds, not probe phases.
     let quiet_start =
         wish_book::latest_event_tsz(client, wish_id, &["planned", "replanned"], Some(miss_tsz))
             .await
@@ -898,6 +900,7 @@ async fn rewalk(
         loop_trials.extend(trials.push_trials.iter().map(|t| t.timestamp));
         loop_trials.extend(trials.pause_trials.iter().map(|t| t.timestamp));
         loop_trials.extend(trials.hold_calib_trials.iter().map(|t| t.timestamp));
+        loop_trials.extend(trials.receiver_hold_trials.iter().map(|t| t.timestamp));
     }
     let ceiling = loop_trials
         .iter()
