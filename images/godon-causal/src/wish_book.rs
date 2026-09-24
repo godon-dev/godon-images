@@ -158,10 +158,10 @@ pub async fn record_wish(
     client
         .execute(
             "INSERT INTO wishes (wish_id, terms, plan, status, created_tsz, updated_tsz) \
-             VALUES ($1, $2, $3, $4, EXTRACT(EPOCH FROM now()), EXTRACT(EPOCH FROM now())) \
-             ON CONFLICT (wish_id) DO UPDATE SET \
-             plan = EXCLUDED.plan, status = EXCLUDED.status, \
-             updated_tsz = EXTRACT(EPOCH FROM now())",
+            VALUES ($1, $2, $3, $4, EXTRACT(EPOCH FROM now()), EXTRACT(EPOCH FROM now())) \
+            ON CONFLICT (wish_id) DO UPDATE SET \
+            terms = EXCLUDED.terms, plan = EXCLUDED.plan, status = EXCLUDED.status, \
+            updated_tsz = EXTRACT(EPOCH FROM now())",
             &[
                 &wish_id,
                 &serde_json::to_string(terms).unwrap_or_default(),

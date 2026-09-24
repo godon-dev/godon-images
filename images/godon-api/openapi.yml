@@ -516,6 +516,82 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+    delete:
+      tags:
+        - steerwishes
+      operationId: deleteSteerwish
+      summary: Purge a steerwish
+      description: |
+        Administrative purge, the holder's act: closes first (unassign +
+        dial revert), then removes the registry rows (events cascade) and
+        the book's card. Forgetting, not stopping.
+      parameters:
+        - $ref: '#/components/parameters/SteerwishId'
+      responses:
+        '200':
+          description: Successfully purged the steerwish
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: string
+                    format: uuid
+                  state_at_purge:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /steerwishes/{wish_id}/update:
+    post:
+      tags:
+        - steerwishes
+      operationId: updateSteerwish
+      summary: Correct a steerwish (holder update)
+      description: |
+        The holder corrects the wish: new terms on the same identity.
+        Stamps a 'corrected' event carrying the previous band and the
+        holder's reason, removes the stale assignment, and re-asks for
+        a plan through the door (plan, heartbeat check, plant). Works
+        on living and unheld wishes; closed ones refuse.
+      parameters:
+        - $ref: '#/components/parameters/SteerwishId'
+      requestBody:
+        required: true
+        description: The corrected terms, the holder's own
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SteerwishUpdate'
+            examples:
+              reaim:
+                summary: Hold the same outcome at the new anchor
+                value:
+                  band:
+                    lo: 0.47
+                    hi: 0.53
+                    target: 0.50
+                  reason: "the world moved - the holder re-promises at the new anchor"
+      responses:
+        '200':
+          description: Successfully corrected the steerwish
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Steerwish'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+
   /steerwishes/{wish_id}/close:
     post:
       tags:
@@ -1173,6 +1249,23 @@ components:
           lo: -0.14
           hi: -0.06
           target: -0.10
+
+    SteerwishUpdate:
+      type: object
+      additionalProperties: true
+      description: |
+        The corrected terms, verbatim - the holder's own. Wish-shape
+        freedom applies here exactly as at declare: this surface does
+        not validate the grammar; the controller owns validation (the
+        door). Today the correction carries the band (plus limits,
+        budget, reason); richer grammars arrive through this same door
+        without API changes.
+      example:
+        band:
+          lo: 0.47
+          hi: 0.53
+          target: 0.50
+        reason: "the world moved"
 
     SteerwishEvent:
       type: object

@@ -345,4 +345,24 @@ impl WindmillClient {
         serde_json::from_value(data)
             .context("Failed to parse closed steerwish")
     }
+
+    pub fn update_steerwish(&self, wish_id: &str, body: serde_json::Value) -> Result<crate::types::Steerwish> {
+        let mut args = body;
+        if let Some(obj) = args.as_object_mut() {
+            obj.insert("wish_id".to_string(), serde_json::json!(wish_id));
+        }
+        let response = self.run_script("steerwish_update", json!({ "request_data": args }))?;
+        let data = Self::unwrap_data(response);
+
+        serde_json::from_value(data)
+            .context("Failed to parse corrected steerwish")
+    }
+
+    pub fn delete_steerwish(&self, wish_id: &str) -> Result<serde_json::Value> {
+        let args = json!({ "request_data": { "wish_id": wish_id } });
+        let response = self.run_script("steerwish_delete", args)?;
+        let data = Self::unwrap_data(response);
+
+        Ok(data)
+    }
 }
