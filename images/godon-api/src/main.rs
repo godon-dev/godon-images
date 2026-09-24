@@ -42,6 +42,8 @@ async fn main() {
         .route("/steerwishes", post(handlers::declare_steerwish))
         .route("/steerwishes/{id}", get(handlers::get_steerwish))
         .route("/steerwishes/{id}/close", post(handlers::close_steerwish))
+        .route("/steerwishes/{id}/update", post(handlers::update_steerwish))
+        .route("/steerwishes/{id}", delete(handlers::delete_steerwish))
         .route("/connectome", get(handlers::get_connectome))
         .route("/connectome/artifact", get(handlers::get_connectome_artifact))
         .route("/connectome/curves", get(handlers::get_connectome_curves))

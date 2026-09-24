@@ -1173,6 +1173,9 @@ async fn steer_plan_get(
                     // a re-plan restarts the clock: only readings taken
                     // at the NEW setting count toward its verdict
                     wish_book::last_event_tsz(&client, &wish_id, "replanned").await,
+                    // a holder correction restarts it too: the new band
+                    // is graded on readings taken after it existed
+                    wish_book::last_event_tsz(&client, &wish_id, "corrected").await,
                 ];
                 marks.into_iter().flatten().flatten().fold(0.0f64, f64::max)
             };
@@ -1306,6 +1309,32 @@ async fn steer_for(
         None => serde_json::json!({ "wish_id": null }),
     };
     Ok(Json(body))
+}
+
+/// DELETE /steer/plan/{wish_id} - the holder purges the wish: the
+/// book's half of forgetting (events first, then the card). The
+/// registry side is the controller's delete.
+async fn steer_plan_delete(
+    State(state): State<Arc<AppState>>,
+    Path(wish_id): Path<String>,
+) -> Json<serde_json::Value> {
+    let client = match state.connect_archive_ensured().await {
+        Ok(c) => c,
+        Err(e) => {
+            return Json(serde_json::json!({
+                "error": format!("archive DB unavailable: {e}")
+            }))
+        }
+    };
+    let _ = client
+        .execute("DELETE FROM wish_events WHERE wish_id = $1", &[&wish_id])
+        .await;
+    let gone = client
+        .execute("DELETE FROM wishes WHERE wish_id = $1", &[&wish_id])
+        .await
+        .unwrap_or(0);
+    info!("STEER /steer/plan/{wish_id}: purged (card removed: {})", gone > 0);
+    Json(serde_json::json!({ "wish_id": wish_id, "purged": gone > 0 }))
 }
 
 /// Owner close, from the book's side: the registry stamped 'closed' and
@@ -2459,6 +2488,7 @@ async fn main() {
         .route("/predict/multihop", post(predict_multihop))
         .route("/steer/plan", post(steer_plan))
         .route("/steer/plan/{wish_id}", get(steer_plan_get))
+        .route("/steer/plan/{wish_id}", axum::routing::delete(steer_plan_delete))
         .route("/steer/for/{uuid}", get(steer_for))
         .route("/steer/close/{wish_id}", post(steer_close))
         .route("/impact/{systemtender_id}", get(impact))

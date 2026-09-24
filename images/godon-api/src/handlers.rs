@@ -722,6 +722,79 @@ pub async fn get_steerwish(
     ))?
 }
 
+pub async fn update_steerwish(
+    State(_config): State<Config>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<Steerwish>, (StatusCode, Json<ErrorResponse>)> {
+    if !UUID_REGEX.is_match(&id) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::with_details(
+                "Invalid UUID format",
+                "BAD_REQUEST",
+                json!({"wish_id": id})
+            ))
+        ));
+    }
+
+    let client = get_client()?;
+
+    tokio::task::spawn_blocking(move || {
+        client.update_steerwish(&id, body)
+            .map(Json)
+            .map_err(|e| {
+                let not_found = format!("{}", e).to_lowercase().contains("not found");
+                (
+                    if not_found { StatusCode::NOT_FOUND } else { StatusCode::INTERNAL_SERVER_ERROR },
+                    Json(ErrorResponse::new(
+                        format!("Failed to update steerwish: {}", e),
+                        if not_found { "NOT_FOUND" } else { "INTERNAL_SERVER_ERROR" }
+                    ))
+                )
+            })
+    }).await.map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
+    ))?
+}
+
+pub async fn delete_steerwish(
+    State(_config): State<Config>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    if !UUID_REGEX.is_match(&id) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::with_details(
+                "Invalid UUID format",
+                "BAD_REQUEST",
+                json!({"wish_id": id})
+            ))
+        ));
+    }
+
+    let client = get_client()?;
+
+    tokio::task::spawn_blocking(move || {
+        client.delete_steerwish(&id)
+            .map(Json)
+            .map_err(|e| {
+                let not_found = format!("{}", e).to_lowercase().contains("not found");
+                (
+                    if not_found { StatusCode::NOT_FOUND } else { StatusCode::INTERNAL_SERVER_ERROR },
+                    Json(ErrorResponse::new(
+                        format!("Failed to delete steerwish: {}", e),
+                        if not_found { "NOT_FOUND" } else { "INTERNAL_SERVER_ERROR" }
+                    ))
+                )
+            })
+    }).await.map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
+    ))?
+}
+
 pub async fn close_steerwish(
     State(_config): State<Config>,
     Path(id): Path<String>,
