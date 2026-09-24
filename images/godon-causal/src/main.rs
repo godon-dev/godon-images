@@ -635,6 +635,64 @@ async fn steer_plan(
                     )
                     .await;
                     let _ = wish_book::append_wish_event(&client, wish_id, "refused", None).await;
+
+                    // the holder's correction can re-state terms the world
+                    // already satisfies: when the last judged median sits
+                    // inside the band, the honest plan is zero moves - hold
+                    // the dial as it is. A thin curve cannot reach the
+                    // target, but nothing needs reaching.
+                    if matches!(reason.as_str(), "outside_measured_range" | "magnitude_bound") {
+                        let judged = match wish_book::latest_event_detail(
+                            &client, wish_id, "landed",
+                        )
+                        .await
+                        {
+                            Ok(Some(d)) => Some(d),
+                            _ => match wish_book::latest_event_detail(
+                                &client, wish_id, "undecidable",
+                            )
+                            .await
+                            {
+                                Ok(Some(d)) => Some(d),
+                                _ => None,
+                            },
+                        };
+                        let median = judged
+                            .as_ref()
+                            .and_then(|d| d.get("median"))
+                            .and_then(|m| m.as_f64());
+                        if let Some(m) = median {
+                            if req.band.lo <= m && m <= req.band.hi {
+                                info!(
+                                    "STEER /steer/plan: zero-move hold - the reading {m} already satisfies the corrected band"
+                                );
+                                let hold_plan = serde_json::json!({
+                                    "moves": [],
+                                    "hold": true,
+                                    "predicted": { "value": m },
+                                });
+                                let _ = wish_book::record_wish(
+                                    &client,
+                                    wish_id,
+                                    &terms,
+                                    Some(&hold_plan),
+                                    "planned",
+                                )
+                                .await;
+                                let _ = wish_book::append_wish_event(
+                                    &client, wish_id, "planned", None,
+                                )
+                                .await;
+                                return Ok(Json(serde_json::json!({
+                                    "status": "planned",
+                                    "wish_id": req.wish_id,
+                                    "moves": [],
+                                    "hold": true,
+                                    "predicted": { "value": m },
+                                })));
+                            }
+                        }
+                    }
                 }
             }
             Ok(Json(serde_json::json!({
