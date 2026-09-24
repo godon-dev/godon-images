@@ -516,6 +516,100 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+    delete:
+      tags:
+        - steerwishes
+      operationId: deleteSteerwish
+      summary: Purge a steerwish
+      description: |
+        Administrative purge, the holder's act: closes first (unassign +
+        dial revert), then removes the registry rows (events cascade) and
+        the book's card. Forgetting, not stopping.
+      parameters:
+        - $ref: '#/components/parameters/SteerwishId'
+      responses:
+        '200':
+          description: Successfully purged the steerwish
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: string
+                    format: uuid
+                  state_at_purge:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /steerwishes/{wish_id}/update:
+    post:
+      tags:
+        - steerwishes
+      operationId: updateSteerwish
+      summary: Correct a steerwish (holder update)
+      description: |
+        The holder corrects the wish: new terms on the same identity.
+        Stamps a 'corrected' event carrying the previous band and the
+        holder's reason, removes the stale assignment, and re-asks for
+        a plan through the door (plan, heartbeat check, plant). Works
+        on living and unheld wishes; closed ones refuse.
+      parameters:
+        - $ref: '#/components/parameters/SteerwishId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - band
+              properties:
+                band:
+                  type: object
+                  required:
+                    - lo
+                    - hi
+                  properties:
+                    lo:
+                      type: number
+                    hi:
+                      type: number
+                    target:
+                      type: number
+                limits:
+                  type: object
+                  properties:
+                    exclude:
+                      type: array
+                      items:
+                        type: string
+                    maxChange:
+                      type: number
+                budget:
+                  type: integer
+                reason:
+                  type: string
+      responses:
+        '200':
+          description: Successfully corrected the steerwish
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Steerwish'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+
   /steerwishes/{wish_id}/close:
     post:
       tags:
