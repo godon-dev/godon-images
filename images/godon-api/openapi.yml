@@ -563,38 +563,20 @@ paths:
         - $ref: '#/components/parameters/SteerwishId'
       requestBody:
         required: true
+        description: The corrected terms, the holder's own
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - band
-              properties:
-                band:
-                  type: object
-                  required:
-                    - lo
-                    - hi
-                  properties:
-                    lo:
-                      type: number
-                    hi:
-                      type: number
-                    target:
-                      type: number
-                limits:
-                  type: object
-                  properties:
-                    exclude:
-                      type: array
-                      items:
-                        type: string
-                    maxChange:
-                      type: number
-                budget:
-                  type: integer
-                reason:
-                  type: string
+              $ref: '#/components/schemas/SteerwishUpdate'
+            examples:
+              reaim:
+                summary: Hold the same outcome at the new anchor
+                value:
+                  band:
+                    lo: 0.47
+                    hi: 0.53
+                    target: 0.50
+                  reason: "the world moved - the holder re-promises at the new anchor"
       responses:
         '200':
           description: Successfully corrected the steerwish
@@ -1267,6 +1249,23 @@ components:
           lo: -0.14
           hi: -0.06
           target: -0.10
+
+    SteerwishUpdate:
+      type: object
+      additionalProperties: true
+      description: |
+        The corrected terms, verbatim - the holder's own. Wish-shape
+        freedom applies here exactly as at declare: this surface does
+        not validate the grammar; the controller owns validation (the
+        door). Today the correction carries the band (plus limits,
+        budget, reason); richer grammars arrive through this same door
+        without API changes.
+      example:
+        band:
+          lo: 0.47
+          hi: 0.53
+          target: 0.50
+        reason: "the world moved"
 
     SteerwishEvent:
       type: object
