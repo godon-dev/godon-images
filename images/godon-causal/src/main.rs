@@ -1165,7 +1165,7 @@ async fn steer_plan_get(
                 .and_then(|p| p["moves"][0]["sender"].as_str().map(str::to_string)),
             outcome_pair.as_ref(),
         ) {
-            let watermark = {
+            let clock = {
                 let marks = [
                     wish_book::last_event_tsz(&client, &wish_id, "landed").await,
                     wish_book::last_event_tsz(&client, &wish_id, "missed").await,
@@ -1183,8 +1183,8 @@ async fn steer_plan_get(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs_f64())
                 .unwrap_or(0.0);
-            let since = if watermark > 0.0 {
-                watermark
+            let since = if clock > 0.0 {
+                clock
             } else {
                 now - wish_book::JUDGE_LOOKBACK_SECS
             };
