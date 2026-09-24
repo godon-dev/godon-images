@@ -251,6 +251,33 @@ impl ToolRegistry {
                     "additionalProperties": false
                 }),
             },
+
+            ToolDef {
+                name: "steerwish_update",
+                description: "The holder corrects a wish: new band on the same identity. Stamps a 'corrected' event with the previous band, then re-plans through the door. Works on living and unheld wishes.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "wish_id": { "type": "string", "description": "UUID of the steerwish to correct" },
+                        "band": { "type": "object", "description": "New band: lo, hi and optional target, in the outcome's measurement units" },
+                        "reason": { "type": "string", "description": "Why the holder corrects (stamped into the trail)" }
+                    },
+                    "required": ["wish_id", "band"],
+                    "additionalProperties": false
+                }),
+            },
+            ToolDef {
+                name: "steerwish_delete",
+                description: "Purge a steerwish: closes it first (unassign + dial revert), then removes registry rows (events cascade) and the book's card. Forgetting, not stopping.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "wish_id": { "type": "string", "description": "UUID of the steerwish to purge" }
+                    },
+                    "required": ["wish_id"],
+                    "additionalProperties": false
+                }),
+            },
             ToolDef {
                 name: "connectome_get",
                 description: "Get the live map: every node and characterized edge the system currently believes in, with fitted response, confidence, and noise floor. The map is partial by design - curves exist only where the system has probed - and always aging: check freshness before trusting.",
@@ -470,6 +497,35 @@ impl ToolRegistry {
                 self.client
                     .post_empty(&format!(
                         "/steerwishes/{}/close",
+                        urlencoding::encode(id)
+                    ))
+                    .await
+            }
+
+            "steerwish_update" => {
+                require_id(id, "wish_id")?;
+                if args.get("band").is_none() {
+                    bail!("band required: an object with lo and hi, in the outcome's measurement units");
+                }
+                let mut body = serde_json::json!({ "band": args["band"] });
+                if let Some(reason) = args.get("reason") {
+                    body["reason"] = reason.clone();
+                }
+                self.client
+                    .post(
+                        &format!(
+                            "/steerwishes/{}/update",
+                            urlencoding::encode(id)
+                        ),
+                        body,
+                    )
+                    .await
+            }
+            "steerwish_delete" => {
+                require_id(id, "wish_id")?;
+                self.client
+                    .delete(&format!(
+                        "/steerwishes/{}",
                         urlencoding::encode(id)
                     ))
                     .await
