@@ -53,6 +53,11 @@ pub struct NodeConfig {
     /// direction and slope survive.
     #[serde(default)]
     pub offset_drift_rate: f64,
+    /// Offset drift cap: once the readout has slid this far, it stops -
+    /// the world moved to a defined point and settled (drift with a
+    /// destination). None = unbounded (the classic ramp).
+    #[serde(default)]
+    pub offset_drift_cap: Option<f64>,
 }
 
 /// One scheduled shape target. `travel_ticks` 0 = instant step at
@@ -562,7 +567,13 @@ impl Simulator {
         let offset = self
             .nodes
             .get(requesting_node)
-            .map(|n| n.config.offset_drift_rate * self.total_ticks as f64)
+            .map(|n| {
+                let raw = n.config.offset_drift_rate * self.total_ticks as f64;
+                match n.config.offset_drift_cap {
+                    Some(cap) => raw.clamp(-cap.abs(), cap.abs()),
+                    None => raw,
+                }
+            })
             .unwrap_or(0.0);
         for val in result.iter_mut() {
             *val += offset + self.generate_noise();
@@ -586,7 +597,11 @@ impl Simulator {
         let node = self.nodes.get(node_id)?;
         let eff = self.effective_shape(&node.config);
         let mut objectives = coupled.get(node_id)?.clone();
-        let offset = node.config.offset_drift_rate * self.total_ticks as f64;
+        let raw = node.config.offset_drift_rate * self.total_ticks as f64;
+        let offset = match node.config.offset_drift_cap {
+            Some(cap) => raw.clamp(-cap.abs(), cap.abs()),
+            None => raw,
+        };
         for v in objectives.iter_mut() {
             *v += offset;
         }
@@ -899,6 +914,34 @@ mod tests {
         // the measurement is honest about it
         let t = sim.truth("a").unwrap();
         assert!((t.objectives[0] - 0.52).abs() < 1e-9);
+    }
+
+    #[test]
+    fn offset_drift_cap_stops_the_slide() {
+        // drift with a destination: the world moves to a defined point
+        // and settles - the capped slide equals the uncapped one until
+        // the cap, then holds flat
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]],
+                 "offset_drift_rate": 0.01, "offset_drift_cap": 0.015}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        })).unwrap();
+        let mut sim = Simulator::from_config(config);
+
+        sim.apply("a", &[50.0]); // T=1: 0.5 + 0.01x1
+        sim.apply("a", &[50.0]); // T=2: 0.5 + 0.01x2 (at the cap)
+        let at_cap = sim.get_status("a").unwrap()[0];
+        assert!((at_cap - 0.515).abs() < 1e-9, "T=2: got {}", at_cap);
+
+        sim.apply("a", &[50.0]); // T=3: past the cap - the world has settled
+        let settled = sim.get_status("a").unwrap()[0];
+        assert!((settled - 0.515).abs() < 1e-9, "T=3: got {}", settled);
+
+        let t = sim.truth("a").unwrap();
+        assert!((t.objectives[0] - 0.515).abs() < 1e-9);
     }
 
     #[test]
