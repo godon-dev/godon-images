@@ -54,6 +54,13 @@ struct AppState {
     /// forever (found live, Sep 19: "archive DB unavailable at
     /// startup" skipped ensure_wish_tables entirely).
     tables_ensured: std::sync::atomic::AtomicBool,
+    /// One walker per wish: the book's GET is the loop's step, and every
+    /// reader of the page (controller poll, owner glance, watcher) used
+    /// to drive a step of their own - concurrent walkers journaled the
+    /// same probes and stamped release twice (found live, round 10:
+    /// `released` appended 3x in 0.5s). In-flight wish ids only; the
+    /// guard holds the step.
+    walks_in_flight: tokio::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -86,6 +93,7 @@ impl AppState {
             curves: RwLock::new(probe_curves::CurveRegistry::new()),
             anchors: RwLock::new(HashMap::new()),
             tables_ensured: std::sync::atomic::AtomicBool::new(false),
+            walks_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -553,6 +561,83 @@ async fn steer_plan(
         Err(_) => None,
     };
 
+    // The holder's already-satisfied check, graded on the same settled
+    // book the judge reads: a wish whose settled reading sits inside its
+    // band needs no move at all - holding the dial as it stands is the
+    // honest plan. (Found live, round 10: every planned move injects a
+    // push transient the judge then reads as a miss, while the reading
+    // it would settle to was in band all along. The zero-move hold
+    // existed only on the refusal path; a successful inversion never
+    // asked whether anything needed moving.)
+    if req.wish_id.is_some() {
+        if let Ok((receiver, channel)) = planner::resolve_outcome(&entries, &req.outcome) {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            if let Ok(by_ch) = state
+                .reader
+                .read_receiver_observations_for(
+                    &receiver,
+                    now - wish_book::JUDGE_LOOKBACK_SECS,
+                    now,
+                )
+                .await
+            {
+                if let Some(series) = by_ch.get(&channel) {
+                    if let Some(bar) = wish_book::reading_bar(series) {
+                        let m = trial_reader::median(series);
+                        if wish_book::band_verdict(
+                            m,
+                            bar,
+                            req.band.lo,
+                            req.band.hi,
+                            req.band.target,
+                        ) == "landed"
+                        {
+                            info!(
+                                "STEER /steer/plan: zero-move hold - the settled reading {m} already satisfies the band"
+                            );
+                            let hold_plan = serde_json::json!({
+                                "moves": [],
+                                "hold": true,
+                                "predicted": { "value": m },
+                            });
+                            if let Ok(client) = state.connect_archive_ensured().await {
+                                let terms =
+                                    serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
+                                if let Some(wish_id) = &req.wish_id {
+                                    let _ = wish_book::record_wish(
+                                        &client,
+                                        wish_id,
+                                        &terms,
+                                        Some(&hold_plan),
+                                        "planned",
+                                    )
+                                    .await;
+                                    let _ = wish_book::append_wish_event(
+                                        &client,
+                                        wish_id,
+                                        "planned",
+                                        None,
+                                    )
+                                    .await;
+                                }
+                            }
+                            return Ok(Json(serde_json::json!({
+                                "status": "planned",
+                                "wish_id": req.wish_id,
+                                "moves": [],
+                                "hold": true,
+                                "predicted": { "value": m },
+                            })));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     match planner::plan(&entries, graph.as_ref(), &req, anchor) {
         // door refusal: malformed request or unresolvable outcome
         Err(door) => Err((
@@ -707,10 +792,9 @@ async fn steer_plan(
 
 // ─── The re-walk: what a miss does about it ─────────────────────────
 // One GET = one walk step: observe fresh probes, journal them, run the
-// gates (budget, wall, sign flip, payback ceiling), attempt the re-plan,
-// serve the next level. Everything derived — no probe counts, no
-// schedules: the ceiling is the latest quiet spell in the loop's own
-// trial currency, the stop is a decidable plan.
+// gates (budget, allowance, sign flip), attempt the re-plan,
+// serve the next level. Everything derived — the allowance is the
+// world's own answers to the walk's asks, the stop is a decidable plan.
 
 struct RewalkOutcome {
     status: String,
@@ -938,60 +1022,47 @@ async fn rewalk(
         }
     }
 
-    // The payback ceiling: as many loop trials as the latest quiet spell
-    // ran — a repair may not cost more than the quiet it replaces, the
-    // freshest interval only, never an average. The spell's whole loop
-    // counts: once a wish is adopted the tender serves in hold mode, so
-    // the spell's trials classify as receiver holds, not probe phases.
-    let quiet_start =
-        wish_book::latest_event_tsz(client, wish_id, &["planned", "replanned"], Some(miss_tsz))
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or(miss_tsz);
+    // The repair allowance: the world answers the walk. Every settled
+    // reading the receiver publishes after the miss is one answer; every
+    // probe the walk journals is one ask. The walk proceeds while the
+    // answers keep coming and stops the moment they dry up - liveness
+    // read off the evidence stream, never off a probe recency count.
+    // (Found live, round 10: the old ceiling counted trials inside the
+    // quiet spell, and a wish in hold mode produces no trials - the wall
+    // released a wish the bench was actively answering. Round 9's wall
+    // was right for the opposite reason: a dead stream publishes no
+    // answers either. One predicate now covers both worlds: answers flow
+    // or the walk stops.)
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
-    let mut loop_trials: Vec<f64> = Vec::new();
-    if let Ok(trials) = reader.read_probe_trials(sender).await {
-        loop_trials.extend(trials.push_trials.iter().map(|t| t.timestamp));
-        loop_trials.extend(trials.pause_trials.iter().map(|t| t.timestamp));
-        loop_trials.extend(trials.hold_calib_trials.iter().map(|t| t.timestamp));
-        loop_trials.extend(trials.receiver_hold_trials.iter().map(|t| t.timestamp));
-    }
-    let ceiling = loop_trials
-        .iter()
-        .filter(|t| **t >= quiet_start && **t < miss_tsz)
-        .count();
-    let spent = loop_trials
-        .iter()
-        .filter(|t| **t > miss_tsz && **t <= now)
-        .count();
+    let answered = match outcome_pair {
+        Some((receiver, channel)) => reader
+            .read_receiver_observations_for(receiver, miss_tsz, now)
+            .await
+            .ok()
+            .and_then(|by_ch| by_ch.get(channel).cloned())
+            .map(|series| series.len())
+            .unwrap_or(0),
+        None => 0,
+    };
+    let asked = journal.len();
 
     let walk_view = || {
         Some(serde_json::json!({
-            "ceiling_trials": ceiling,
-            "spent_trials": spent,
+            "answered": answered,
+            "asked": asked,
             "probes": journal.len(),
         }))
     };
 
-    // Open the walk: the wall first (a quiet that funds no probe at all
-    // is drift outpacing repair), then the receipt — the miss itself is
-    // the gavel, prediction vs fresh reading with combined bars, free.
+    // Open the walk: the miss is the gavel (prediction vs fresh settled
+    // reading, combined bars, free) - the judge just heard the world
+    // answer, so the old liveness gate at open is gone: a miss computed
+    // from fresh settled readings IS the liveness proof.
     let mut opened_now = opened;
     if !opened {
-        if ceiling < 1 {
-            return release_wish(
-                client,
-                wish_id,
-                plan_json,
-                "drift outpaces repair - the latest quiet funds no probe",
-                false,
-            )
-            .await;
-        }
         let predicted = plan["predicted"]["value"].as_f64().unwrap_or(miss_median);
         let predicted_bars = plan["predicted"]["bars"].as_f64().unwrap_or(0.0);
         let separated =
@@ -1007,8 +1078,7 @@ async fn rewalk(
                 "miss_median": miss_median,
                 "miss_bar": miss_bar,
                 "separated": separated,
-                "ceiling_trials": ceiling,
-                "quiet_start": quiet_start,
+                "answered": answered,
             })),
         )
         .await;
@@ -1030,14 +1100,14 @@ async fn rewalk(
         }
     }
 
-    // Gate: the payback ceiling. Spent without a decidable plan, the
-    // repair costs more than the quiet it replaces.
-    if opened_now && spent >= ceiling {
+    // Gate: the allowance. Asked without answers, the repair is talking
+    // to a world that stopped listening.
+    if opened_now && asked > answered {
         return release_wish(
             client,
             wish_id,
             plan_json,
-            "repair allowance spent, map still undecided",
+            "the world stopped answering the repair",
             opened_now,
         )
         .await;
@@ -1297,20 +1367,36 @@ async fn steer_plan_get(
                 .map(|(neutral, _bar)| neutral),
             None => None,
         };
-        let out = rewalk(
-            &client,
-            &state.reader,
-            &entries,
-            graph.as_ref(),
-            &wish_id,
-            row.plan.as_ref(),
-            &row.terms,
-            &terms_req,
-            outcome_pair.as_ref(),
-            &group,
-            walk_anchor,
-        )
-        .await;
+        // One walker per wish: concurrent page readers (controller poll,
+        // owner glance, watcher) each used to drive their own step -
+        // double journals, double releases. Whoever holds the wish's
+        // slot walks; the others observe the page as it stands.
+        let walker_slot_free = state.walks_in_flight.lock().await.insert(wish_id.clone());
+        let out = if walker_slot_free {
+            let out = rewalk(
+                &client,
+                &state.reader,
+                &entries,
+                graph.as_ref(),
+                &wish_id,
+                row.plan.as_ref(),
+                &row.terms,
+                &terms_req,
+                outcome_pair.as_ref(),
+                &group,
+                walk_anchor,
+            )
+            .await;
+            state.walks_in_flight.lock().await.remove(&wish_id);
+            out
+        } else {
+            RewalkOutcome {
+                status: status.clone(),
+                plan: None,
+                hint: None,
+                walk: None,
+            }
+        };
         status = out.status.clone();
         if out.plan.is_some() {
             row.plan = out.plan.clone();
