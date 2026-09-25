@@ -2587,13 +2587,29 @@ async fn main() {
     let reader = TrialReader::from_env();
     let state = Arc::new(AppState::new(reader.clone()));
 
-    // Restart recovery: replay persisted curve points into the registry.
-    // Best-effort - on DB failure the registry starts empty and live
-    // probing repopulates it (and re-persists). The connect itself is
-    // patient: a boot that races Yugabyte waits instead of degrading.
-    match connect_archive_patient(&reader, 40, std::time::Duration::from_secs(15)).await {
-        Ok(client) => {
-            if let Err(e) = curve_store::ensure_curve_table(&client).await {
+    // Restart recovery runs in the background: /health must answer
+    // immediately (CI smoke, k8s probes) while the archive waits run
+    // concurrently. A boot that races Yugabyte waits for the DB (patient
+    // connect) instead of degrading to empty state for the process life.
+    let boot_state = state.clone();
+    tokio::spawn(async move {
+        let client = match connect_archive_patient(
+            &boot_state.reader,
+            40,
+            std::time::Duration::from_secs(15),
+        )
+        .await
+        {
+            Ok(client) => client,
+            Err(e) => {
+                log::error!(
+                    "archive DB unavailable at startup, curves/anchors/connectomes start empty: {}",
+                    e
+                );
+                return;
+            }
+        };
+        if let Err(e) = curve_store::ensure_curve_table(&client).await {
                 log::error!("curve_points table setup failed: {}", e);
             }
             if let Err(e) = wish_book::ensure_wish_tables(&client).await {
@@ -2602,7 +2618,7 @@ async fn main() {
             match curve_store::load_curve_points(&client).await {
                 Ok(rows) => {
                     let n = rows.len();
-                    let mut curves = state.curves.write().await;
+                    let mut curves = boot_state.curves.write().await;
                     for r in rows {
                         curves.probe(
                             &r.sender_id,
@@ -2626,7 +2642,7 @@ async fn main() {
             match wish_book::load_outcome_anchors(&client).await {
                 Ok(rows) => {
                     let n = rows.len();
-                    let mut anchors = state.anchors.write().await;
+                    let mut anchors = boot_state.anchors.write().await;
                     for (_group, receiver, channel, neutral, bar) in rows {
                         anchors.insert((receiver, channel), (neutral, bar));
                     }
@@ -2634,36 +2650,20 @@ async fn main() {
                 }
                 Err(e) => log::error!("outcome anchor load failed: {}", e),
             }
-        }
-        Err(e) => {
-            log::error!(
-                "archive DB unavailable at startup, curves start empty: {}",
-                e
-            )
-        }
-    }
-
-    // Restart recovery: connectomes are durable per inference group.
-    match connect_archive_patient(&state.reader, 40, std::time::Duration::from_secs(15)).await {
-        Ok(client) => {
-            if let Err(e) = connectome_store::ensure_connectomes_table(&client).await {
+        // Restart recovery: connectomes are durable per inference group.
+        if let Err(e) = connectome_store::ensure_connectomes_table(&client).await {
                 log::error!("connectomes table setup failed: {}", e);
             }
             match connectome_store::load_connectomes(&client).await {
                 Ok(pairs) => {
                     let count = pairs.len();
                     let map: HashMap<String, CausalGraph> = pairs.into_iter().collect();
-                    *state.connectomes.write().await = map;
+                    *boot_state.connectomes.write().await = map;
                     info!("restored {} connectome(s) from the archive", count);
                 }
                 Err(e) => log::error!("connectome restore failed: {}", e),
             }
-        }
-        Err(e) => log::error!(
-            "archive DB unavailable at startup, connectomes start empty: {}",
-            e
-        ),
-    }
+    });
 
     let app = Router::new()
         .route("/health", get(health))
