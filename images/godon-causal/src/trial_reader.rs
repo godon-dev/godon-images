@@ -92,7 +92,7 @@ impl TrialReader {
 
         let rows = client
             .query(
-                "SELECT CAST(objective_values AS TEXT) FROM receiver_observations \
+                "SELECT CAST(objective_values AS TEXT), lease_phase FROM receiver_observations \
                  WHERE receiver_id = $3::varchar \
                  AND lease_phase IS NOT NULL \
                  AND EXTRACT(EPOCH FROM written_at) >= $1::double precision \
@@ -105,6 +105,15 @@ impl TrialReader {
         let mut values: std::collections::HashMap<String, Vec<f64>> =
             std::collections::HashMap::new();
         for row in &rows {
+            // Verdicts are taken at rest: a reading banked while the
+            // sender's push excites the receiver measures the push, not
+            // the wish. Only settled (non-push) readings are evidence
+            // (found live, round 10: the judge sampled the push transient
+            // at n=3, median 0.83 -> missed, 15s after the sender adopted).
+            let phase: String = row.get(1);
+            if !is_settled_phase(&phase) {
+                continue;
+            }
             let json_str: String = row.get(0);
             if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&json_str) {
                 if let Some(map) = obj.as_object() {
@@ -667,6 +676,14 @@ fn parse_tz_offset(s: &str) -> Option<f64> {
     }
 }
 
+/// Verdicts are taken at rest. `probe_push` is the sender's excitation
+/// stroke - readings banked under it measure the stroke, not the wish.
+/// Everything else (probe_pause, hold, ...) is settled. Default-include:
+/// an unknown phase is evidence until proven excitation.
+pub fn is_settled_phase(phase: &str) -> bool {
+    phase != "probe_push"
+}
+
 pub fn median(v: &[f64]) -> f64 {
     if v.is_empty() {
         return 0.0;
@@ -688,6 +705,21 @@ pub fn mad(v: &[f64]) -> f64 {
     let m = median(v);
     let deviations: Vec<f64> = v.iter().map(|x| (x - m).abs()).collect();
     median(&deviations) * 1.4826
+}
+
+#[cfg(test)]
+mod settled_phase_tests {
+    use super::*;
+
+    #[test]
+    fn push_is_the_only_excitation() {
+        assert!(!is_settled_phase("probe_push"));
+        assert!(is_settled_phase("probe_pause"));
+        assert!(is_settled_phase("hold"));
+        // unknown phases default to evidence: excitation must be named
+        assert!(is_settled_phase("walk_probe"));
+        assert!(is_settled_phase(""));
+    }
 }
 
 #[cfg(test)]
