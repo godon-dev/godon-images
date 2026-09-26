@@ -40,9 +40,6 @@ use crate::steer::{self, CurvePoint};
 /// Bisection halvings (~full f64 precision, the iters the tests pin).
 pub const BISECTION_ITERS: usize = 60;
 
-/// Two shifts within this tolerance count as equal (flat-segment guard).
-const FLAT_TOL: f64 = 1e-12;
-
 // ─── Request shape (the /steer/plan contract) ───────────────────────
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -287,14 +284,37 @@ fn compute_bracket(
 }
 
 // ─── Branch checks (invert's duty of the caller) ────────────────────
+//
+// The measured points inside the bracket are first condensed into their
+// step-path: adjacent levels whose shifts differ by no more than what
+// noise could fake (2x the window's median error bar) pool together.
+// What survives the pooling is the data's own story:
+//   one pool            -> flat, no direction information: refuse
+//   pools all one way   -> a monotone branch: invert it (full precision)
+//   direction changes   -> a hill: the branches sitting at the target's
+//                          shift are alternative answers; the best-
+//                          measured one plans, the rest are named.
 
-/// The measured points inside the bracket, level-sorted. invert requires
-/// a monotone branch; thin, non-monotone or flat windows are refused -
-/// branch selection at junctions is a declared rule of a later era.
-fn branch_points(
+enum BranchVerdict {
+    /// The step-path is one direction - proceed to invert on the bracket.
+    Monotone,
+    /// The path bends: the target's shift is reachable on the picked
+    /// branch (best-measured); `alternatives` names how many other
+    /// branches the path carries.
+    HillPick {
+        setting: f64,
+        bar: f64,
+        predicted_shift: f64,
+        level_span: (f64, f64),
+        alternatives: usize,
+    },
+}
+
+fn branch_verdict(
     points: &[CurvePoint],
     bracket: &Bracket,
-) -> Result<Vec<CurvePoint>, CandidateRefusal> {
+    shift_target: f64,
+) -> Result<BranchVerdict, CandidateRefusal> {
     let mut in_bracket: Vec<CurvePoint> = points
         .iter()
         .filter(|p| p.level >= bracket.lo && p.level <= bracket.hi)
@@ -317,40 +337,120 @@ fn branch_points(
             ),
         ));
     }
-    let mut rising = true;
-    let mut falling = true;
-    for pair in in_bracket.windows(2) {
-        let d = pair[1].shift - pair[0].shift;
-        if d < -FLAT_TOL {
-            rising = false;
-        }
-        if d > FLAT_TOL {
-            falling = false;
-        }
+
+    // robust per-window noise: the median error bar of the measured points
+    let mut bars: Vec<f64> = in_bracket.iter().map(|p| p.bar).collect();
+    bars.sort_by(f64::total_cmp);
+    let sigma = bars[bars.len() / 2].max(1e-12);
+    // a seam between adjacent pools is real only if the medians differ by
+    // more than what noise could fake (2x the median bar - the same
+    // measure-twice discipline as the relcache-retry cure)
+    let split_gate = 2.0 * sigma;
+
+    struct Seg {
+        lo: f64,
+        hi: f64,
+        shift: f64,
+        n: usize,
     }
-    if !rising && !falling {
+    let mut segs: Vec<Seg> = in_bracket
+        .iter()
+        .map(|p| Seg {
+            lo: p.level,
+            hi: p.level,
+            shift: p.shift,
+            n: 1,
+        })
+        .collect();
+
+    // agglomerative pooling: merge the weakest adjacent seam until every
+    // remaining seam exceeds the gate. Direction changes above the gate
+    // survive - a hill keeps its shape, noise loses its vote.
+    loop {
+        let mut weakest: Option<(usize, f64)> = None;
+        for i in 0..segs.len().saturating_sub(1) {
+            let gap = (segs[i + 1].shift - segs[i].shift).abs();
+            if gap <= split_gate && weakest.map(|(_, g)| gap < g).unwrap_or(true) {
+                weakest = Some((i, gap));
+            }
+        }
+        let Some((i, _)) = weakest else {
+            break;
+        };
+        let right = segs.remove(i + 1);
+        let left = &mut segs[i];
+        left.hi = right.hi;
+        left.shift = (left.shift * left.n as f64 + right.shift * right.n as f64)
+            / (left.n + right.n) as f64;
+        left.n += right.n;
+    }
+
+    if segs.len() == 1 {
         return Err(CandidateRefusal::new(
             RANK_NOT_INVERTIBLE,
             "unmeasured_path",
             format!(
-                "branch is not monotone on [{}, {}] - branch selection is a declared rule of a later era",
-                bracket.lo, bracket.hi
+                "branch is flat on [{}, {}] - the measured shifts stay within {:.4} of each other, no direction information above the noise floor",
+                segs[0].lo, segs[0].hi, split_gate
             ),
         ));
     }
-    let lo_shift = in_bracket.first().unwrap().shift;
-    let hi_shift = in_bracket.last().unwrap().shift;
-    if (hi_shift - lo_shift).abs() <= FLAT_TOL {
+
+    let rising = segs.windows(2).all(|w| w[1].shift >= w[0].shift);
+    let falling = segs.windows(2).all(|w| w[1].shift <= w[0].shift);
+    if rising || falling {
+        return Ok(BranchVerdict::Monotone);
+    }
+
+    // genuine direction change: branches whose shift sits within the gate
+    // of the target are alternative answers; the connecting stretch
+    // between adjacent pools spans everything between their medians, so
+    // any target between the outer medians is reachable by interpolation.
+    let mut reachable: Vec<(f64, f64, usize)> = Vec::new(); // (level, predicted_shift, points)
+    for (i, s) in segs.iter().enumerate() {
+        if (s.shift - shift_target).abs() <= split_gate {
+            reachable.push((0.5 * (s.lo + s.hi), s.shift, s.n));
+        }
+        if let Some(next) = segs.get(i + 1) {
+            let span_lo = s.shift.min(next.shift);
+            let span_hi = s.shift.max(next.shift);
+            if shift_target >= span_lo
+                && shift_target <= span_hi
+                && (next.shift - s.shift).abs() > 1e-12
+            {
+                let level =
+                    s.hi + (shift_target - s.shift) * (next.lo - s.hi) / (next.shift - s.shift);
+                reachable.push((level, shift_target, s.n + next.n));
+            }
+        }
+    }
+    if reachable.is_empty() {
+        let span: Vec<String> = segs
+            .iter()
+            .map(|s| format!("[{}, {}]~{:.4}", s.lo, s.hi, s.shift))
+            .collect();
         return Err(CandidateRefusal::new(
-            RANK_NOT_INVERTIBLE,
-            "unmeasured_path",
+            RANK_TARGET_UNREACHABLE,
+            "outside_measured_range",
             format!(
-                "branch is flat on [{}, {}] - no slope, nothing to steer with",
-                bracket.lo, bracket.hi
+                "hill on [{}, {}]: branches {} - none reaches shift {} within the noise gate {:.4}",
+                bracket.lo,
+                bracket.hi,
+                span.join(" "),
+                shift_target,
+                split_gate
             ),
         ));
     }
-    Ok(in_bracket)
+    reachable.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.total_cmp(&b.0)));
+    let (level, predicted_shift, n) = reachable[0];
+    Ok(BranchVerdict::HillPick {
+        setting: level,
+        bar: sigma,
+        predicted_shift,
+        level_span: (bracket.lo, bracket.hi),
+        alternatives: segs.len() - 1,
+    })
 }
 
 // ─── The planner ────────────────────────────────────────────────────
@@ -460,9 +560,50 @@ pub fn plan(
                 continue;
             }
         };
-        if let Err(r) = branch_points(points, &bracket) {
-            refusals.push(r);
-            continue;
+        match branch_verdict(points, &bracket, shift_target) {
+            Err(r) => {
+                refusals.push(r);
+                continue;
+            }
+            Ok(BranchVerdict::HillPick {
+                setting,
+                bar,
+                predicted_shift,
+                level_span,
+                alternatives,
+            }) => {
+                log::info!(
+                    "STEER plan: hill branch pick {} param '{}' -> setting {} on [{}, {}] predicts shift {} (bar {}) - {} other branch(es) named",
+                    sender,
+                    param,
+                    setting,
+                    level_span.0,
+                    level_span.1,
+                    predicted_shift,
+                    bar,
+                    alternatives
+                );
+                plans.push((
+                    1,
+                    bar,
+                    sender.clone(),
+                    param.clone(),
+                    PlanDecision::Planned {
+                        moves: vec![Move {
+                            sender: sender.clone(),
+                            param: param.clone(),
+                            setting,
+                            bars: bar,
+                        }],
+                        predicted_value: anchor + predicted_shift,
+                        predicted_bars: bar,
+                        range_used: vec![(param.clone(), bracket.lo, bracket.hi)],
+                        path: vec![sender.clone(), receiver.clone()],
+                    },
+                ));
+                continue;
+            }
+            Ok(BranchVerdict::Monotone) => {}
         }
         let eval = |l: f64| -> f64 {
             // bracket is inside the measured span - evaluation is total there
@@ -790,7 +931,13 @@ mod tests {
     }
 
     #[test]
-    fn non_monotone_branch_refuses() {
+    fn hill_branch_plans_the_span_side() {
+        // The hill: shifts rise, fall, rise. The target's shift (20)
+        // sits on the falling stretch (40, 30) -> (60, 10), reachable at
+        // level 50 by interpolation - the planner picks the branch
+        // instead of refusing. Branch selection is this era. Three
+        // crossings exist (26.67, 50, 70); the tie-break plans the
+        // lowest setting.
         let pts: &[(f64, f64, f64)] = &[
             (0.0, 0.0, 0.02),
             (40.0, 30.0, 0.02),
@@ -800,8 +947,36 @@ mod tests {
         let entries = vec![entry("a", "R", "p", "objective_0", pts)];
         let r = req("R", 20.0, None, None);
         match plan(&entries, None, &r, Some(0.0)).unwrap() {
-            PlanDecision::Refused { reason, .. } => assert_eq!(reason, "unmeasured_path"),
-            other => panic!("expected a refusal, got {other:?}"),
+            PlanDecision::Planned {
+                moves, predicted_value, ..
+            } => {
+                assert_eq!(moves[0].param, "p");
+                assert!((moves[0].setting - 80.0 / 3.0).abs() < 1e-6);
+                assert!((predicted_value - 20.0).abs() < 1e-6);
+            }
+            other => panic!("expected a hill plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn noisy_monotone_still_inverts() {
+        // A true slope under noise: the small dip (26 -> 24) pools away
+        // (2x bar gate), the path stays one direction, the wish plans
+        // instead of refusing on raw-point zigzag.
+        let pts: &[(f64, f64, f64)] = &[
+            (0.0, 0.0, 0.02),
+            (40.0, 26.0, 0.02),
+            (60.0, 24.0, 0.02),
+            (100.0, 50.0, 0.02),
+        ];
+        let entries = vec![entry("a", "R", "p", "objective_0", pts)];
+        let r = req("R", 20.0, None, None);
+        match plan(&entries, None, &r, Some(0.0)).unwrap() {
+            PlanDecision::Planned { moves, .. } => {
+                assert_eq!(moves[0].param, "p");
+                assert!((moves[0].setting - 30.0).abs() < 1.0);
+            }
+            other => panic!("expected a plan, got {other:?}"),
         }
     }
 
