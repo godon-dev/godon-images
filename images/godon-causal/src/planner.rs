@@ -59,15 +59,35 @@ pub struct SteerPlanRequest {
     #[serde(default)]
     pub budget: Option<u32>,
     /// The wish's outcome: one measured value, named from the registry.
+    /// Empty on the stack shape - the claims carry the readings.
+    #[serde(default)]
     pub outcome: String,
+    #[serde(default)]
     pub band: Band,
     pub limits: Option<Limits>,
     /// Bench-config param constraints, enriched by the controller.
     /// Absent entry for a param = the measured span stands in.
     pub param_ranges: Option<HashMap<String, [f64; 2]>>,
+    /// The stack grammar: the aims, N >= 1. Empty = the legacy
+    /// single-outcome shape above, which IS one claim.
+    #[serde(default)]
+    pub claims: Vec<ClaimSpec>,
+    /// The price: protected readings the wish must never push out of
+    /// band - claims that carry no dial. Empty = no price declared.
+    #[serde(default)]
+    pub terms: Vec<ClaimSpec>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+/// One line of the wish: an aim (claim) or a price (term). Same shape,
+/// same law - the role (dial or never-actuate) is the compile's
+/// decision, never the grammar's.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaimSpec {
+    pub outcome: String,
+    pub band: Band,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Band {
     /// Bounds are in outcome units — what the outcome shows (the
     /// thermometer reading), never a movement. The planner translates
@@ -77,6 +97,16 @@ pub struct Band {
     /// Receipt/reporting only - the planner aims here when present,
     /// else at the band midpoint. Landing is judged against the band.
     pub target: Option<f64>,
+}
+
+impl Default for Band {
+    fn default() -> Self {
+        Band {
+            lo: 0.0,
+            hi: 0.0,
+            target: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -109,6 +139,9 @@ pub enum PlanDecision {
         /// honesty receipt, what later verdicts are judged against.
         range_used: Vec<(String, f64, f64)>,
         path: Vec<String>,
+        /// per-claim predictions: the compile's receipt, per gavel
+        /// unit - what the move-set predicts each claim's reading to be
+        claim_predictions: Vec<ClaimPrediction>,
     },
     Refused {
         reason: String,
@@ -455,22 +488,310 @@ fn branch_verdict(
 
 // ─── The planner ────────────────────────────────────────────────────
 
+/// The plan's per-claim receipt: what the move-set predicts for each
+/// gavel unit. Landing is still judged against the band, per claim.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ClaimPrediction {
+    pub outcome: String,
+    pub predicted: f64,
+    pub bars: f64,
+}
+
+/// One claim's solo answer: the dial it would move, the setting it
+/// wants, and the curve the answer rides - the joint compile needs all
+/// three to reconcile claims that share a dial and terms that bound it.
+struct ClaimPlan {
+    setting: f64,
+    dial: (String, String),
+    points: Vec<CurvePoint>,
+    bracket: (f64, f64),
+    moves: Vec<Move>,
+    predicted_value: f64,
+    predicted_bars: f64,
+    range_used: Vec<(String, f64, f64)>,
+    path: Vec<String>,
+}
+
+/// Levels where the curve's shift crosses a band edge - the band's
+/// preimage on this dial, clipped to the allowed bracket. The joint
+/// candidates are these walls: the settings where a reading stands
+/// exactly on its own edge.
+fn band_crossings(
+    points: &[CurvePoint],
+    shift_lo: f64,
+    shift_hi: f64,
+    bracket: (f64, f64),
+) -> Vec<f64> {
+    let mut pts: Vec<CurvePoint> = points
+        .iter()
+        .filter(|p| p.level >= bracket.0 && p.level <= bracket.1)
+        .copied()
+        .collect();
+    pts.sort_by(|a, b| a.level.total_cmp(&b.level));
+    let mut out = Vec::new();
+    for w in pts.windows(2) {
+        let (a, b) = (&w[0], &w[1]);
+        for edge in [shift_lo, shift_hi] {
+            if (a.shift - edge) * (b.shift - edge) <= 0.0
+                && (b.shift - a.shift).abs() > 1e-12
+            {
+                let t = (edge - a.shift) / (b.shift - a.shift);
+                out.push(a.level + t * (b.level - a.level));
+            }
+        }
+    }
+    out
+}
+
+/// One claim's solo answer - the shipped single-wish machinery, run
+/// per claim. Refusals carry the claim's name: a multi-claim wish
+/// refuses naming WHICH claim binds.
+fn solve_claim(
+    entries: &[CurveEntry],
+    graph: Option<&CausalGraph>,
+    name: &str,
+    receiver: &str,
+    channel: &str,
+    band: &Band,
+    anchor: f64,
+    exclude: &[&str],
+    ranges: &HashMap<String, (f64, f64)>,
+    max_change: Option<f64>,
+) -> Result<ClaimPlan, PlanDecision> {
+    let target = band.target.unwrap_or(0.5 * (band.lo + band.hi));
+    let shift_target = target - anchor;
+    let named = |detail: String| format!("claim '{}': {}", name, detail);
+
+    // single-hop candidates: curves whose listener IS the outcome
+    let mut candidates: Vec<(String, String, Vec<CurvePoint>)> = entries
+        .iter()
+        .filter(|e| e.receiver_id == receiver && e.channel == channel && e.sender_id != receiver)
+        .map(|e| {
+            (
+                e.sender_id.clone(),
+                e.param.clone(),
+                e.state
+                    .points
+                    .iter()
+                    .map(|(level, shift, bar)| CurvePoint {
+                        level: *level,
+                        shift: *shift,
+                        bar: *bar,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    candidates.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+
+    let mut refusals: Vec<CandidateRefusal> = Vec::new();
+    // (hops, predicted bar, sender, param, answer) - sort key, in order
+    let mut plans: Vec<(usize, f64, String, String, ClaimPlan)> = Vec::new();
+
+    for (sender, param, points) in &candidates {
+        if exclude.contains(&param.as_str()) {
+            refusals.push(CandidateRefusal::new(
+                RANK_EXCLUDED,
+                "excluded_input",
+                named(format!("param '{}' is wish-excluded", param)),
+            ));
+            continue;
+        }
+        let bracket = match compute_bracket(points, param, ranges, max_change) {
+            Ok(b) => b,
+            Err(r) => {
+                refusals.push(CandidateRefusal::new(r.rank, r.reason, named(r.detail)));
+                continue;
+            }
+        };
+        match branch_verdict(points, &bracket, shift_target) {
+            Err(r) => {
+                refusals.push(CandidateRefusal::new(r.rank, r.reason, named(r.detail)));
+                continue;
+            }
+            Ok(BranchVerdict::HillPick {
+                setting,
+                bar,
+                predicted_shift,
+                level_span,
+                alternatives,
+            }) => {
+                log::info!(
+                    "STEER plan: hill branch pick {} param '{}' -> setting {} on [{}, {}] predicts shift {} (bar {}) - {} other branch(es) named (claim '{}')",
+                    sender, param, setting, level_span.0, level_span.1,
+                    predicted_shift, bar, alternatives, name
+                );
+                plans.push((
+                    1,
+                    bar,
+                    sender.clone(),
+                    param.clone(),
+                    ClaimPlan {
+                        setting,
+                        dial: (sender.clone(), param.clone()),
+                        points: points.clone(),
+                        bracket: (bracket.lo, bracket.hi),
+                        moves: vec![Move {
+                            sender: sender.clone(),
+                            param: param.clone(),
+                            setting,
+                            bars: bar,
+                        }],
+                        predicted_value: anchor + predicted_shift,
+                        predicted_bars: bar,
+                        range_used: vec![(param.clone(), bracket.lo, bracket.hi)],
+                        path: vec![sender.clone(), receiver.to_string()],
+                    },
+                ));
+                continue;
+            }
+            Ok(BranchVerdict::Monotone) => {}
+        }
+        let eval = |l: f64| -> f64 {
+            // bracket is inside the measured span - evaluation is total there
+            steer::eval_level(points, l)
+                .map(|e| e.shift)
+                .unwrap_or(f64::NAN)
+        };
+        match steer::invert(shift_target, bracket.lo, bracket.hi, &eval, BISECTION_ITERS) {
+            None => {
+                let reason_detail = named(format!(
+                    "band [{}, {}] with anchor {} wants a move to {}, outside the curve's evaluated range [{}, {}] on the allowed bracket [{}, {}]",
+                    band.lo, band.hi, anchor, shift_target,
+                    eval(bracket.lo), eval(bracket.hi), bracket.lo, bracket.hi
+                ));
+                // a window-clipped bracket that cannot reach the target is
+                // bound by the wish's own magnitude, not by measurement
+                let (rank, reason) = if bracket.window_clipped {
+                    (RANK_MAGNITUDE_EMPTY, "magnitude_bound")
+                } else {
+                    (RANK_TARGET_UNREACHABLE, "outside_measured_range")
+                };
+                refusals.push(CandidateRefusal::new(rank, reason, reason_detail));
+            }
+            Some(setting) => {
+                let evaluated = steer::eval_level(points, setting)
+                    .expect("setting inside verified bracket must evaluate");
+                log::info!(
+                    "STEER plan: single-hop {} param '{}' -> setting {} predicts {} (move {} from anchor {}) +/- {} (claim '{}')",
+                    sender, param, setting, anchor + evaluated.shift,
+                    evaluated.shift, anchor, evaluated.bar, name
+                );
+                plans.push((
+                    1,
+                    evaluated.bar,
+                    sender.clone(),
+                    param.clone(),
+                    ClaimPlan {
+                        setting,
+                        dial: (sender.clone(), param.clone()),
+                        points: points.clone(),
+                        bracket: (bracket.lo, bracket.hi),
+                        moves: vec![Move {
+                            sender: sender.clone(),
+                            param: param.clone(),
+                            setting,
+                            bars: evaluated.bar,
+                        }],
+                        predicted_value: anchor + evaluated.shift,
+                        predicted_bars: evaluated.bar,
+                        range_used: vec![(param.clone(), bracket.lo, bracket.hi)],
+                        path: vec![sender.clone(), receiver.to_string()],
+                    },
+                ));
+            }
+        }
+    }
+
+    plans.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(a.1.total_cmp(&b.1))
+            .then(a.2.cmp(&b.2))
+            .then(a.3.cmp(&b.3))
+    });
+    if let Some((_, _, _, _, answer)) = plans.into_iter().next() {
+        return Ok(answer);
+    }
+
+    // nothing feasible: report the most-advanced candidate's constraint
+    refusals.sort_by_key(|r| std::cmp::Reverse(r.rank));
+    if let Some(worst) = refusals.first() {
+        Err(PlanDecision::Refused {
+            reason: worst.reason.to_string(),
+            detail: format!(
+                "{} candidate(s) evaluated; most advanced refusal - {}",
+                candidates.len(),
+                worst.detail
+            ),
+        })
+    } else {
+        Err(PlanDecision::Refused {
+            reason: "unmeasured_path".to_string(),
+            detail: named(no_candidates_detail(entries, graph, receiver, channel)),
+        })
+    }
+}
+
+/// A wish line, resolved: the reading behind the name, and the banked
+/// neutral that translates the band into movement units.
+#[derive(Clone)]
+struct NamedReading {
+    outcome: String,
+    receiver: String,
+    channel: String,
+    anchor: f64,
+    band: Band,
+}
+
+enum ResolvedNamed {
+    Named(NamedReading),
+    Unanchored(PlanDecision),
+}
+
+fn resolve_named(
+    entries: &[CurveEntry],
+    c: &ClaimSpec,
+    kind: &str,
+    anchor_of: &dyn Fn(&str, &str) -> Option<f64>,
+) -> Result<ResolvedNamed, String> {
+    let (receiver, channel) = resolve_outcome(entries, &c.outcome)
+        .map_err(|e| format!("{} '{}': {}", kind, c.outcome, e))?;
+    match anchor_of(&receiver, &channel).filter(|a| a.is_finite()) {
+        Some(anchor) => Ok(ResolvedNamed::Named(NamedReading {
+            outcome: c.outcome.clone(),
+            receiver,
+            channel,
+            anchor,
+            band: c.band.clone(),
+        })),
+        None => Ok(ResolvedNamed::Unanchored(PlanDecision::Refused {
+            reason: if kind == "term" {
+                "unanchored_term".to_string()
+            } else {
+                "unanchored_outcome".to_string()
+            },
+            detail: format!(
+                "{} '{}' has no banked neutral reading yet - a probe round \
+                 must pause at neutral before the wish can speak for it",
+                kind, c.outcome
+            ),
+        })),
+    }
+}
+
 /// Plan a wish against the measured map. Err = door refusal (malformed
 /// request or unresolvable outcome - never planned). Ok(Refused) = the
-/// binding constraint, named. Ok(Planned) = the map speaks.
+/// binding constraint, named - claim or term. Ok(Planned) = the compile
+/// speaks: one move-set keeping every claim in band and every term
+/// honored, or the empty region named.
 pub fn plan(
     entries: &[CurveEntry],
     graph: Option<&CausalGraph>,
     req: &SteerPlanRequest,
     anchor: Option<f64>,
+    claim_anchors: &HashMap<(String, String), f64>,
 ) -> Result<PlanDecision, String> {
-    // door checks: malformed is refused before anything is planned
-    if !req.band.lo.is_finite() || !req.band.hi.is_finite() || req.band.lo >= req.band.hi {
-        return Err(format!(
-            "band: lo must be < hi, both finite (got [{}, {}])",
-            req.band.lo, req.band.hi
-        ));
-    }
+    // limits door: shape before meaning
     if let Some(max_change) = req.limits.as_ref().and_then(|l| l.max_change) {
         if !max_change.is_finite() || max_change <= 0.0 || max_change >= 1.0 {
             return Err(format!(
@@ -499,211 +820,345 @@ pub fn plan(
         .map(|l| l.exclude.iter().map(|s| s.as_str()).collect())
         .unwrap_or_default();
 
-    let (receiver, channel) = resolve_outcome(entries, &req.outcome)?;
-    let target = req.band.target.unwrap_or(0.5 * (req.band.lo + req.band.hi));
-
-    // The wish speaks in what the outcome shows (thermometer units);
-    // the curves speak in movements from the banked neutral. The anchor
-    // is the one translation point — and without it the wish cannot be
-    // voiced in curve units at all: refuse, named, never guessed.
-    let Some(anchor) = anchor.filter(|a| a.is_finite()) else {
-        return Ok(PlanDecision::Refused {
-            reason: "unanchored_outcome".to_string(),
-            detail: format!(
-                "outcome '{}' has no banked neutral reading yet - a probe round \
-                 must pause at neutral before a wish on it can be planned",
-                req.outcome
-            ),
-        });
-    };
-    let shift_target = target - anchor;
-
-    // single-hop candidates: curves whose listener IS the outcome
-    let mut candidates: Vec<(String, String, Vec<CurvePoint>)> = entries
-        .iter()
-        .filter(|e| e.receiver_id == receiver && e.channel == channel && e.sender_id != receiver)
-        .map(|e| {
-            (
-                e.sender_id.clone(),
-                e.param.clone(),
-                e.state
-                    .points
-                    .iter()
-                    .map(|(level, shift, bar)| CurvePoint {
-                        level: *level,
-                        shift: *shift,
-                        bar: *bar,
-                    })
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect();
-    candidates.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
-
-    let mut refusals: Vec<CandidateRefusal> = Vec::new();
-    // (hops, predicted bar, sender, param, decision) - sort key, in order
-    let mut plans: Vec<(usize, f64, String, String, PlanDecision)> = Vec::new();
-
-    for (sender, param, points) in &candidates {
-        if exclude.contains(&param.as_str()) {
-            refusals.push(CandidateRefusal::new(
-                RANK_EXCLUDED,
-                "excluded_input",
-                format!("param '{}' is wish-excluded", param),
+    // The wish speaks claims: the legacy single-outcome shape IS
+    // claims of length one - one code path, one gavel.
+    let claims: Vec<ClaimSpec> = if req.claims.is_empty() {
+        // legacy wire: the band door still applies to the sugar fields
+        if !req.band.lo.is_finite() || !req.band.hi.is_finite() || req.band.lo >= req.band.hi {
+            return Err(format!(
+                "band: lo must be < hi, both finite (got [{}, {}])",
+                req.band.lo, req.band.hi
             ));
+        }
+        vec![ClaimSpec {
+            outcome: req.outcome.clone(),
+            band: req.band.clone(),
+        }]
+    } else {
+        req.claims.clone()
+    };
+    let terms: Vec<ClaimSpec> = req.terms.clone();
+
+    // door: every band, aim or price, speaks finite lo < hi
+    for (i, c) in claims.iter().enumerate() {
+        let b = &c.band;
+        if !b.lo.is_finite() || !b.hi.is_finite() || b.lo >= b.hi {
+            return Err(format!(
+                "claims[{}].band: lo must be < hi, both finite (got [{}, {}])",
+                i, b.lo, b.hi
+            ));
+        }
+    }
+    for (i, t) in terms.iter().enumerate() {
+        let b = &t.band;
+        if !b.lo.is_finite() || !b.hi.is_finite() || b.lo >= b.hi {
+            return Err(format!(
+                "terms[{}].band: lo must be < hi, both finite (got [{}, {}])",
+                i, b.lo, b.hi
+            ));
+        }
+    }
+    // one claim per reading: two aims on one outcome would hide the
+    // verdict inside the wish - the gavel judges per claim, named
+    for i in 0..claims.len() {
+        for j in (i + 1)..claims.len() {
+            if claims[i].outcome == claims[j].outcome {
+                return Err(format!(
+                    "claims[{}] and claims[{}] name the same reading '{}' - one claim per outcome per wish",
+                    i, j, claims[i].outcome
+                ));
+            }
+        }
+    }
+
+    let anchor_of = |r: &str, ch: &str| -> Option<f64> {
+        claim_anchors
+            .get(&(r.to_string(), ch.to_string()))
+            .copied()
+            .or(anchor)
+    };
+
+    let mut resolved_claims: Vec<NamedReading> = Vec::new();
+    for c in &claims {
+        match resolve_named(entries, c, "claim", &anchor_of)? {
+            ResolvedNamed::Named(n) => resolved_claims.push(n),
+            ResolvedNamed::Unanchored(dec) => return Ok(dec),
+        }
+    }
+    let mut resolved_terms: Vec<NamedReading> = Vec::new();
+    for t in &terms {
+        match resolve_named(entries, t, "term", &anchor_of)? {
+            ResolvedNamed::Named(n) => resolved_terms.push(n),
+            ResolvedNamed::Unanchored(dec) => return Ok(dec),
+        }
+    }
+
+    // per-claim solo answers: the shipped single-wish machinery, run
+    // per claim - a refusal here names its claim
+    let mut solved: Vec<(NamedReading, ClaimPlan)> = Vec::new();
+    for c in &resolved_claims {
+        match solve_claim(
+            entries,
+            graph,
+            &c.outcome,
+            &c.receiver,
+            &c.channel,
+            &c.band,
+            c.anchor,
+            &exclude,
+            &ranges,
+            max_change,
+        ) {
+            Ok(p) => solved.push((c.clone(), p)),
+            Err(dec) => return Ok(dec),
+        }
+    }
+
+    // ─── the joint compile ──────────────────────────────────────────
+    // One dial, many bands: the final setting on a dial must keep
+    // EVERY reading that dial measurably reaches inside its own band -
+    // the claims riding the dial first, then the price and the
+    // neighbouring claims as the corridor. Bands are the weights; the
+    // engine never invents them. The empty region refuses, named.
+    let mut settings: Vec<f64> = solved.iter().map(|(_, p)| p.setting).collect();
+
+    // (a) claims sharing a dial: reconcile to one setting
+    {
+        let mut by_dial: std::collections::BTreeMap<(String, String), Vec<usize>> =
+            std::collections::BTreeMap::new();
+        for (i, (_, p)) in solved.iter().enumerate() {
+            by_dial.entry(p.dial.clone()).or_default().push(i);
+        }
+        for (dial, idxs) in &by_dial {
+            if idxs.len() < 2 {
+                continue;
+            }
+            let mut candidates: Vec<f64> = idxs.iter().map(|&i| settings[i]).collect();
+            for &i in idxs {
+                let (c, p) = &solved[i];
+                candidates.extend(band_crossings(
+                    &p.points,
+                    c.band.lo - c.anchor,
+                    c.band.hi - c.anchor,
+                    p.bracket,
+                ));
+            }
+            candidates.sort_by(f64::total_cmp);
+            candidates.dedup();
+            let in_all_bands = |s: f64| -> bool {
+                idxs.iter().all(|&i| {
+                    let (c, p) = &solved[i];
+                    match steer::eval_level(&p.points, s) {
+                        Some(e) => {
+                            let v = c.anchor + e.shift;
+                            v >= c.band.lo && v <= c.band.hi
+                        }
+                        None => false,
+                    }
+                })
+            };
+            let feasible: Vec<f64> =
+                candidates.into_iter().filter(|&s| in_all_bands(s)).collect();
+            if feasible.is_empty() {
+                let wanted: Vec<String> = idxs
+                    .iter()
+                    .map(|&i| {
+                        let (c, _) = &solved[i];
+                        format!(
+                            "'{}' wants setting {} for band [{}, {}]",
+                            c.outcome, settings[i], c.band.lo, c.band.hi
+                        )
+                    })
+                    .collect();
+                return Ok(PlanDecision::Refused {
+                    reason: "joint_compile_empty".to_string(),
+                    detail: format!(
+                        "claims {} share dial '{}:{}' but no setting on it keeps every band",
+                        wanted.join(", "),
+                        dial.0,
+                        dial.1
+                    ),
+                });
+            }
+            let anchor_setting = settings[idxs[0]];
+            let chosen = feasible
+                .into_iter()
+                .min_by(|x, y| {
+                    (x - anchor_setting)
+                        .abs()
+                        .total_cmp(&(y - anchor_setting).abs())
+                })
+                .expect("feasible is non-empty");
+            for &i in idxs {
+                settings[i] = chosen;
+            }
+        }
+    }
+
+    // (b) the corridor: each dial's final setting must also keep every
+    // OTHER reading it measurably reaches inside its own band - the
+    // wish's terms (the price) and the neighbouring claims (the room
+    // is one). A dial with no measured reach on a reading cannot touch
+    // it; coupling the map learns later surfaces at the notice rung.
+    for i in 0..solved.len() {
+        let dial = solved[i].1.dial.clone();
+        struct Prot {
+            kind: &'static str,
+            name: String,
+            anchor: f64,
+            band: Band,
+            points: Vec<CurvePoint>,
+        }
+        let mut prots: Vec<Prot> = Vec::new();
+        for (j, (oc, op)) in solved.iter().enumerate() {
+            if j == i || op.dial == dial {
+                continue; // own aim, or reconciled on this same dial
+            }
+            if let Some(e) = entries.iter().find(|e| {
+                e.receiver_id == oc.receiver
+                    && e.channel == oc.channel
+                    && e.sender_id == dial.0
+                    && e.param == dial.1
+            }) {
+                prots.push(Prot {
+                    kind: "claim",
+                    name: oc.outcome.clone(),
+                    anchor: oc.anchor,
+                    band: oc.band.clone(),
+                    points: e
+                        .state
+                        .points
+                        .iter()
+                        .map(|(l, s, b)| CurvePoint {
+                            level: *l,
+                            shift: *s,
+                            bar: *b,
+                        })
+                        .collect(),
+                });
+            }
+        }
+        for t in &resolved_terms {
+            if let Some(e) = entries.iter().find(|e| {
+                e.receiver_id == t.receiver
+                    && e.channel == t.channel
+                    && e.sender_id == dial.0
+                    && e.param == dial.1
+            }) {
+                prots.push(Prot {
+                    kind: "term",
+                    name: t.outcome.clone(),
+                    anchor: t.anchor,
+                    band: t.band.clone(),
+                    points: e
+                        .state
+                        .points
+                        .iter()
+                        .map(|(l, s, b)| CurvePoint {
+                            level: *l,
+                            shift: *s,
+                            bar: *b,
+                        })
+                        .collect(),
+                });
+            }
+        }
+        if prots.is_empty() {
             continue;
         }
-        let bracket = match compute_bracket(points, param, &ranges, max_change) {
-            Ok(b) => b,
-            Err(r) => {
-                refusals.push(r);
-                continue;
-            }
-        };
-        match branch_verdict(points, &bracket, shift_target) {
-            Err(r) => {
-                refusals.push(r);
-                continue;
-            }
-            Ok(BranchVerdict::HillPick {
-                setting,
-                bar,
-                predicted_shift,
-                level_span,
-                alternatives,
-            }) => {
-                log::info!(
-                    "STEER plan: hill branch pick {} param '{}' -> setting {} on [{}, {}] predicts shift {} (bar {}) - {} other branch(es) named",
-                    sender,
-                    param,
-                    setting,
-                    level_span.0,
-                    level_span.1,
-                    predicted_shift,
-                    bar,
-                    alternatives
-                );
-                plans.push((
-                    1,
-                    bar,
-                    sender.clone(),
-                    param.clone(),
-                    PlanDecision::Planned {
-                        moves: vec![Move {
-                            sender: sender.clone(),
-                            param: param.clone(),
-                            setting,
-                            bars: bar,
-                        }],
-                        predicted_value: anchor + predicted_shift,
-                        predicted_bars: bar,
-                        range_used: vec![(param.clone(), bracket.lo, bracket.hi)],
-                        path: vec![sender.clone(), receiver.clone()],
-                    },
-                ));
-                continue;
-            }
-            Ok(BranchVerdict::Monotone) => {}
+        let (c, p) = &solved[i];
+        let mut candidates = vec![settings[i]];
+        candidates.extend(band_crossings(
+            &p.points,
+            c.band.lo - c.anchor,
+            c.band.hi - c.anchor,
+            p.bracket,
+        ));
+        for prot in &prots {
+            candidates.extend(band_crossings(
+                &prot.points,
+                prot.band.lo - prot.anchor,
+                prot.band.hi - prot.anchor,
+                p.bracket,
+            ));
         }
-        let eval = |l: f64| -> f64 {
-            // bracket is inside the measured span - evaluation is total there
-            steer::eval_level(points, l)
-                .map(|e| e.shift)
-                .unwrap_or(f64::NAN)
+        candidates.sort_by(f64::total_cmp);
+        candidates.dedup();
+        let holds = |s: f64| -> Option<bool> {
+            let aim = steer::eval_level(&p.points, s)?;
+            let v = c.anchor + aim.shift;
+            if v < c.band.lo || v > c.band.hi {
+                return Some(false);
+            }
+            for prot in &prots {
+                let pv = steer::eval_level(&prot.points, s)?;
+                let v = prot.anchor + pv.shift;
+                if v < prot.band.lo || v > prot.band.hi {
+                    return Some(false);
+                }
+            }
+            Some(true)
         };
-        match steer::invert(shift_target, bracket.lo, bracket.hi, &eval, BISECTION_ITERS) {
+        let picked = candidates.into_iter().find(|&s| holds(s) == Some(true));
+        match picked {
+            Some(s) => settings[i] = s,
             None => {
-                let reason_detail = format!(
-                    "param '{}': band [{}, {}] with anchor {} wants a move to {}, outside the curve's evaluated range [{}, {}] on the allowed bracket [{}, {}]",
-                    param,
-                    req.band.lo,
-                    req.band.hi,
-                    anchor,
-                    shift_target,
-                    eval(bracket.lo),
-                    eval(bracket.hi),
-                    bracket.lo,
-                    bracket.hi
-                );
-                // a window-clipped bracket that cannot reach the target is
-                // bound by the wish's own magnitude, not by measurement
-                let (rank, reason) = if bracket.window_clipped {
-                    (RANK_MAGNITUDE_EMPTY, "magnitude_bound")
-                } else {
-                    (RANK_TARGET_UNREACHABLE, "outside_measured_range")
-                };
-                refusals.push(CandidateRefusal::new(rank, reason, reason_detail));
-            }
-            Some(setting) => {
-                let evaluated = steer::eval_level(points, setting)
-                    .expect("setting inside verified bracket must evaluate");
-                log::info!(
-                    "STEER plan: single-hop {} param '{}' -> setting {} predicts {} (move {} from anchor {}) +/- {}",
-                    sender,
-                    param,
-                    setting,
-                    anchor + evaluated.shift,
-                    evaluated.shift,
-                    anchor,
-                    evaluated.bar
-                );
-                plans.push((
-                    1,
-                    evaluated.bar,
-                    sender.clone(),
-                    param.clone(),
-                    PlanDecision::Planned {
-                        moves: vec![Move {
-                            sender: sender.clone(),
-                            param: param.clone(),
-                            setting,
-                            bars: evaluated.bar,
-                        }],
-                        predicted_value: anchor + evaluated.shift,
-                        predicted_bars: evaluated.bar,
-                        range_used: vec![(param.clone(), bracket.lo, bracket.hi)],
-                        path: vec![sender.clone(), receiver.clone()],
-                    },
-                ));
+                let prot = &prots[0];
+                return Ok(PlanDecision::Refused {
+                    reason: "joint_compile_empty".to_string(),
+                    detail: format!(
+                        "{} '{}' refuses the aim '{}' on dial '{}:{}': no setting in the allowed bracket keeps both in band - the price is the aim's corridor",
+                        prot.kind, prot.name, c.outcome, dial.0, dial.1
+                    ),
+                });
             }
         }
     }
 
-    // Chains (a -> mid -> outcome) are deliberately NOT enumerated here.
-    // Under v1 semantics a chain is always dominated by its own tail's
-    // direct plan - same dial moved, same displacement, strictly more bar -
-    // and the one legitimate trigger (a middle dial held by a live wish,
-    // routing the move around it) is controller knowledge the engine does
-    // not hold. Chains enter when the controller's enrichment can name
-    // held dials; the compose math stays in steer.rs, tested.
-
-    plans.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then(a.1.total_cmp(&b.1))
-            .then(a.2.cmp(&b.2))
-            .then(a.3.cmp(&b.3))
-    });
-    if let Some((_, _, _, _, decision)) = plans.into_iter().next() {
-        return Ok(decision);
+    // ─── the move-set: one move per dial, the claims' receipt ───────
+    let mut moves: Vec<Move> = Vec::new();
+    let mut range_used: Vec<(String, f64, f64)> = Vec::new();
+    let mut path: Vec<String> = Vec::new();
+    let mut claim_predictions: Vec<ClaimPrediction> = Vec::new();
+    for (i, (c, p)) in solved.iter().enumerate() {
+        if !moves
+            .iter()
+            .any(|m| m.sender == p.dial.0 && m.param == p.dial.1)
+        {
+            moves.push(Move {
+                sender: p.dial.0.clone(),
+                param: p.dial.1.clone(),
+                setting: settings[i],
+                bars: p.predicted_bars,
+            });
+        }
+        for r in &p.range_used {
+            if !range_used.iter().any(|(rp, _, _)| rp == &r.0) {
+                range_used.push(r.clone());
+            }
+        }
+        for step in &p.path {
+            if !path.contains(step) {
+                path.push(step.clone());
+            }
+        }
+        let shift = steer::eval_level(&p.points, settings[i])
+            .map(|e| e.shift)
+            .unwrap_or(f64::NAN);
+        claim_predictions.push(ClaimPrediction {
+            outcome: c.outcome.clone(),
+            predicted: c.anchor + shift,
+            bars: p.predicted_bars,
+        });
     }
-
-    // nothing feasible: report the most-advanced candidate's constraint
-    refusals.sort_by_key(|r| std::cmp::Reverse(r.rank));
-    if let Some(worst) = refusals.first() {
-        Ok(PlanDecision::Refused {
-            reason: worst.reason.to_string(),
-            detail: format!(
-                "{} candidate(s) evaluated; most advanced refusal - {}",
-                candidates.len(),
-                worst.detail
-            ),
-        })
-    } else {
-        Ok(PlanDecision::Refused {
-            reason: "unmeasured_path".to_string(),
-            detail: no_candidates_detail(entries, graph, &receiver, &channel),
-        })
-    }
+    Ok(PlanDecision::Planned {
+        predicted_value: claim_predictions[0].predicted,
+        predicted_bars: claim_predictions[0].bars,
+        claim_predictions,
+        moves,
+        range_used,
+        path,
+    })
 }
 
 /// Refusal detail when the outcome resolves but not a single curve
@@ -795,6 +1250,8 @@ mod tests {
             },
             limits,
             param_ranges: ranges,
+            claims: Vec::new(),
+            terms: Vec::new(),
         }
     }
 
@@ -804,13 +1261,14 @@ mod tests {
     fn single_hop_lands_on_target() {
         let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
         let r = req("R", 25.0, None, None);
-        match plan(&entries, None, &r, Some(0.0)).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new()).unwrap() {
             PlanDecision::Planned {
                 moves,
                 predicted_value,
                 predicted_bars,
                 range_used,
                 path,
+                ..
             } => {
                 assert_eq!(moves.len(), 1);
                 assert_eq!(moves[0].sender, "a");
@@ -830,7 +1288,7 @@ mod tests {
     fn target_outside_measured_range_refuses() {
         let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
         let r = req("R", 75.0, None, None); // shift range is [0, 50]
-        match plan(&entries, None, &r, Some(0.0)).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, .. } => assert_eq!(reason, "outside_measured_range"),
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -844,7 +1302,7 @@ mod tests {
         // "move +25" and aim the dial where the move is +25 (level 50).
         let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
         let r = req("R", 115.0, None, None);
-        match plan(&entries, None, &r, Some(90.0)).unwrap() {
+        match plan(&entries, None, &r, Some(90.0), &HashMap::new()).unwrap() {
             PlanDecision::Planned {
                 moves,
                 predicted_value,
@@ -871,7 +1329,7 @@ mod tests {
         // thermometer numbers.
         let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
         let r = req("R", 165.0, None, None);
-        match plan(&entries, None, &r, Some(90.0)).unwrap() {
+        match plan(&entries, None, &r, Some(90.0), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, .. } => assert_eq!(reason, "outside_measured_range"),
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -881,7 +1339,7 @@ mod tests {
     fn unanchored_outcome_refuses_named() {
         let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
         let r = req("R", 25.0, None, None);
-        match plan(&entries, None, &r, None).unwrap() {
+        match plan(&entries, None, &r, None, &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, detail } => {
                 assert_eq!(reason, "unanchored_outcome");
                 assert!(detail.contains("neutral"), "detail should teach: {detail}");
@@ -907,7 +1365,7 @@ mod tests {
             max_change: Some(0.2),
         };
         let r = req("R", 10.0, Some(limits), Some(ranges));
-        match plan(&entries, None, &r, Some(0.0)).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, .. } => assert_eq!(reason, "magnitude_bound"),
             other => panic!("expected magnitude_bound, got {other:?}"),
         }
@@ -921,7 +1379,7 @@ mod tests {
             max_change: None,
         };
         let r = req("R", 25.0, Some(limits), None);
-        match plan(&entries, None, &r, Some(0.0)).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, detail } => {
                 assert_eq!(reason, "excluded_input");
                 assert!(detail.contains('p'), "detail must name the excluded param");
@@ -946,7 +1404,7 @@ mod tests {
         ];
         let entries = vec![entry("a", "R", "p", "objective_0", pts)];
         let r = req("R", 20.0, None, None);
-        match plan(&entries, None, &r, Some(0.0)).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new()).unwrap() {
             PlanDecision::Planned {
                 moves, predicted_value, ..
             } => {
@@ -971,7 +1429,7 @@ mod tests {
         ];
         let entries = vec![entry("a", "R", "p", "objective_0", pts)];
         let r = req("R", 20.0, None, None);
-        match plan(&entries, None, &r, Some(0.0)).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new()).unwrap() {
             PlanDecision::Planned { moves, .. } => {
                 assert_eq!(moves[0].param, "p");
                 assert!((moves[0].setting - 30.0).abs() < 1.0);
@@ -996,7 +1454,7 @@ mod tests {
             ),
         ];
         let r = req("R", 20.0, None, None);
-        match plan(&entries, None, &r, Some(0.0)).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new()).unwrap() {
             PlanDecision::Planned { moves, path, .. } => {
                 assert_eq!(moves[0].sender, "M", "direct dial on the middle node");
                 assert_eq!(moves[0].param, "t");
@@ -1020,7 +1478,7 @@ mod tests {
             entry("aa_early", "R", "p1", "objective_0", loose),
         ];
         let r = req("R", 50.0, None, None);
-        match plan(&entries, None, &r, Some(0.0)).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new()).unwrap() {
             PlanDecision::Planned {
                 moves,
                 predicted_bars,
@@ -1040,7 +1498,7 @@ mod tests {
         for outcome in ["R", "R.objective_0", "R/objective_0"] {
             let r = req(outcome, 25.0, None, None);
             assert!(
-                plan(&entries, None, &r, Some(0.0)).is_ok(),
+                plan(&entries, None, &r, Some(0.0), &HashMap::new()).is_ok(),
                 "'{outcome}' must resolve"
             );
         }
@@ -1053,12 +1511,12 @@ mod tests {
             entry("b", "R", "q", "objective_1", GAIN_UP),
         ];
         let r = req("R", 25.0, None, None);
-        let err = plan(&entries, None, &r, Some(0.0)).unwrap_err();
+        let err = plan(&entries, None, &r, Some(0.0), &HashMap::new()).unwrap_err();
         assert!(err.contains("ambiguous"), "two channels: {err}");
         assert!(err.contains("objective_0") && err.contains("objective_1"));
 
         let r = req("nowhere", 25.0, None, None);
-        let err = plan(&entries, None, &r, Some(0.0)).unwrap_err();
+        let err = plan(&entries, None, &r, Some(0.0), &HashMap::new()).unwrap_err();
         assert!(
             err.contains("resolvable"),
             "unknown outcome lists what exists: {err}"
@@ -1081,8 +1539,10 @@ mod tests {
             },
             limits: None,
             param_ranges: None,
+            claims: Vec::new(),
+            terms: Vec::new(),
         };
-        assert!(plan(&entries, None, &bad_band, Some(0.0)).is_err());
+        assert!(plan(&entries, None, &bad_band, Some(0.0), &HashMap::new()).is_err());
         // maxChange outside (0, 1)
         let r = req(
             "R",
@@ -1093,11 +1553,195 @@ mod tests {
             }),
             None,
         );
-        assert!(plan(&entries, None, &r, Some(0.0)).is_err());
+        assert!(plan(&entries, None, &r, Some(0.0), &HashMap::new()).is_err());
         // inverted declared range
         let mut ranges = HashMap::new();
         ranges.insert("p".to_string(), [100.0, 0.0]);
         let r = req("R", 25.0, None, Some(ranges));
-        assert!(plan(&entries, None, &r, Some(0.0)).is_err());
+        assert!(plan(&entries, None, &r, Some(0.0), &HashMap::new()).is_err());
+    }
+
+    // ─── the joint compile: claims + terms per wish ─────────────────
+
+    fn anchors(pairs: &[(&str, f64)]) -> HashMap<(String, String), f64> {
+        pairs
+            .iter()
+            .map(|(o, v)| ((o.to_string(), "objective_0".to_string()), *v))
+            .collect()
+    }
+
+    fn req_claims(
+        claims: Vec<ClaimSpec>,
+        terms: Vec<ClaimSpec>,
+        ranges: Option<HashMap<String, [f64; 2]>>,
+    ) -> SteerPlanRequest {
+        SteerPlanRequest {
+            group_id: None,
+            wish_id: None,
+            budget: None,
+            outcome: String::new(),
+            band: Band::default(),
+            limits: None,
+            param_ranges: ranges,
+            claims,
+            terms,
+        }
+    }
+
+    fn claim(outcome: &str, lo: f64, hi: f64, target: f64) -> ClaimSpec {
+        ClaimSpec {
+            outcome: outcome.to_string(),
+            band: Band {
+                lo,
+                hi,
+                target: Some(target),
+            },
+        }
+    }
+
+    #[test]
+    fn two_claims_one_dial_reconcile_to_one_setting() {
+        // one dial, two readings: R1 slope 0.5, R2 slope 0.25
+        let entries = vec![
+            entry("a", "R1", "p", "objective_0", GAIN_UP),
+            entry("a", "R2", "p", "objective_0", &[(0.0, 0.0, 0.02), (100.0, 25.0, 0.02)]),
+        ];
+        let r = req_claims(
+            vec![
+                claim("R1", 20.0, 30.0, 25.0),
+                claim("R2", 7.5, 12.5, 10.0),
+            ],
+            vec![],
+            None,
+        );
+        let map = anchors(&[("R1", 0.0), ("R2", 0.0)]);
+        match plan(&entries, None, &r, None, &map).unwrap() {
+            PlanDecision::Planned {
+                moves,
+                claim_predictions,
+                ..
+            } => {
+                // one dial -> exactly one move; both predictions in band
+                assert_eq!(moves.len(), 1, "one dial carries one move");
+                let s = moves[0].setting;
+                assert!(
+                    s >= 40.0 && s <= 50.0,
+                    "setting inside the joint span [40, 50], got {}",
+                    s
+                );
+                for cp in &claim_predictions {
+                    let band = if cp.outcome == "R1" {
+                        (20.0, 30.0)
+                    } else {
+                        (7.5, 12.5)
+                    };
+                    assert!(
+                        cp.predicted >= band.0 && cp.predicted <= band.1,
+                        "claim '{}' predicted {} outside {:?}",
+                        cp.outcome,
+                        cp.predicted,
+                        band
+                    );
+                }
+            }
+            other => panic!("expected planned, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn disjoint_claims_on_one_dial_refuse_naming_both() {
+        let entries = vec![
+            entry("a", "R1", "p", "objective_0", GAIN_UP),
+            entry("a", "R2", "p", "objective_0", &[(0.0, 0.0, 0.02), (100.0, 25.0, 0.02)]),
+        ];
+        let r = req_claims(
+            vec![
+                claim("R1", 24.0, 26.0, 25.0),  // levels [48, 52]
+                claim("R2", 4.5, 5.5, 5.0),     // levels [18, 22] - disjoint
+            ],
+            vec![],
+            None,
+        );
+        let map = anchors(&[("R1", 0.0), ("R2", 0.0)]);
+        match plan(&entries, None, &r, None, &map).unwrap() {
+            PlanDecision::Refused { reason, detail } => {
+                assert_eq!(reason, "joint_compile_empty");
+                assert!(detail.contains("R1") && detail.contains("R2"),
+                    "the refusal names both claims: {detail}");
+            }
+            other => panic!("expected refusal, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn term_corridor_pulls_the_setting() {
+        // R1 slope 0.5 wants level 50 (shift 25); the term on the same
+        // dial reads R2 at slope 0.25 - level 50 would push R2 to 12.5,
+        // outside its [0, 10] band. The corridor pulls to level 40,
+        // where R1 sits at its own band edge (20) and R2 at exactly 10.
+        let entries = vec![
+            entry("a", "R1", "p", "objective_0", GAIN_UP),
+            entry("a", "R2", "p", "objective_0", &[(0.0, 0.0, 0.02), (100.0, 25.0, 0.02)]),
+        ];
+        let r = req_claims(
+            vec![claim("R1", 20.0, 30.0, 25.0)],
+            vec![claim("R2", 0.0, 10.0, 5.0)],
+            None,
+        );
+        let map = anchors(&[("R1", 0.0), ("R2", 0.0)]);
+        match plan(&entries, None, &r, None, &map).unwrap() {
+            PlanDecision::Planned { moves, .. } => {
+                assert!(
+                    (moves[0].setting - 40.0).abs() < 1e-6,
+                    "the price is the aim's corridor: setting 40, got {}",
+                    moves[0].setting
+                );
+            }
+            other => panic!("expected planned, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn term_impossible_refuses_naming_the_price() {
+        let entries = vec![
+            entry("a", "R1", "p", "objective_0", GAIN_UP),
+            entry("a", "R2", "p", "objective_0", &[(0.0, 0.0, 0.02), (100.0, 25.0, 0.02)]),
+        ];
+        let r = req_claims(
+            vec![claim("R1", 20.0, 30.0, 25.0)],
+            vec![claim("R2", 0.0, 8.0, 4.0)], // R1's own band floor (20) already puts R2 at 10 > 8
+            None,
+        );
+        let map = anchors(&[("R1", 0.0), ("R2", 0.0)]);
+        match plan(&entries, None, &r, None, &map).unwrap() {
+            PlanDecision::Refused { reason, detail } => {
+                assert_eq!(reason, "joint_compile_empty");
+                assert!(detail.contains("term") && detail.contains("R2") && detail.contains("R1"),
+                    "the refusal names the price and the aim: {detail}");
+            }
+            other => panic!("expected refusal, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unanchored_claim_refuses_named() {
+        let entries = vec![
+            entry("a", "R1", "p", "objective_0", GAIN_UP),
+            entry("a", "R2", "p", "objective_0", GAIN_UP),
+        ];
+        let r = req_claims(
+            vec![claim("R1", 20.0, 30.0, 25.0), claim("R2", 4.0, 6.0, 5.0)],
+            vec![],
+            None,
+        );
+        // only R1 banked a neutral: R2 is refused, named
+        let map = anchors(&[("R1", 0.0)]);
+        match plan(&entries, None, &r, None, &map).unwrap() {
+            PlanDecision::Refused { reason, detail } => {
+                assert_eq!(reason, "unanchored_outcome");
+                assert!(detail.contains("R2"), "the refusal names the claim: {detail}");
+            }
+            other => panic!("expected refusal, got {:?}", other),
+        }
     }
 }

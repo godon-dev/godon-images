@@ -628,75 +628,126 @@ async fn steer_plan(
     // existed only on the refusal path; a successful inversion never
     // asked whether anything needed moving.)
     if req.wish_id.is_some() {
-        if let Ok((receiver, channel)) = planner::resolve_outcome(&entries, &req.outcome) {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs_f64())
-                .unwrap_or(0.0);
-            if let Ok(by_ch) = state
-                .reader
-                .read_receiver_observations_for(
-                    &receiver,
-                    now - wish_book::JUDGE_LOOKBACK_SECS,
-                    now,
-                )
-                .await
-            {
-                if let Some(series) = by_ch.get(&channel) {
-                    if let Some(bar) = wish_book::reading_bar(series) {
-                        let m = trial_reader::median(series);
-                        if wish_book::band_verdict(
-                            m,
-                            bar,
-                            req.band.lo,
-                            req.band.hi,
-                            req.band.target,
-                        ) == "landed"
-                        {
-                            info!(
-                                "STEER /steer/plan: zero-move hold - the settled reading {m} already satisfies the band"
-                            );
-                            let hold_plan = serde_json::json!({
-                                "moves": [],
-                                "hold": true,
-                                "predicted": { "value": m },
-                            });
-                            if let Ok(client) = state.connect_archive_ensured().await {
-                                let terms =
-                                    serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
-                                if let Some(wish_id) = &req.wish_id {
-                                    let _ = wish_book::record_wish(
-                                        &client,
-                                        wish_id,
-                                        &terms,
-                                        Some(&hold_plan),
-                                        "planned",
-                                    )
-                                    .await;
-                                    let _ = wish_book::append_wish_event(
-                                        &client,
-                                        wish_id,
-                                        "planned",
-                                        None,
-                                    )
-                                    .await;
+        // every claim's settled reading must sit in its own band for the
+        // honest plan to be zero moves - a hold pushes nothing, so the
+        // terms are honored by construction. (Found live, round 10:
+        // every planned move injects a push transient the judge then
+        // reads as a miss, while the reading it would settle to was in
+        // band all along.)
+        let hold_claims: Vec<(&str, &planner::Band)> = if req.claims.is_empty() {
+            vec![(req.outcome.as_str(), &req.band)]
+        } else {
+            req.claims
+                .iter()
+                .map(|c| (c.outcome.as_str(), &c.band))
+                .collect()
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let mut hold_predictions: Vec<serde_json::Value> = Vec::new();
+        for (name, band) in &hold_claims {
+            let settled = match planner::resolve_outcome(&entries, name) {
+                Ok((receiver, channel)) => {
+                    match state
+                        .reader
+                        .read_receiver_observations_for(
+                            &receiver,
+                            now - wish_book::JUDGE_LOOKBACK_SECS,
+                            now,
+                        )
+                        .await
+                    {
+                        Ok(by_ch) => {
+                            match by_ch.get(channel.as_str()).cloned() {
+                                Some(series) => {
+                                    match wish_book::reading_bar(&series) {
+                                        Some(bar) => {
+                                            Some((trial_reader::median(&series), bar))
+                                        }
+                                        None => None,
+                                    }
                                 }
+                                None => None,
                             }
-                            return Ok(Json(serde_json::json!({
-                                "status": "planned",
-                                "wish_id": req.wish_id,
-                                "moves": [],
-                                "hold": true,
-                                "predicted": { "value": m },
-                            })));
                         }
+                        Err(_) => None,
                     }
+                }
+                Err(_) => None,
+            };
+            match settled {
+                Some((m, bar))
+                    if wish_book::band_verdict(m, bar, band.lo, band.hi, band.target)
+                        == "landed" =>
+                {
+                    hold_predictions.push(serde_json::json!({
+                        "outcome": name, "value": m, "bars": bar,
+                    }));
+                }
+                _ => {
+                    hold_predictions.clear();
+                    break;
                 }
             }
         }
+        if !hold_predictions.is_empty() {
+            info!(
+                "STEER /steer/plan: zero-move hold - every claim's settled reading already satisfies its band"
+            );
+            let hold_plan = serde_json::json!({
+                "moves": [],
+                "hold": true,
+                "predicted": { "value": hold_predictions[0]["value"] },
+                "claims": hold_predictions,
+            });
+            if let Ok(client) = state.connect_archive_ensured().await {
+                let terms =
+                    serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
+                if let Some(wish_id) = &req.wish_id {
+                    let _ = wish_book::record_wish(
+                        &client,
+                        wish_id,
+                        &terms,
+                        Some(&hold_plan),
+                        "planned",
+                    )
+                    .await;
+                    let _ = wish_book::append_wish_event(
+                        &client,
+                        wish_id,
+                        "planned",
+                        None,
+                    )
+                    .await;
+                }
+            }
+            return Ok(Json(serde_json::json!({
+                "status": "planned",
+                "wish_id": req.wish_id,
+                "moves": [],
+                "hold": true,
+                "predicted": { "value": hold_predictions[0]["value"] },
+                "claims": hold_predictions,
+            })));
+        }
     }
 
-    match planner::plan(&entries, graph.as_ref(), &req, anchor) {
+    let claim_anchors: HashMap<(String, String), f64> = if req.claims.is_empty() {
+        HashMap::new()
+    } else {
+        let mut m = HashMap::new();
+        for c in req.claims.iter().chain(req.terms.iter()) {
+            if let Ok((receiver, channel)) = planner::resolve_outcome(&entries, &c.outcome) {
+                if let Some((neutral, _bar)) = state.anchor_for(&receiver, &channel).await {
+                    m.insert((receiver, channel), neutral);
+                }
+            }
+        }
+        m
+    };
+    match planner::plan(&entries, graph.as_ref(), &req, anchor, &claim_anchors) {
         // door refusal: malformed request or unresolvable outcome
         Err(door) => Err((
             StatusCode::BAD_REQUEST,
@@ -708,6 +759,7 @@ async fn steer_plan(
             predicted_bars,
             range_used,
             path,
+            claim_predictions,
         }) => {
             info!(
                 "STEER /steer/plan: planned {} move(s), group {}",
@@ -729,9 +781,18 @@ async fn steer_plan(
                     })
                 })
                 .collect();
+            let claims_json: Vec<serde_json::Value> = claim_predictions
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "outcome": c.outcome, "predicted": c.predicted, "bars": c.bars,
+                    })
+                })
+                .collect();
             let plan_json = serde_json::json!({
                 "moves": moves_json,
                 "predicted": { "value": predicted_value, "bars": predicted_bars },
+                "claims": claims_json,
                 "range_used": range_used,
                 "path": path,
             });
@@ -756,6 +817,7 @@ async fn steer_plan(
                 "wish_id": req.wish_id,
                 "moves": plan_json["moves"],
                 "predicted": plan_json["predicted"],
+                "claims": plan_json["claims"],
                 "range_used": plan_json["range_used"],
                 "path": plan_json["path"],
             })))
@@ -805,7 +867,7 @@ async fn steer_plan(
                             .and_then(|d| d.get("median"))
                             .and_then(|m| m.as_f64());
                         if let Some(m) = median {
-                            if req.band.lo <= m && m <= req.band.hi {
+                            if req.claims.is_empty() && req.band.lo <= m && m <= req.band.hi {
                                 info!(
                                     "STEER /steer/plan: zero-move hold - the reading {m} already satisfies the corrected band"
                                 );
@@ -1192,13 +1254,14 @@ async fn rewalk(
     // The re-plan, attempted on every fresh point: decidable when the
     // plan's predicted bars fit inside the band — the walk's only stop.
     if !journal.is_empty() {
-        match planner::plan(entries, graph, terms_req, Some(anchor)) {
+        match planner::plan(entries, graph, terms_req, Some(anchor), &HashMap::new()) {
             Ok(planner::PlanDecision::Planned {
                 moves,
                 predicted_value,
                 predicted_bars,
                 range_used,
                 path,
+                claim_predictions,
             }) => {
                 let decidable = predicted_value - predicted_bars >= terms_req.band.lo
                     && predicted_value + predicted_bars <= terms_req.band.hi;
@@ -1206,6 +1269,14 @@ async fn rewalk(
                     let range_used: serde_json::Map<String, serde_json::Value> = range_used
                         .into_iter()
                         .map(|(p, lo, hi)| (p, serde_json::json!([lo, hi])))
+                        .collect();
+                    let claims_json: Vec<serde_json::Value> = claim_predictions
+                        .iter()
+                        .map(|c| {
+                            serde_json::json!({
+                                "outcome": c.outcome, "predicted": c.predicted, "bars": c.bars,
+                            })
+                        })
                         .collect();
                     let new_plan = serde_json::json!({
                         "moves": moves
@@ -1218,6 +1289,7 @@ async fn rewalk(
                             }))
                             .collect::<Vec<_>>(),
                         "predicted": { "value": predicted_value, "bars": predicted_bars },
+                        "claims": claims_json,
                         "range_used": range_used,
                         "path": path,
                     });
@@ -1344,78 +1416,112 @@ async fn steer_plan_get(
     // gavel, the walk, and the re-plan would be unreachable from the
     // one state a successful hold lives in (found live Sep 20, flight
     // 7: 6x drift, 60 minutes, landed throughout).
-    if matches!(status.as_str(), "planned" | "serving" | "undecidable" | "landed") {
-        if let (Some(sender), Some((receiver, channel))) = (
-            row.plan
-                .as_ref()
-                .and_then(|p| p["moves"][0]["sender"].as_str().map(str::to_string)),
-            outcome_pair.as_ref(),
-        ) {
-            let clock = {
-                let marks = [
-                    wish_book::last_event_tsz(&client, &wish_id, "landed").await,
-                    wish_book::last_event_tsz(&client, &wish_id, "missed").await,
-                    wish_book::last_event_tsz(&client, &wish_id, "undecidable").await,
-                    // a re-plan restarts the clock: only readings taken
-                    // at the NEW setting count toward its verdict
-                    wish_book::last_event_tsz(&client, &wish_id, "replanned").await,
-                    // a holder correction restarts it too: the new band
-                    // is graded on readings taken after it existed
-                    wish_book::last_event_tsz(&client, &wish_id, "corrected").await,
-                ];
-                marks.into_iter().flatten().flatten().fold(0.0f64, f64::max)
-            };
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs_f64())
-                .unwrap_or(0.0);
-            let since = if clock > 0.0 {
-                clock
-            } else {
-                now - wish_book::JUDGE_LOOKBACK_SECS
-            };
-            // The judge reads by uuid, not by room: the wish names no
-            // group, and the readings live wherever they were banked.
-            let _ = &sender;
-            if let Ok(by_ch) = state
-                .reader
-                .read_receiver_observations_for(receiver, since, now)
-                .await
-            {
-                let series = by_ch.get(channel.as_str());
-                if let Some(series) = series {
-                    if let Some(bar) = wish_book::reading_bar(series) {
-                        let m = trial_reader::median(series);
-                        let v = wish_book::band_verdict(
-                            m,
-                            bar,
-                            terms_req.band.lo,
-                            terms_req.band.hi,
-                            terms_req.band.target,
-                        );
-                        if v != status {
-                            let detail = serde_json::json!({
-                                "median": m,
-                                "bar": bar,
-                                "n": series.len(),
-                            });
-                            let _ = wish_book::set_wish_status(&client, &wish_id, v).await;
-                            let _ =
-                                wish_book::append_wish_event(&client, &wish_id, v, Some(&detail))
-                                    .await;
-                            status = v.to_string();
-                            verdict_detail = Some(detail);
-                        }
-                    }
+    if matches!(status.as_str(), "planned" | "serving" | "undecidable" | "landed")
+        && row.plan.is_some()
+    {
+        // The wish's readings, in gavel order: claims (the aims), then
+        // terms (the price - a term broken is a miss with the same
+        // standing). The gavel judges per reading; the wish's verdict
+        // is the conjunction: any miss dooms it, landed only when all
+        // land, undecidable while any reading sits under its own blur.
+        let judged: Vec<(&str, &planner::Band, bool)> = if terms_req.claims.is_empty() {
+            vec![(terms_req.outcome.as_str(), &terms_req.band, false)]
+        } else {
+            terms_req
+                .claims
+                .iter()
+                .map(|c| (c.outcome.as_str(), &c.band, false))
+                .chain(
+                    terms_req
+                        .terms
+                        .iter()
+                        .map(|t| (t.outcome.as_str(), &t.band, true)),
+                )
+                .collect()
+        };
+        let clock = {
+            let mut clock = 0.0f64;
+            for event in ["landed", "missed", "undecidable", "replanned", "corrected"] {
+                if let Ok(Some(t)) = wish_book::last_event_tsz(&client, &wish_id, event).await {
+                    clock = clock.max(t);
                 }
+            }
+            clock
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let since = if clock > 0.0 {
+            clock
+        } else {
+            now - wish_book::JUDGE_LOOKBACK_SECS
+        };
+        // The judge reads by uuid, not by room: the wish names no
+        // group, and the readings live wherever they were banked.
+        let mut judged_lines: Vec<serde_json::Value> = Vec::new();
+        for (name, band, is_term) in &judged {
+            let Some((receiver, channel)) = planner::resolve_outcome(&entries, name).ok()
+            else {
+                continue;
+            };
+            let Ok(by_ch) = state
+                .reader
+                .read_receiver_observations_for(&receiver, since, now)
+                .await
+            else {
+                continue;
+            };
+            let Some(series) = by_ch.get(channel.as_str()) else {
+                continue;
+            };
+            let Some(bar) = wish_book::reading_bar(series) else {
+                continue;
+            };
+            let m = trial_reader::median(series);
+            let v = wish_book::band_verdict(m, bar, band.lo, band.hi, band.target);
+            judged_lines.push(serde_json::json!({
+                "reading": name,
+                "kind": if *is_term { "term" } else { "claim" },
+                "verdict": v,
+                "median": m,
+                "bar": bar,
+                "n": series.len(),
+            }));
+        }
+        if !judged_lines.is_empty() {
+            let verdicts: Vec<&str> = judged_lines
+                .iter()
+                .map(|l| l["verdict"].as_str().unwrap_or("undecidable"))
+                .collect();
+            let v: &'static str = if verdicts.contains(&"missed") {
+                "missed"
+            } else if verdicts.iter().all(|&x| x == "landed") {
+                "landed"
+            } else {
+                "undecidable"
+            };
+            if v != status {
+                let detail = serde_json::json!({
+                    "judged": judged_lines,
+                    "n": judged_lines.len(),
+                });
+                let _ = wish_book::set_wish_status(&client, &wish_id, v).await;
+                let _ =
+                    wish_book::append_wish_event(&client, &wish_id, v, Some(&detail))
+                        .await;
+                status = v.to_string();
+                verdict_detail = Some(detail);
             }
         }
     }
 
     // ─── The walk: a miss opens a bracket search for the new doorstep ─
+    // Single-claim machinery for now: a multi-claim wish's miss stamps
+    // and the holder corrects - the stack's walk rung follows.
     let mut probe_hint: Option<serde_json::Value> = None;
     let mut walk_state: Option<serde_json::Value> = None;
-    if status == "missed" {
+    if status == "missed" && terms_req.claims.is_empty() {
         // The walk speaks movement units; the wish band is absolute.
         // The outcome's banked neutral is the one translation.
         let walk_anchor: Option<f64> = match outcome_pair.as_ref() {
@@ -2750,6 +2856,8 @@ mod tests {
             },
             limits: None,
             param_ranges: None,
+            claims: Vec::new(),
+            terms: Vec::new(),
         }
     }
 
