@@ -198,19 +198,39 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "steerwish_declare",
-                description: "Declare a steerwish: a named measured outcome the system should bring into a band and hold. The map plans the input setting; refusals name their binding constraint. Omitted budget means upkeep indefinitely; omitted regime means standing. Judging is in/out of band only - the target is receipt and reporting.",
+                description: "Declare a steerwish: claims (the aims the gavel judges) and optional terms (claims that carry no dial - the price the wish pays). One verdict: kept = every claim in band AND every term honored. The door validates the grammar; refusals name their binding constraint. Omitted budget means upkeep indefinitely.",
                 input_schema: serde_json::json!({
                     "type": "object",
-                    "description": "The wish body, verbatim - the controller validates the grammar (the door). Today: outcome + band; richer grammars (claims, terms) arrive through this same door.",
+                    "description": "The wish body, verbatim - the controller validates the grammar (the door). The wish speaks the stack: claims + terms.",
                     "properties": {
-                        "outcome": { "type": "string", "description": "Plain name of the measured value this wish is about - must resolve to exactly one entry in the map's outcome registry, e.g. 'chainend.shift'" },
-                        "band": {
-                            "type": "object",
-                            "description": "Acceptable range in the outcome's measurement units",
-                            "properties": {
-                                "lo": { "type": "number", "description": "Lower edge of the acceptable band" },
-                                "hi": { "type": "number", "description": "Upper edge of the acceptable band" },
-                                "target": { "type": "number", "description": "Aim point inside the band - receipt and reporting only, never judged" }
+                        "claims": {
+                            "type": "array",
+                            "description": "The aims: one reading, one band each - the atom the gavel judges. N >= 1.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "outcome": { "type": "string", "description": "Plain name of the measured value - must resolve on the map's outcome registry, e.g. 'chainend.shift'" },
+                                    "band": {
+                                        "type": "object",
+                                        "description": "Acceptable range in the outcome's measurement units",
+                                        "properties": {
+                                            "lo": { "type": "number", "description": "Lower edge of the acceptable band" },
+                                            "hi": { "type": "number", "description": "Upper edge of the acceptable band" },
+                                            "target": { "type": "number", "description": "Aim point inside the band - receipt and reporting only, never judged" }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "terms": {
+                            "type": "array",
+                            "description": "The price: claims that carry no dial - the compile must honor them; a term broken is a miss with the same standing. M >= 0.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "outcome": { "type": "string", "description": "Plain name of the protected reading" },
+                                    "band": { "type": "object", "description": "Range the wish must never push this reading out of" }
+                                }
                             }
                         },
                         "limits": {
@@ -224,6 +244,7 @@ impl ToolRegistry {
                         "budget": { "type": "integer", "description": "Re-act allowance after drift events; omitted means upkeep indefinitely" },
                         "regime": { "type": "string", "enum": ["standing"], "description": "Closing rule of the wish; only standing exists today (held until closed)" }
                     },
+                    "required": ["claims"],
                     "additionalProperties": true
                 }),
             },
@@ -254,16 +275,37 @@ impl ToolRegistry {
 
             ToolDef {
                 name: "steerwish_update",
-                description: "The holder corrects a wish: new band on the same identity. Stamps a 'corrected' event with the previous band, then re-plans through the door. Works on living and unheld wishes.",
+                description: "The holder corrects a wish: restated claims (and terms) on the same identity. Stamps a 'corrected' event with the previous band, then re-plans through the door. Works on living and unheld wishes.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
                         "wish_id": { "type": "string", "description": "UUID of the steerwish to correct" },
-                        "band": { "type": "object", "description": "New band: lo, hi and optional target, in the outcome's measurement units" },
+                        "claims": {
+                            "type": "array",
+                            "description": "The restated aims: one reading, one band each. N >= 1.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "outcome": { "type": "string", "description": "Plain name of the measured value" },
+                                    "band": { "type": "object", "description": "Acceptable range in the outcome's measurement units" }
+                                }
+                            }
+                        },
+                        "terms": {
+                            "type": "array",
+                            "description": "The restated price: protected readings the wish must never push out of band. M >= 0.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "outcome": { "type": "string", "description": "Plain name of the protected reading" },
+                                    "band": { "type": "object", "description": "Range the wish must never push this reading out of" }
+                                }
+                            }
+                        },
                         "reason": { "type": "string", "description": "Why the holder corrects (stamped into the trail)" }
                     },
-                    "required": ["wish_id", "band"],
-                    "additionalProperties": false
+                    "required": ["wish_id", "claims"],
+                    "additionalProperties": true
                 }),
             },
             ToolDef {
@@ -471,26 +513,9 @@ impl ToolRegistry {
                     .await
             }
             "steerwish_declare" => {
-                if args.get("outcome").and_then(|v| v.as_str()).is_none() {
-                    bail!("outcome required: the plain name of the measured value");
-                }
-                if args.get("band").is_none() {
-                    bail!("band required: an object with lo and hi, in the outcome's measurement units");
-                }
-                let mut body = serde_json::json!({
-                    "outcome": args["outcome"],
-                    "band": args["band"],
-                });
-                if let Some(limits) = args.get("limits") {
-                    body["limits"] = limits.clone();
-                }
-                if let Some(budget) = args.get("budget") {
-                    body["budget"] = budget.clone();
-                }
-                if let Some(regime) = args.get("regime") {
-                    body["regime"] = regime.clone();
-                }
-                self.client.post("/steerwishes", body).await
+                // The wish body, verbatim - the door validates the
+                // grammar (claims, terms), this layer never intervenes.
+                self.client.post("/steerwishes", args.clone()).await
             }
             "steerwish_close" => {
                 require_id(id, "wish_id")?;
@@ -504,20 +529,15 @@ impl ToolRegistry {
 
             "steerwish_update" => {
                 require_id(id, "wish_id")?;
-                if args.get("band").is_none() {
-                    bail!("band required: an object with lo and hi, in the outcome's measurement units");
-                }
-                let mut body = serde_json::json!({ "band": args["band"] });
-                if let Some(reason) = args.get("reason") {
-                    body["reason"] = reason.clone();
-                }
+                // The correction, verbatim (claims, terms, reason) -
+                // the door validates; identity rides the URL.
                 self.client
                     .post(
                         &format!(
                             "/steerwishes/{}/update",
                             urlencoding::encode(id)
                         ),
-                        body,
+                        args.clone(),
                     )
                     .await
             }
