@@ -277,6 +277,7 @@ fn default_config() -> BenchConfig {
                 morphs: vec![],
                 offset_drift_rate: 0.0,
                 offset_drift_cap: None,
+                offset_drift_start_tick: None,
             },
             NodeConfig {
                 id: "node-2".to_string(),
@@ -291,6 +292,7 @@ fn default_config() -> BenchConfig {
                 morphs: vec![],
                 offset_drift_rate: 0.0,
                 offset_drift_cap: None,
+                offset_drift_start_tick: None,
             },
         ],
         edges: vec![SimEdgeConfig {

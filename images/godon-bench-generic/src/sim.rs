@@ -58,6 +58,12 @@ pub struct NodeConfig {
     /// destination). None = unbounded (the classic ramp).
     #[serde(default)]
     pub offset_drift_cap: Option<f64>,
+    /// Offset drift start tick: the slide begins only at this tick -
+    /// `offset(t) = rate × max(0, t − start)`. The world holds still
+    /// while the map builds and the wish lands, then moves on
+    /// schedule. Default 0 = the classic from-boot ramp.
+    #[serde(default)]
+    pub offset_drift_start_tick: Option<u64>,
 }
 
 /// One scheduled shape target. `travel_ticks` 0 = instant step at
@@ -568,7 +574,10 @@ impl Simulator {
             .nodes
             .get(requesting_node)
             .map(|n| {
-                let raw = n.config.offset_drift_rate * self.total_ticks as f64;
+                let elapsed = self
+                    .total_ticks
+                    .saturating_sub(n.config.offset_drift_start_tick.unwrap_or(0));
+                let raw = n.config.offset_drift_rate * elapsed as f64;
                 match n.config.offset_drift_cap {
                     Some(cap) => raw.clamp(-cap.abs(), cap.abs()),
                     None => raw,
@@ -597,7 +606,10 @@ impl Simulator {
         let node = self.nodes.get(node_id)?;
         let eff = self.effective_shape(&node.config);
         let mut objectives = coupled.get(node_id)?.clone();
-        let raw = node.config.offset_drift_rate * self.total_ticks as f64;
+        let elapsed = self
+            .total_ticks
+            .saturating_sub(node.config.offset_drift_start_tick.unwrap_or(0));
+        let raw = node.config.offset_drift_rate * elapsed as f64;
         let offset = match node.config.offset_drift_cap {
             Some(cap) => raw.clamp(-cap.abs(), cap.abs()),
             None => raw,
@@ -942,6 +954,55 @@ mod tests {
 
         let t = sim.truth("a").unwrap();
         assert!((t.objectives[0] - 0.515).abs() < 1e-9);
+    }
+
+    #[test]
+    fn offset_drift_start_tick_holds_then_slides() {
+        // the definable drift clock: the world holds still while the map
+        // builds and the wish lands, then slides on schedule - closed
+        // form preserved, offset(t) = rate x max(0, t - start)
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]],
+                 "offset_drift_rate": 0.01, "offset_drift_start_tick": 3}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        }))
+        .unwrap();
+        let mut sim = Simulator::from_config(config);
+
+        sim.apply("a", &[50.0]); // T=1: before start - still base
+        assert!((sim.get_status("a").unwrap()[0] - 0.5).abs() < 1e-9);
+        sim.apply("a", &[50.0]); // T=2: still before start
+        sim.apply("a", &[50.0]); // T=3: start tick - offset 0
+        sim.apply("a", &[50.0]); // T=4: 0.5 + 0.01 x (4-3)
+        assert!((sim.get_status("a").unwrap()[0] - 0.51).abs() < 1e-9);
+        sim.apply("a", &[50.0]); // T=5: 0.5 + 0.01 x 2
+        let read = sim.get_status("a").unwrap()[0];
+        assert!((read - 0.52).abs() < 1e-9, "T=5: got {}", read);
+
+        // truth carries the same schedule - world and answer key agree
+        let t = sim.truth("a").unwrap();
+        assert!((t.objectives[0] - 0.52).abs() < 1e-9);
+    }
+
+    #[test]
+    fn offset_drift_start_tick_defaults_to_zero() {
+        // no start declared = the classic from-boot ramp, unchanged
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]],
+                 "offset_drift_rate": 0.01}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        }))
+        .unwrap();
+        let mut sim = Simulator::from_config(config);
+
+        sim.apply("a", &[50.0]); // T=1: 0.5 + 0.01x1
+        assert!((sim.get_status("a").unwrap()[0] - 0.51).abs() < 1e-9);
     }
 
     #[test]
