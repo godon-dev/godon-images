@@ -137,6 +137,12 @@ impl ResponseCurve {
         }
     }
 
+    /// The run-provenance threshold this curve was born with. The wish
+    /// serve's hold-receipt banking reuses it when persisting a point.
+    pub fn provenance_threshold(&self) -> f64 {
+        self.convergence_threshold
+    }
+
     /// Adjacent-point gaps with priced ignorance (sorted by level).
     /// Standing fact, recomputed on read — eligibility consults it
     /// like it consults `converged`.

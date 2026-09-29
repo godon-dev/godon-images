@@ -1460,6 +1460,7 @@ async fn steer_plan_get(
         // The judge reads by uuid, not by room: the wish names no
         // group, and the readings live wherever they were banked.
         let mut judged_lines: Vec<serde_json::Value> = Vec::new();
+        let mut receipts: Vec<(String, String, String, f64, f64)> = Vec::new();
         for (name, band, is_term) in &judged {
             let Some((receiver, channel)) = planner::resolve_outcome(&entries, name).ok()
             else {
@@ -1480,6 +1481,7 @@ async fn steer_plan_get(
             };
             let m = trial_reader::median(series);
             let v = wish_book::band_verdict(m, bar, band.lo, band.hi, band.target);
+            receipts.push((name.to_string(), receiver.clone(), channel.clone(), m, bar));
             judged_lines.push(serde_json::json!({
                 "reading": name,
                 "kind": if *is_term { "term" } else { "claim" },
@@ -1512,6 +1514,110 @@ async fn steer_plan_get(
                         .await;
                 status = v.to_string();
                 verdict_detail = Some(detail);
+                // ─── Hold-receipt: the serve's own evidence banks ─────
+                // While this wish held its dial, the receiver was parked
+                // by wish-role and the sender held (no probe of its own):
+                // a decided stamp's settled median at the held setting is
+                // the cleanest measurement the stack ever takes. Bank it
+                // into the curve the plan rode, so the next re-walk
+                // re-compiles from what the serve actually taught, not
+                // from the chord the declare guessed on. Decided stamps
+                // only (an undecidable window is still blur), single-move
+                // plans only (multi-dial receipts are a later rung), and
+                // only curves that already exist — a receipt refines a
+                // measured path, it never invents one.
+                if (v == "missed" || v == "landed") && row.plan.is_some() {
+                    let moves = row.plan.as_ref().unwrap()["moves"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    if moves.len() == 1 {
+                        let dial_sender = moves[0]["sender"].as_str().map(str::to_string);
+                        let dial_param = moves[0]["param"].as_str().map(str::to_string);
+                        let setting = moves[0]["setting"].as_f64();
+                        if let (Some(dial_sender), Some(dial_param), Some(setting)) =
+                            (dial_sender, dial_param, setting)
+                        {
+                            let mut candidates: Vec<(String, String, f64, f64)> =
+                                Vec::new();
+                            for (name, receiver, channel, median, bar) in &receipts {
+                                if let Some((neutral, _)) =
+                                    state.anchor_for(receiver, channel).await
+                                {
+                                    candidates.push((
+                                        receiver.clone(),
+                                        channel.clone(),
+                                        median - neutral,
+                                        *bar,
+                                    ));
+                                }
+                            }
+                            let mut to_bank: Vec<(String, String, f64, f64, f64)> =
+                                Vec::new();
+                            {
+                                let curves = state.curves.read().await;
+                                for (receiver, channel, shift, bar) in &candidates {
+                                    if let Some(curve) = curves.get_curve(
+                                        &dial_sender,
+                                        receiver,
+                                        &dial_param,
+                                        channel,
+                                    ) {
+                                        to_bank.push((
+                                            receiver.clone(),
+                                            channel.clone(),
+                                            *shift,
+                                            *bar,
+                                            curve.provenance_threshold(),
+                                        ));
+                                    }
+                                }
+                            }
+                            if !to_bank.is_empty() {
+                                {
+                                    let mut curves = state.curves.write().await;
+                                    for (receiver, channel, shift, bar, thr) in
+                                        &to_bank
+                                    {
+                                        curves.add_point(
+                                            &dial_sender,
+                                            receiver,
+                                            &dial_param,
+                                            channel,
+                                            setting,
+                                            *shift,
+                                            *thr,
+                                        );
+                                    }
+                                }
+                                if let Ok(arch) = state.reader.connect_archive().await {
+                                    for (receiver, channel, shift, bar, thr) in
+                                        &to_bank
+                                    {
+                                        curve_store::persist_point(
+                                            &arch,
+                                            &group,
+                                            &dial_sender,
+                                            receiver,
+                                            &dial_param,
+                                            channel,
+                                            setting,
+                                            *shift,
+                                            *bar,
+                                            *thr,
+                                            None,
+                                        )
+                                        .await;
+                                    }
+                                }
+                                info!(
+                                    "JUDGE {wish_id}: hold-receipt banked {} point(s), dial {}:{} @ {}",
+                                    to_bank.len(), dial_sender, dial_param, setting
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
     }
