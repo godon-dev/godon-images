@@ -212,6 +212,55 @@ pub(crate) fn resolve_outcome(
     }
 }
 
+/// Fingerprint of every curve the wish's readings ride: claims and terms,
+/// per reading, per (sender, param) curve into it — "points:last_shift".
+/// The re-walk's fresh-evidence guard: the served plan stores the print;
+/// a changed print means the remeasure walk actually moved the map and a
+/// re-compile can learn. No change, no re-serve — the same plan served
+/// twice teaches nothing.
+pub fn curve_fingerprint(
+    entries: &[CurveEntry],
+    claims: &[ClaimSpec],
+    terms: &[ClaimSpec],
+) -> serde_json::Value {
+    let mut named: Vec<&str> = claims
+        .iter()
+        .map(|c| c.outcome.as_str())
+        .chain(terms.iter().map(|t| t.outcome.as_str()))
+        .collect();
+    named.sort();
+    named.dedup();
+    let mut fp = serde_json::Map::new();
+    for name in named {
+        let Ok((receiver, channel)) = resolve_outcome(entries, name) else {
+            continue;
+        };
+        let mut curves: Vec<&CurveEntry> = entries
+            .iter()
+            .filter(|e| e.receiver_id == receiver && e.channel == channel)
+            .collect();
+        curves.sort_by(|a, b| {
+            a.sender_id
+                .cmp(&b.sender_id)
+                .then_with(|| a.param.cmp(&b.param))
+        });
+        let mut per_curve = serde_json::Map::new();
+        for e in curves {
+            let pts = &e.state.points;
+            let last = pts
+                .last()
+                .map(|p| format!("{:.6}", p.1))
+                .unwrap_or_default();
+            per_curve.insert(
+                format!("{}/{}", e.sender_id, e.param),
+                serde_json::json!(format!("{}:{}", pts.len(), last)),
+            );
+        }
+        fp.insert(name.to_string(), serde_json::Value::Object(per_curve));
+    }
+    serde_json::Value::Object(fp)
+}
+
 // ─── Refusal bookkeeping ────────────────────────────────────────────
 
 /// How far a candidate got before its binding constraint stopped it.
@@ -1743,5 +1792,48 @@ mod tests {
             }
             other => panic!("expected refusal, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn curve_fingerprint_tracks_new_points_only() {
+        // The re-walk's fresh-evidence guard: the print moves exactly when
+        // a curve the wish rides gains a point or its last shift moves.
+        let entries = vec![
+            entry("a", "R1", "p", "objective_0", &[(0.0, 0.0, 0.02), (100.0, 25.0, 0.02)]),
+            entry("a", "R2", "p", "objective_0", &[(50.0, -0.007, 0.02)]),
+        ];
+        let r = req_claims(
+            vec![claim("R1", 20.0, 30.0, 25.0), claim("R2", 4.0, 6.0, 5.0)],
+            vec![],
+            None,
+        );
+        let before = curve_fingerprint(&entries, &r.claims, &r.terms);
+
+        // Unrelated curve moves: the print stands.
+        let mut unrelated = entries.clone();
+        unrelated.push(entry("b", "R9", "q", "objective_0", &[(0.0, 9.0, 0.02)]));
+        assert_eq!(
+            before,
+            curve_fingerprint(&unrelated, &r.claims, &r.terms),
+            "unrelated curves must not move the print"
+        );
+
+        // The wish's own curve gains a point: the print moves.
+        let mut grown = entries.clone();
+        grown[1].state.points.push((25.0, -0.1, 0.015));
+        let after = curve_fingerprint(&grown, &r.claims, &r.terms);
+        assert_ne!(before, after, "a new point on a ridden curve moves the print");
+
+        // Same point count, different last shift: the print moves too.
+        let mut moved = entries.clone();
+        moved[1].state.points[0].1 = -0.05;
+        assert_ne!(
+            before,
+            curve_fingerprint(&moved, &r.claims, &r.terms),
+            "a moved last shift changes the print even at equal point count"
+        );
+
+        // Re-running on unchanged entries is stable (deterministic print).
+        assert_eq!(after, curve_fingerprint(&grown, &r.claims, &r.terms));
     }
 }
