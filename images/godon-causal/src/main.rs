@@ -1567,6 +1567,205 @@ async fn steer_plan_get(
         }
         probe_hint = out.hint;
         walk_state = out.walk;
+    } else if status == "missed" && !terms_req.claims.is_empty() {
+        // ─── The claims-grammar re-walk: remeasure, then re-serve ─────
+        // A miss suspends the judge and opens a remeasure phase: the
+        // sender keeps probing, and the registry drinks fresh points.
+        // When the curves the plan rode have actually moved (the curve
+        // fingerprint differs from the served plan's), the joint compile
+        // runs again on the refreshed map — and the re-served plan sends
+        // the sender back to the dial (the worker already follows
+        // re-plans: it re-reads the setting and re-holds). No fresh
+        // evidence, no re-serve — the same plan served twice teaches
+        // nothing. (Found live Sep 28: the corridor wish 5233dff0
+        // planned on the TRUE lever, missed on the pre-move stamp, and
+        // spun in remeasure — this branch did not exist.)
+        let fingerprint =
+            planner::curve_fingerprint(&entries, &terms_req.claims, &terms_req.terms);
+        let served_fp = row
+            .plan
+            .as_ref()
+            .and_then(|p| p.get("curve_fp"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        if fingerprint == served_fp {
+            walk_state = Some(serde_json::json!({
+                "outcome": "remeasuring",
+                "detail": "no fresh evidence on the plan's curves since the last serve",
+            }));
+        } else {
+            // Round 10's lesson first: if every claim's settled reading
+            // already sits in its band, the honest serve is a hold — a
+            // planned move would inject a push transient the judge reads
+            // as a miss, while the reading it would settle to is in band
+            // all along.
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            let mut hold_predictions: Vec<serde_json::Value> = Vec::new();
+            for c in &terms_req.claims {
+                let settled = match planner::resolve_outcome(&entries, &c.outcome) {
+                    Ok((receiver, channel)) => match state
+                        .reader
+                        .read_receiver_observations_for(
+                            &receiver,
+                            now - wish_book::JUDGE_LOOKBACK_SECS,
+                            now,
+                        )
+                        .await
+                    {
+                        Ok(by_ch) => match by_ch.get(channel.as_str()).cloned() {
+                            Some(series) => {
+                                wish_book::reading_bar(&series)
+                                    .map(|bar| (trial_reader::median(&series), bar))
+                            }
+                            None => None,
+                        },
+                        Err(_) => None,
+                    },
+                    Err(_) => None,
+                };
+                match settled {
+                    Some((m, bar))
+                        if wish_book::band_verdict(m, bar, c.band.lo, c.band.hi, c.band.target)
+                            == "landed" =>
+                    {
+                        hold_predictions.push(serde_json::json!({
+                            "outcome": c.outcome, "value": m, "bars": bar,
+                        }));
+                    }
+                    _ => {
+                        hold_predictions.clear();
+                        break;
+                    }
+                }
+            }
+            if !hold_predictions.is_empty() {
+                info!(
+                    "REWALK {wish_id}: claims re-walk re-serves a hold - the settled reading already lands"
+                );
+                let hold_plan = serde_json::json!({
+                    "moves": [],
+                    "hold": true,
+                    "predicted": { "value": hold_predictions[0]["value"] },
+                    "claims": hold_predictions,
+                    "curve_fp": fingerprint,
+                });
+                let _ = wish_book::record_wish(
+                    &client,
+                    &wish_id,
+                    &row.terms,
+                    Some(&hold_plan),
+                    "serving",
+                )
+                .await;
+                let _ =
+                    wish_book::append_wish_event(&client, &wish_id, "replanned", None).await;
+                row.plan = Some(hold_plan);
+                status = "serving".to_string();
+                walk_state = Some(serde_json::json!({ "outcome": "replanned", "hold": true }));
+            } else {
+                let claim_anchors: HashMap<(String, String), f64> = {
+                    let mut m = HashMap::new();
+                    for c in terms_req.claims.iter().chain(terms_req.terms.iter()) {
+                        if let Ok((receiver, channel)) =
+                            planner::resolve_outcome(&entries, &c.outcome)
+                        {
+                            if let Some((neutral, _bar)) =
+                                state.anchor_for(&receiver, &channel).await
+                            {
+                                m.insert((receiver, channel), neutral);
+                            }
+                        }
+                    }
+                    m
+                };
+                match planner::plan(&entries, graph.as_ref(), &terms_req, None, &claim_anchors)
+                {
+                    Ok(planner::PlanDecision::Planned {
+                        moves,
+                        predicted_value,
+                        predicted_bars,
+                        range_used,
+                        path,
+                        claim_predictions,
+                    }) => {
+                        info!(
+                            "REWALK {wish_id}: claims re-walk re-served {} move(s) after fresh evidence",
+                            moves.len()
+                        );
+                        let range_used: serde_json::Map<String, serde_json::Value> = range_used
+                            .into_iter()
+                            .map(|(param, lo, hi)| (param, serde_json::json!([lo, hi])))
+                            .collect();
+                        let mut new_plan = serde_json::json!({
+                            "moves": moves
+                                .iter()
+                                .map(|m| serde_json::json!({
+                                    "sender": m.sender,
+                                    "param": m.param,
+                                    "setting": m.setting,
+                                    "bars": m.bars,
+                                }))
+                                .collect::<Vec<_>>(),
+                            "predicted": { "value": predicted_value, "bars": predicted_bars },
+                            "claims": claim_predictions
+                                .iter()
+                                .map(|c| serde_json::json!({
+                                    "outcome": c.outcome, "predicted": c.predicted, "bars": c.bars,
+                                }))
+                                .collect::<Vec<_>>(),
+                            "range_used": range_used,
+                            "path": path,
+                        });
+                        new_plan["curve_fp"] = fingerprint.clone();
+                        let _ = wish_book::record_wish(
+                            &client,
+                            &wish_id,
+                            &row.terms,
+                            Some(&new_plan),
+                            "serving",
+                        )
+                        .await;
+                        let _ = wish_book::append_wish_event(
+                            &client,
+                            &wish_id,
+                            "replanned",
+                            Some(&serde_json::json!({ "moves": moves.len() })),
+                        )
+                        .await;
+                        row.plan = Some(new_plan);
+                        status = "serving".to_string();
+                        walk_state = Some(serde_json::json!({ "outcome": "replanned" }));
+                    }
+                    Ok(planner::PlanDecision::Refused { reason, detail }) => {
+                        // Fresh evidence, and the compile still says no:
+                        // the refusal is named, the evidence is consumed,
+                        // and the wish stays in remeasure until the map
+                        // moves again.
+                        info!(
+                            "REWALK {wish_id}: re-compile refused ({reason}) - staying in remeasure"
+                        );
+                        if let Some(plan) = row.plan.as_mut() {
+                            plan["curve_fp"] = fingerprint.clone();
+                        }
+                        walk_state = Some(serde_json::json!({
+                            "outcome": "refused",
+                            "reason": reason,
+                            "detail": detail,
+                        }));
+                    }
+                    Err(door) => {
+                        walk_state = Some(serde_json::json!({
+                            "outcome": "refused",
+                            "reason": "door",
+                            "detail": door,
+                        }));
+                    }
+                }
+            }
+        }
     }
 
     // The page's event tail — the controller's lazy fold-in reads this.
