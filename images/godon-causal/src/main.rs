@@ -1453,7 +1453,16 @@ async fn steer_plan_get(
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0);
         let since = if clock > 0.0 {
-            clock
+            // The horizon cap: judge the living window, never a history
+            // a transient poisoned. The settle slide after a re-serve
+            // (found live Sep 29: 1.10 → 0.77 → 0.91 in one hold) sits
+            // in since-last-event forever, inflating σ until every
+            // recompute reads undecidable — and the clock, which only
+            // advances on verdict CHANGES, never moves past it. The same
+            // cap lets a landed wish notice drift: a since-landing
+            // window dilutes the drift into invisibility, the last 90
+            // seconds report it straight.
+            clock.max(now - wish_book::JUDGE_LOOKBACK_SECS)
         } else {
             now - wish_book::JUDGE_LOOKBACK_SECS
         };

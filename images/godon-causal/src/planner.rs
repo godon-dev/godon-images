@@ -246,14 +246,20 @@ pub fn curve_fingerprint(
         });
         let mut per_curve = serde_json::Map::new();
         for e in curves {
+            // The print is the FULL point set (level:shift pairs, sorted),
+            // not a count-plus-last: hold-receipts bank mid-curve
+            // corrections (the serve's true depth at its held setting)
+            // without touching the highest level - a count+last print
+            // would miss exactly the lessons the re-walk exists to learn.
             let pts = &e.state.points;
-            let last = pts
-                .last()
-                .map(|p| format!("{:.6}", p.1))
-                .unwrap_or_default();
+            let shape: String = pts
+                .iter()
+                .map(|p| format!("{:.2}:{:.6}", p.0, p.1))
+                .collect::<Vec<_>>()
+                .join(";");
             per_curve.insert(
                 format!("{}/{}", e.sender_id, e.param),
-                serde_json::json!(format!("{}:{}", pts.len(), last)),
+                serde_json::json!(format!("{}|{}", pts.len(), shape)),
             );
         }
         fp.insert(name.to_string(), serde_json::Value::Object(per_curve));
@@ -1831,6 +1837,17 @@ mod tests {
             before,
             curve_fingerprint(&moved, &r.claims, &r.terms),
             "a moved last shift changes the print even at equal point count"
+        );
+
+        // Same point count, a MID-curve shift change (the hold-receipt
+        // blend case): the print moves - this is the correction the
+        // count+last print would have missed.
+        let mut mid = entries.clone();
+        mid[0].state.points[0].1 = -0.26;
+        assert_ne!(
+            before,
+            curve_fingerprint(&mid, &r.claims, &r.terms),
+            "a mid-curve correction must move the print"
         );
 
         // Re-running on unchanged entries is stable (deterministic print).
