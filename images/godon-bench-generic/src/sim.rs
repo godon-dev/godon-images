@@ -153,7 +153,15 @@ pub struct NodeState {
 
 impl NodeState {
     pub fn new(config: NodeConfig) -> Self {
-        let params = vec![config.param_lower; config.params];
+        // Boot at the range midpoint: a bench that wakes at param_lower
+        // sits at its dials' extreme, and the room's first measurement
+        // window banks that extreme as whoever probed first (found live
+        // Sep 29-30: the boot-zero ambient became a phantom -0.34 dip).
+        // The midpoint is the neutral the tenders park at, so the boot
+        // state and the park state agree - the first window measures a
+        // room at rest.
+        let midpoint = 0.5 * (config.param_lower + config.param_upper);
+        let params = vec![midpoint; config.params];
         let objectives = vec![0.0; config.objectives];
         Self {
             id: config.id.clone(),
@@ -732,6 +740,9 @@ mod tests {
         // (b's own base is 0: its param defaults to lower).
         // The stale-read bug returned 0.0 here.
         let mut sim = two_node_sim();
+        // b's own params pinned to lower (the pre-midpoint-boot default):
+        // the test targets the coupling arithmetic, not the boot state.
+        sim.apply("b", &[0.0]);
         sim.apply("a", &[100.0]);
         let b = sim.get_status("b").expect("node b exists");
         assert!((b[0] - 0.7).abs() < 1e-9, "b should read coupled 0.7, got {}", b[0]);
@@ -740,6 +751,7 @@ mod tests {
     #[test]
     fn reads_advance_coupling_when_sender_changes() {
         let mut sim = two_node_sim();
+        sim.apply("b", &[0.0]);
         sim.apply("a", &[100.0]);
         let first = sim.get_status("b").unwrap()[0];
         sim.apply("a", &[0.0]); // a.obj back to 0
@@ -783,6 +795,7 @@ mod tests {
         // channel state (own parked at lower): saturation(1.0) = 1/3.
         // Legacy post intake would deliver the incoming 1.0 untouched.
         let mut sim = door_saturation_sim();
+        sim.apply("b", &[0.0]); // own input pinned to lower: door test only
         sim.apply("a", &[100.0]);
         let b = sim.get_status("b").unwrap();
         assert!((b[0] - 1.0 / 3.0).abs() < 1e-9,
@@ -847,6 +860,8 @@ mod tests {
             "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
         });
         let mut sim = Simulator::from_config(serde_json::from_value(config).unwrap());
+        sim.apply("b", &[0.0]); // own inputs pinned to lower: chain test only
+        sim.apply("c", &[0.0]);
         sim.apply("a", &[80.0]);
         let c = sim.get_status("c").unwrap();
         let expected = 0.5 * 0.56 / 1.24;
