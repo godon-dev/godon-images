@@ -278,6 +278,13 @@ const RANK_MAGNITUDE_EMPTY: u8 = 2;
 const RANK_NOT_INVERTIBLE: u8 = 3;
 const RANK_TARGET_UNREACHABLE: u8 = 4;
 
+/// Holdability gate: a band must span at least this multiple of the
+/// reading's median error bar. 2.0 because a centered reading wobbles
+/// +/-1 sigma; a 2-sigma band is the narrowest a setting can plausibly
+/// keep (roughly 95% containment). Narrower is unkeepable by physics,
+/// not by steering - the door says so instead of letting it miss.
+const WANDER_GATE: f64 = 2.0;
+
 struct CandidateRefusal {
     rank: u8,
     reason: &'static str,
@@ -638,6 +645,33 @@ fn solve_claim(
         })
         .collect();
     candidates.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+
+    // wander floor: a band narrower than the reading's own wobble cannot
+    // be held by ANY setting - the reading would exit it for noise, not
+    // for steering (the 2+2 lesson: planned legal, missed by wander).
+    // The wobble is priced as the median error bar across the claim's
+    // measured points; the band must span at least WANDER_GATE x sigma
+    // (2 sigma ~ 95% containment for a centered setting).
+    let mut wander_bars: Vec<f64> = candidates
+        .iter()
+        .flat_map(|(_, _, pts)| pts.iter().map(|p| p.bar))
+        .collect();
+    if !wander_bars.is_empty() {
+        wander_bars.sort_by(f64::total_cmp);
+        let sigma = wander_bars[wander_bars.len() / 2].max(1e-12);
+        let width = band.hi - band.lo;
+        if width < WANDER_GATE * sigma {
+            return Err(PlanDecision::Refused {
+                reason: "wander_floor".to_string(),
+                detail: named(format!(
+                    "band [{:.4}, {:.4}] spans {:.4} - under the wander floor {:.4} \
+                     (2x median bar {:.4} over {} measured point(s)): no setting can \
+                     hold a band narrower than the reading's own noise; widen the band",
+                    band.lo, band.hi, width, WANDER_GATE * sigma, sigma, wander_bars.len()
+                )),
+            });
+        }
+    }
 
     let mut refusals: Vec<CandidateRefusal> = Vec::new();
     // (hops, predicted bar, sender, param, answer) - sort key, in order
@@ -1651,6 +1685,48 @@ mod tests {
                 hi,
                 target: Some(target),
             },
+        }
+    }
+
+    #[test]
+    fn band_below_wander_floor_refuses() {
+        // the 2+2 lesson as a gate: bars of 0.30 make the wander floor
+        // 0.60; a band spanning 0.40 is unholdable by ANY setting - the
+        // door names it instead of letting the wish miss for noise
+        let entries = vec![entry(
+            "a",
+            "R",
+            "p",
+            "objective_0",
+            &[(0.0, 0.0, 0.30), (100.0, 50.0, 0.30)],
+        )];
+        let r = req_claims(vec![claim("R", -0.2, 0.2, 0.0)], vec![], None);
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new()).unwrap() {
+            PlanDecision::Refused { reason, detail } => {
+                assert_eq!(reason, "wander_floor");
+                assert!(
+                    detail.contains("wander floor") && detail.contains("0.6"),
+                    "the refusal prices the floor: {detail}"
+                );
+            }
+            other => panic!("expected a wander_floor refusal, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn band_above_wander_floor_still_plans() {
+        // same wobble, honest width: the gate must not over-refuse
+        let entries = vec![entry(
+            "a",
+            "R",
+            "p",
+            "objective_0",
+            &[(0.0, 0.0, 0.30), (100.0, 50.0, 0.30)],
+        )];
+        let r = req_claims(vec![claim("R", -2.5, 2.5, 0.0)], vec![], None);
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new()).unwrap() {
+            PlanDecision::Planned { .. } => {}
+            other => panic!("expected a plan, got {:?}", other),
         }
     }
 
