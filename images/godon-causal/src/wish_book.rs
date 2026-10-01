@@ -68,19 +68,32 @@ pub async fn ensure_wish_tables(client: &tokio_postgres::Client) -> Result<(), E
             &[],
         )
         .await?;
-    client
-        .execute(
-            "CREATE TABLE IF NOT EXISTS outcome_anchors (\
-             group_id TEXT NOT NULL, \
-             receiver_id TEXT NOT NULL, \
-             channel TEXT NOT NULL, \
-             neutral DOUBLE PRECISION NOT NULL, \
-             bar DOUBLE PRECISION NOT NULL, \
-             updated_tsz DOUBLE PRECISION NOT NULL, \
-             PRIMARY KEY (group_id, receiver_id, channel))",
-            &[],
-        )
-        .await?;
+        client
+            .execute(
+                "CREATE TABLE IF NOT EXISTS outcome_anchors (\
+                 group_id TEXT NOT NULL, \
+                 receiver_id TEXT NOT NULL, \
+                 channel TEXT NOT NULL, \
+                 neutral DOUBLE PRECISION NOT NULL, \
+                 bar DOUBLE PRECISION NOT NULL, \
+                 updated_tsz DOUBLE PRECISION NOT NULL, \
+                 PRIMARY KEY (group_id, receiver_id, channel))",
+                &[],
+            )
+            .await?;
+        client
+            .execute(
+                "CREATE TABLE IF NOT EXISTS outcome_wander (\
+                 group_id TEXT NOT NULL, \
+                 receiver_id TEXT NOT NULL, \
+                 channel TEXT NOT NULL, \
+                 p95 DOUBLE PRECISION NOT NULL, \
+                 windows INTEGER NOT NULL, \
+                 updated_tsz DOUBLE PRECISION NOT NULL, \
+                 PRIMARY KEY (group_id, receiver_id, channel))",
+                &[],
+            )
+            .await?;
     Ok(())
 }
 
@@ -127,6 +140,80 @@ pub async fn read_outcome_anchor(
         )
         .await?;
     Ok(row.map(|r| (r.get(0), r.get(1))))
+}
+
+/// The derived wander floor's price, banked per outcome channel: the
+/// empirical P95 of |reading - median| over judged hold windows, kept as
+/// the median of the last WANDER_WINDOWS window prices. What the reading
+/// actually did at hold - no Gaussian, no multiplier, drift included.
+/// The wish door reads it to price the band's floor; below the price no
+/// setting can keep the band (the 2+2 lesson, tier 2).
+pub const WANDER_QUANTILE: f64 = 0.95;
+/// Windows banked per channel before the derived floor may bind; fewer
+/// windows keep the tier-1 bar floor (cold start falls back, never
+/// refuses on one lucky window).
+pub const WANDER_MIN_WINDOWS: usize = 4;
+/// Rolling window count per channel - long enough to survive a transient
+/// judge window, short enough to follow a regime change between holds.
+pub const WANDER_WINDOWS: usize = 32;
+
+/// One judged window's wander price: the P95 of |reading - median| over
+/// the window's raw series. None until JUDGE_MIN_READINGS readings exist
+/// (undecidable by scarcity, never by guesswork - reading_bar's rule).
+pub fn series_wander_p95(values: &[f64]) -> Option<f64> {
+    let n = values.len();
+    if n < JUDGE_MIN_READINGS {
+        return None;
+    }
+    let m = crate::trial_reader::median(values);
+    let mut devs: Vec<f64> = values.iter().map(|v| (v - m).abs()).collect();
+    devs.sort_by(f64::total_cmp);
+    // nearest-rank quantile: the smallest dev that covers WANDER_QUANTILE
+    let rank = ((WANDER_QUANTILE * n as f64).ceil() as usize).clamp(1, n);
+    Some(devs[rank - 1])
+}
+
+/// Upsert the derived wander price for an outcome channel. The judge
+/// banks one row per judged window that moved the rolling median.
+pub async fn bank_outcome_wander(
+    client: &tokio_postgres::Client,
+    group_id: &str,
+    receiver_id: &str,
+    channel: &str,
+    p95: f64,
+    windows: usize,
+) -> Result<(), Error> {
+    client
+        .execute(
+            "INSERT INTO outcome_wander (group_id, receiver_id, channel, p95, windows, updated_tsz) \
+             VALUES ($1, $2, $3, $4, $5, EXTRACT(EPOCH FROM now())) \
+             ON CONFLICT (group_id, receiver_id, channel) DO UPDATE SET \
+             p95 = EXCLUDED.p95, windows = EXCLUDED.windows, \
+             updated_tsz = EXTRACT(EPOCH FROM now())",
+            &[&group_id, &receiver_id, &channel, &p95, &(windows as i32)],
+        )
+        .await
+        .map(|_| ())
+}
+
+/// All banked wander prices — the boot recovery read, mirroring the
+/// anchors: (group, receiver, channel, p95, windows).
+pub async fn load_outcome_wander(
+    client: &tokio_postgres::Client,
+) -> Result<Vec<(String, String, String, f64, usize)>, Error> {
+    let rows = client
+        .query(
+            "SELECT group_id, receiver_id, channel, p95, windows FROM outcome_wander",
+            &[],
+        )
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let windows: i32 = r.get(4);
+            (r.get(0), r.get(1), r.get(2), r.get(3), windows.max(0) as usize)
+        })
+        .collect())
 }
 
 /// All banked anchors — the boot recovery read. One row per outcome
