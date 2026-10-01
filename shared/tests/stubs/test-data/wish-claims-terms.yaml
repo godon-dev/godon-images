@@ -1,0 +1,7 @@
+claims:
+  - outcome: chainend.shift
+    band:
+      lo: -0.14
+      hi: -0.06
+      target: -0.10
+terms: []

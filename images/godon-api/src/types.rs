@@ -133,8 +133,8 @@ pub struct SteerwishEvent {
 /// verbatim. The envelope (id, state, timestamps, events) is the front
 /// door's own concern - addressing and the book. The body is the
 /// controller's object (wish-shape freedom, 2026-09-21): whatever
-/// grammar the door validates - today outcome+band, later claims and
-/// terms - passes through unshaped, in both directions.
+/// grammar the door validates - today claims + terms - passes through
+/// unshaped, in both directions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Steerwish {
     pub id: String,

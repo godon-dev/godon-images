@@ -394,6 +394,76 @@ jobs:
           --hostname=godon-api-test --port=9090 --insecure \
           target show --id=00000000-0000-4000-8000-000000000000 || echo "✅ Non-existent target properly handled"
 
+    - name: Test steerwish operations with godon_cli container
+      run: |
+        echo "Testing steerwish operations via godon_cli container..."
+
+        # List steerwishes (should return stub data)
+        echo "Listing steerwishes:"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure wish list
+
+        # Declare a wish under the live grammar (claims + terms)
+        echo "Declaring claims+terms wish..."
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/test-data/wish-claims-terms.yaml:/wish-claims-terms.yaml:ro" \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          wish declare --file=/wish-claims-terms.yaml
+
+        # The retired N=1 shape must be refused (grammar lock)
+        echo "Testing retired N=1 sugar refusal (should fail):"
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/test-data/wish-n1-sugar.yaml:/wish-n1-sugar.yaml:ro" \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          wish declare --file=/wish-n1-sugar.yaml || echo "✅ Retired N=1 shape properly refused"
+
+        # Get a specific wish
+        echo "Testing get specific wish:"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          wish show --id=550e8400-e29b-41d4-a716-446655440000
+
+        # Holder correction (restated claims)
+        echo "Testing holder correction:"
+        docker run --rm --network godon-api-test_default \
+          -v "$(pwd)/test-data/wish-claims-terms.yaml:/wish-claims-terms.yaml:ro" \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          wish update --id=550e8400-e29b-41d4-a716-446655440000 --file=/wish-claims-terms.yaml
+
+        # Close the wish
+        echo "Testing close wish:"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          wish close --id=550e8400-e29b-41d4-a716-446655440000
+
+        # Purge the wish
+        echo "Testing delete wish:"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          wish delete --id=550e8400-e29b-41d4-a716-446655440000
+
+        # Error scenarios
+        echo "Testing error scenarios..."
+
+        echo "Testing invalid UUID handling (should fail):"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          wish show --id=invalid-uuid-format || echo "✅ Invalid UUID properly rejected"
+
+        echo "Testing non-existent wish (should fail):"
+        docker run --rm --network godon-api-test_default \
+          ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
+          --hostname=godon-api-test --port=9090 --insecure \
+          wish show --id=00000000-0000-4000-8000-000000000000 || echo "✅ Non-existent wish properly handled"
+
     - name: Adversarial API Tests
       run: |
         echo "🚨 Running adversarial API tests..."
