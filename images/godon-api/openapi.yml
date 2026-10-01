@@ -424,7 +424,13 @@ paths:
                   summary: Example list of steerwishes
                   value:
                     - id: "550e8400-e29b-41d4-a716-446655440000"
-                      outcome: "chainend.shift"
+                      claims:
+                        - outcome: "chainend.shift"
+                          band:
+                            lo: -0.14
+                            hi: -0.06
+                            target: -0.10
+                      terms: []
                       state: "declared"
                       createdAt: "2026-09-10T10:30:00Z"
         '500':
@@ -436,8 +442,10 @@ paths:
       operationId: declareSteerwish
       summary: Declare a new steerwish
       description: |
-        Declares a desired outcome: the named measured value is to be brought
-        into its band and held there. The declaration is a durable, withdrawable
+        Declares desired outcomes: the named claims are to be brought into
+        their bands and held there, with optional terms the wish must never
+        push out of band. One verdict: kept = every claim in band AND every
+        term honored. The declaration is a durable, withdrawable
         record - the safety device for everything that acts on it. Validation
         happens at the door; a malformed wish is rejected before any planning.
       requestBody:
@@ -451,11 +459,13 @@ paths:
               chainend:
                 summary: Hold the chain-end shift at -0.10
                 value:
-                  outcome: "chainend.shift"
-                  band:
-                    lo: -0.14
-                    hi: -0.06
-                    target: -0.10
+                  claims:
+                    - outcome: "chainend.shift"
+                      band:
+                        lo: -0.14
+                        hi: -0.06
+                        target: -0.10
+                  terms: []
                   limits:
                     exclude: []
                     maxChange: 0.5
@@ -473,11 +483,13 @@ paths:
                   summary: Newly declared steerwish
                   value:
                     id: "550e8400-e29b-41d4-a716-446655440000"
-                    outcome: "chainend.shift"
-                    band:
-                      lo: -0.14
-                      hi: -0.06
-                      target: -0.10
+                    claims:
+                      - outcome: "chainend.shift"
+                        band:
+                          lo: -0.14
+                          hi: -0.06
+                          target: -0.10
+                    terms: []
                     limits:
                       exclude: []
                       maxChange: 0.5
@@ -554,28 +566,30 @@ paths:
       operationId: updateSteerwish
       summary: Correct a steerwish (holder update)
       description: |
-        The holder corrects the wish: new terms on the same identity.
-        Stamps a 'corrected' event carrying the previous band and the
-        holder's reason, removes the stale assignment, and re-asks for
-        a plan through the door (plan, heartbeat check, plant). Works
-        on living and unheld wishes; closed ones refuse.
+        The holder corrects the wish: restated claims (and terms) on the
+        same identity. Stamps a 'corrected' event carrying the previous
+        band and the holder's reason, removes the stale assignment, and
+        re-asks for a plan through the door (plan, heartbeat check,
+        plant). Works on living and unheld wishes; closed ones refuse.
       parameters:
         - $ref: '#/components/parameters/SteerwishId'
       requestBody:
         required: true
-        description: The corrected terms, the holder's own
+        description: The restated wish, the holder's own
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/SteerwishUpdate'
             examples:
               reaim:
-                summary: Hold the same outcome at the new anchor
+                summary: Hold the same claim at the new anchor
                 value:
-                  band:
-                    lo: 0.47
-                    hi: 0.53
-                    target: 0.50
+                  claims:
+                    - outcome: "chainend.shift"
+                      band:
+                        lo: 0.47
+                        hi: 0.53
+                        target: 0.50
                   reason: "the world moved - the holder re-promises at the new anchor"
       responses:
         '200':
@@ -616,11 +630,13 @@ paths:
                   summary: Closed steerwish
                   value:
                     id: "550e8400-e29b-41d4-a716-446655440000"
-                    outcome: "chainend.shift"
-                    band:
-                      lo: -0.14
-                      hi: -0.06
-                      target: -0.10
+                    claims:
+                      - outcome: "chainend.shift"
+                        band:
+                          lo: -0.14
+                          hi: -0.06
+                          target: -0.10
+                    terms: []
                     state: "closed"
                     createdAt: "2026-09-10T10:30:00Z"
                     events:
@@ -1241,30 +1257,35 @@ components:
         The wish body, verbatim - the declarer's own. Wish-shape freedom
         (ruled 2026-09-19): this surface does not validate the grammar;
         the controller owns validation (the door). Today the grammar is
-        outcome + band (the chainend example below); richer grammars
-        (claims, terms) arrive through this same door without API changes.
+        claims + terms (N >= 1 claims, M >= 0 terms, one band each - the
+        chainend example below); richer grammars arrive through this
+        same door without API changes.
       example:
-        outcome: "chainend.shift"
-        band:
-          lo: -0.14
-          hi: -0.06
-          target: -0.10
+        claims:
+          - outcome: "chainend.shift"
+            band:
+              lo: -0.14
+              hi: -0.06
+              target: -0.10
+        terms: []
 
     SteerwishUpdate:
       type: object
       additionalProperties: true
       description: |
-        The corrected terms, verbatim - the holder's own. Wish-shape
+        The restated wish, verbatim - the holder's own. Wish-shape
         freedom applies here exactly as at declare: this surface does
         not validate the grammar; the controller owns validation (the
-        door). Today the correction carries the band (plus limits,
-        budget, reason); richer grammars arrive through this same door
+        door). Today the correction carries restated claims and terms
+        (plus a reason); richer grammars arrive through this same door
         without API changes.
       example:
-        band:
-          lo: 0.47
-          hi: 0.53
-          target: 0.50
+        claims:
+          - outcome: "chainend.shift"
+            band:
+              lo: 0.47
+              hi: 0.53
+              target: 0.50
         reason: "the world moved"
 
     SteerwishEvent:
@@ -1275,8 +1296,8 @@ components:
       properties:
         type:
           type: string
-          enum: [declared, planned, refused, acted, landed, missed, re_opened, closed]
-          description: Lifecycle event kind
+          enum: [declared, planned, refused, acted, landed, missed, re_opened, corrected, closed]
+          description: Lifecycle event kind (corrected is stamped by the holder-update endpoint)
           example: "declared"
         at:
           type: string
@@ -1295,8 +1316,8 @@ components:
         verbatim (wish-shape freedom, 2026-09-21). The envelope fields are
         the front door's concern - addressing and the book; the body is the
         controller's object, carried unshaped in both directions. Today the
-        body carries outcome + band (and optional limits/budget/regime);
-        richer grammars (claims, terms) arrive without API changes.
+        body carries claims + terms (and optional limits/budget/regime);
+        richer grammars arrive without API changes.
       required:
         - id
         - state
