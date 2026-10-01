@@ -189,7 +189,7 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "steerwish_list",
-                description: "List all declared steerwishes with their derived lifecycle state (declared, planned, refused, acted, landed, missed, re_opened, closed).",
+                description: "List all declared steerwishes with their derived lifecycle state (declared, planned, refused, acted, landed, missed, re_opened, corrected, closed).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -250,7 +250,7 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "steerwish_get",
-                description: "Get one steerwish with its full event history (declared, planned, refused, acted, landed, missed, re_opened, closed).",
+                description: "Get one steerwish with its full event history (declared, planned, refused, acted, landed, missed, re_opened, corrected, closed).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
