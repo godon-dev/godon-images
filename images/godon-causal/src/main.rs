@@ -48,6 +48,11 @@ struct AppState {
     /// Persisted in outcome_anchors with group kept as provenance,
     /// loaded at boot, refreshed by every probe's pause window.
     anchors: RwLock<HashMap<(String, String), (f64, f64)>>,
+    /// The derived wander floor's bank, tier 2: per (receiver, channel),
+    /// the rolling judged-window P95 prices of |reading - median|.
+    /// Consulted at plan time once WANDER_MIN_WINDOWS windows exist;
+    /// persisted in outcome_wander with boot restore, anchors idiom.
+    wander: RwLock<HashMap<(String, String), std::collections::VecDeque<f64>>>,
     /// One-shot guard: the wish book tables are ensured on the first
     /// SUCCESSFUL archive connection of the process. A boot that
     /// races ahead of the DB must not leave the book tableless
@@ -150,6 +155,7 @@ impl AppState {
             build_status: RwLock::new(BuildStatus::default()),
             curves: RwLock::new(probe_curves::CurveRegistry::new()),
             anchors: RwLock::new(HashMap::new()),
+            wander: RwLock::new(HashMap::new()),
             tables_ensured: std::sync::atomic::AtomicBool::new(false),
             walks_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         }
@@ -189,6 +195,49 @@ impl AppState {
             .await
             .get(&(receiver.to_string(), channel.to_string()))
             .copied()
+    }
+
+    /// Bank one judged window's wander price (tier 2): the rolling deque
+    /// per (receiver, channel), capped at WANDER_WINDOWS. Returns the
+    /// deque's median price and its length when enough windows exist -
+    /// the caller persists on change (bank_outcome_wander).
+    async fn bank_wander(
+        &self,
+        receiver: &str,
+        channel: &str,
+        window_p95: f64,
+    ) -> Option<(f64, usize)> {
+        let mut wander = self.wander.write().await;
+        let deque = wander
+            .entry((receiver.to_string(), channel.to_string()))
+            .or_default();
+        deque.push_back(window_p95);
+        while deque.len() > wish_book::WANDER_WINDOWS {
+            deque.pop_front();
+        }
+        if deque.len() < wish_book::WANDER_MIN_WINDOWS {
+            return None;
+        }
+        let mut sorted: Vec<f64> = deque.iter().copied().collect();
+        sorted.sort_by(f64::total_cmp);
+        Some((sorted[sorted.len() / 2], sorted.len()))
+    }
+
+    /// The door's consult map: per (receiver, channel), the median
+    /// wander price once WANDER_MIN_WINDOWS windows exist. Keys without
+    /// enough history stay absent - the planner falls back to the
+    /// tier-1 bar floor for them.
+    async fn wander_consult(&self) -> HashMap<(String, String), f64> {
+        let wander = self.wander.read().await;
+        let mut out = HashMap::new();
+        for (key, deque) in wander.iter() {
+            if deque.len() >= wish_book::WANDER_MIN_WINDOWS {
+                let mut sorted: Vec<f64> = deque.iter().copied().collect();
+                sorted.sort_by(f64::total_cmp);
+                out.insert(key.clone(), sorted[sorted.len() / 2]);
+            }
+        }
+        out
     }
 
     /// The map this engine currently serves (the default group).
@@ -747,7 +796,8 @@ async fn steer_plan(
         }
         m
     };
-    match planner::plan(&entries, graph.as_ref(), &req, anchor, &claim_anchors) {
+    let wander = state.wander_consult().await;
+    match planner::plan(&entries, graph.as_ref(), &req, anchor, &claim_anchors, &wander) {
         // door refusal: malformed request or unresolvable outcome
         Err(door) => Err((
             StatusCode::BAD_REQUEST,
@@ -1254,7 +1304,10 @@ async fn rewalk(
     // The re-plan, attempted on every fresh point: decidable when the
     // plan's predicted bars fit inside the band — the walk's only stop.
     if !journal.is_empty() {
-        match planner::plan(entries, graph, terms_req, Some(anchor), &HashMap::new()) {
+        // The re-walk replans with the tier-1 bar floor only: no state
+        // here to consult the bank, and a wish the door refused for
+        // wander never reached a hold to re-walk. Named in the PR.
+        match planner::plan(entries, graph, terms_req, Some(anchor), &HashMap::new(), &HashMap::new()) {
             Ok(planner::PlanDecision::Planned {
                 moves,
                 predicted_value,
@@ -1491,6 +1544,24 @@ async fn steer_plan_get(
             let m = trial_reader::median(series);
             let v = wish_book::band_verdict(m, bar, band.lo, band.hi, band.target);
             receipts.push((name.to_string(), receiver.clone(), channel.clone(), m, bar));
+            // The same window prices the derived wander floor (tier 2):
+            // what the reading actually did at hold, banked per channel
+            // and persisted when the rolling median moves.
+            if let Some(window_p95) = wish_book::series_wander_p95(series) {
+                if let Some((median_p95, windows)) =
+                    state.bank_wander(&receiver, &channel, window_p95).await
+                {
+                    let _ = wish_book::bank_outcome_wander(
+                        &client,
+                        connectome_store::DEFAULT_GROUP,
+                        &receiver,
+                        &channel,
+                        median_p95,
+                        windows,
+                    )
+                    .await;
+                }
+            }
             judged_lines.push(serde_json::json!({
                 "reading": name,
                 "kind": if *is_term { "term" } else { "claim" },
@@ -1796,7 +1867,8 @@ async fn steer_plan_get(
                     }
                     m
                 };
-                match planner::plan(&entries, graph.as_ref(), &terms_req, None, &claim_anchors)
+                let wander = state.wander_consult().await;
+                match planner::plan(&entries, graph.as_ref(), &terms_req, None, &claim_anchors, &wander)
                 {
                     Ok(planner::PlanDecision::Planned {
                         moves,
@@ -3069,6 +3141,25 @@ async fn main() {
                     info!("loaded {} banked outcome anchors", n);
                 }
                 Err(e) => log::error!("outcome anchor load failed: {}", e),
+            }
+            // Restart recovery for the derived wander floor (tier 2):
+            // seed each channel's deque with the persisted median price,
+            // repeated min(windows, cap) times - the bank re-sharpens as
+            // fresh judge windows arrive.
+            match wish_book::load_outcome_wander(&client).await {
+                Ok(rows) => {
+                    let n = rows.len();
+                    let mut wander = boot_state.wander.write().await;
+                    for (_group, receiver, channel, p95, windows) in rows {
+                        let mut deque = std::collections::VecDeque::new();
+                        for _ in 0..windows.min(wish_book::WANDER_WINDOWS) {
+                            deque.push_back(p95);
+                        }
+                        wander.insert((receiver, channel), deque);
+                    }
+                    info!("loaded {} banked outcome wander prices", n);
+                }
+                Err(e) => log::error!("outcome wander load failed: {}", e),
             }
         // Restart recovery: connectomes are durable per inference group.
         if let Err(e) = connectome_store::ensure_connectomes_table(&client).await {
