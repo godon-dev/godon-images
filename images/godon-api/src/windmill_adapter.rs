@@ -82,6 +82,21 @@ impl WindmillClient {
     }
 
     fn run_script(&self, script_name: &str, args: serde_json::Value) -> Result<serde_json::Value> {
+        self.run_script_with_timeout(script_name, args, Some(60))
+    }
+
+    /// Same synchronous run, with the caller's timeout policy. Some(secs)
+    /// makes the wmill SDK cancel the job when it expires; None defers to
+    /// the script's own configured timeout (component.yaml `timeout`, the
+    /// single source of truth). The delete passes None: its 60s quiesce
+    /// bound could never fit under the blanket Some(60) (10-02 receipts:
+    /// runs cancelled "reached timeout" at exactly 60s mid-quiesce).
+    fn run_script_with_timeout(
+        &self,
+        script_name: &str,
+        args: serde_json::Value,
+        timeout_secs: Option<u64>,
+    ) -> Result<serde_json::Value> {
         let script_path = self.script_path(script_name);
         let result = self.client
             .run_script_sync(
@@ -89,7 +104,7 @@ impl WindmillClient {
                 false,
                 args,
                 None,
-                Some(60),
+                timeout_secs,
                 true,
                 false,
             )
@@ -155,7 +170,7 @@ impl WindmillClient {
         }
         
         let args = json!({ "request_data": request_data });
-        self.run_script("systemtender_delete", args)?;
+        self.run_script_with_timeout("systemtender_delete", args, None)?;
         Ok(())
     }
 
