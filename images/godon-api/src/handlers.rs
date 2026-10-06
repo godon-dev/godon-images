@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::types::{
     Steerwish, SteerwishSummary, Systemtender, SystemtenderCreate,
     SystemtenderSummary, SystemtenderUpdate, Credential, CredentialCreate, DeleteResponse,
+    DeletedResponse,
     ErrorResponse, Target, TargetCreate,
 };
 use crate::windmill_adapter::WindmillClient;
@@ -186,7 +187,7 @@ pub async fn delete_systemtender(
     State(_config): State<Config>,
     Path(id): Path<String>,
     Query(params): Query<DeleteParams>,
-) -> Result<Json<DeleteResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<DeleteResponse>), (StatusCode, Json<ErrorResponse>)> {
     if !UUID_REGEX.is_match(&id) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -204,25 +205,40 @@ pub async fn delete_systemtender(
 
     let client = get_client()?;
     let id_clone = id.clone();
-    
-    tokio::task::spawn_blocking(move || {
-        client.delete_systemtender(&id_clone, force)
-            .map(|_| Json(DeleteResponse {
-                id: id_clone.clone(),
-                deleted: true,
-                force: Some(force),
-            }))
-            .map_err(|e| (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(
-                    format!("Failed to delete systemtender: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
+
+    // DELETE is a marker, not a wait (designs/2026-10-03): enqueue the
+    // deletion executor and answer 202 — the client never holds a
+    // connection through destruction. It polls GET until 404; the
+    // tender stays visible in "deleting" (or "deletion-failed" with
+    // its reason) until then.
+    let job_id = tokio::task::spawn_blocking(move || {
+        client.enqueue_systemtender_delete(&id_clone, force)
+    })
+    .await
+    .map_err(|e| (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
+        Json(ErrorResponse::new(
+            format!("Deletion enqueue task failed: {}", e),
+            "INTERNAL_SERVER_ERROR"
+        ))
     ))?
+    .map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse::new(
+            format!("Failed to enqueue systemtender deletion: {}", e),
+            "INTERNAL_SERVER_ERROR"
+        ))
+    ))?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(DeleteResponse {
+            id,
+            status: "deleting".to_string(),
+            job_id: job_id.to_string(),
+            force: Some(force),
+        }),
+    ))
 }
 
 pub async fn stop_systemtender(
@@ -423,7 +439,7 @@ pub async fn get_credential(
 pub async fn delete_credential(
     State(_config): State<Config>,
     Path(id): Path<String>,
-) -> Result<Json<DeleteResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<DeletedResponse>, (StatusCode, Json<ErrorResponse>)> {
     if !UUID_REGEX.is_match(&id) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -440,10 +456,9 @@ pub async fn delete_credential(
     
     tokio::task::spawn_blocking(move || {
         client.delete_credential(&id_clone)
-            .map(|_| Json(DeleteResponse {
+            .map(|_| Json(DeletedResponse {
                 id: id_clone.clone(),
                 deleted: true,
-                force: None,
             }))
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -590,7 +605,7 @@ pub async fn get_target(
 pub async fn delete_target(
     State(_config): State<Config>,
     Path(id): Path<String>,
-) -> Result<Json<DeleteResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<DeletedResponse>, (StatusCode, Json<ErrorResponse>)> {
     if !UUID_REGEX.is_match(&id) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -607,10 +622,9 @@ pub async fn delete_target(
 
     tokio::task::spawn_blocking(move || {
         client.delete_target(&id_clone)
-            .map(|_| Json(DeleteResponse {
+            .map(|_| Json(DeletedResponse {
                 id: id_clone.clone(),
                 deleted: true,
-                force: None,
             }))
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,

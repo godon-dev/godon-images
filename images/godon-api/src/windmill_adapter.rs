@@ -88,9 +88,7 @@ impl WindmillClient {
     /// Same synchronous run, with the caller's timeout policy. Some(secs)
     /// makes the wmill SDK cancel the job when it expires; None defers to
     /// the script's own configured timeout (component.yaml `timeout`, the
-    /// single source of truth). The delete passes None: its 60s quiesce
-    /// bound could never fit under the blanket Some(60) (10-02 receipts:
-    /// runs cancelled "reached timeout" at exactly 60s mid-quiesce).
+    /// single source of truth).
     fn run_script_with_timeout(
         &self,
         script_name: &str,
@@ -163,15 +161,27 @@ impl WindmillClient {
         Ok(systemtender)
     }
 
-    pub fn delete_systemtender(&self, systemtender_id: &str, force: bool) -> Result<()> {
+    /// DELETE is a marker, not a wait (designs/2026-10-03): enqueue the
+    /// deletion executor and return its windmill job id. The client
+    /// polls GET until 404. Inside the executor: one cancel (windmill
+    /// enforces SIGTERM(5s)->SIGKILL, ~8s bounded), a 30s quiesce
+    /// bound, the archive drop only after confirmed death, and the
+    /// registry row removed last.
+    pub fn enqueue_systemtender_delete(
+        &self,
+        systemtender_id: &str,
+        force: bool,
+    ) -> Result<uuid::Uuid> {
         let mut request_data = json!({ "systemtender_id": systemtender_id });
         if force {
             request_data["force"] = json!(force);
         }
-        
+
         let args = json!({ "request_data": request_data });
-        self.run_script_with_timeout("systemtender_delete", args, None)?;
-        Ok(())
+        let script_path = self.script_path("systemtender_delete");
+        self.client
+            .run_script_async(&script_path, false, args, None)
+            .context(format!("Failed to enqueue Windmill script: {}", script_path))
     }
 
     pub fn stop_systemtender(&self, systemtender_id: &str) -> Result<serde_json::Value> {
