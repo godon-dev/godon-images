@@ -94,9 +94,19 @@ pub struct ErrorResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteResponse {
     pub id: String,
-    pub deleted: bool,
+    pub status: String,
+    pub job_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub force: Option<bool>,
+}
+
+/// Synchronous deletes (credentials, targets): fast row operations that
+/// finish within the call. Distinct from DeleteResponse, which is the
+/// systemtender deletion MARKER (202 + job id, destruction behind it).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletedResponse {
+    pub id: String,
+    pub deleted: bool,
 }
 
 impl ErrorResponse {
