@@ -383,11 +383,16 @@ impl WindmillClient {
             .context("Failed to parse corrected steerwish")
     }
 
-    pub fn delete_steerwish(&self, wish_id: &str) -> Result<serde_json::Value> {
+    /// DELETE is a marker, not a wait (designs/2026-10-03, lifted to
+    /// wishes): enqueue the deletion executor and return its windmill
+    /// job id. The client polls GET until 404. Inside the executor:
+    /// close first (idempotent on already-closed), causal trouble
+    /// flags deletion-failed, registry rows removed last.
+    pub fn enqueue_steerwish_delete(&self, wish_id: &str) -> Result<uuid::Uuid> {
         let args = json!({ "request_data": { "wish_id": wish_id } });
-        let response = self.run_script("steerwish_delete", args)?;
-        let data = Self::unwrap_data(response);
-
-        Ok(data)
+        let script_path = self.script_path("steerwish_delete");
+        self.client
+            .run_script_async(&script_path, false, args, None)
+            .context(format!("Failed to enqueue Windmill script: {}", script_path))
     }
 }

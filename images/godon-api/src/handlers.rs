@@ -776,7 +776,7 @@ pub async fn update_steerwish(
 pub async fn delete_steerwish(
     State(_config): State<Config>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<DeleteResponse>), (StatusCode, Json<ErrorResponse>)> {
     if !UUID_REGEX.is_match(&id) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -789,24 +789,41 @@ pub async fn delete_steerwish(
     }
 
     let client = get_client()?;
+    let id_clone = id.clone();
 
-    tokio::task::spawn_blocking(move || {
-        client.delete_steerwish(&id)
-            .map(Json)
-            .map_err(|e| {
-                let not_found = format!("{}", e).to_lowercase().contains("not found");
-                (
-                    if not_found { StatusCode::NOT_FOUND } else { StatusCode::INTERNAL_SERVER_ERROR },
-                    Json(ErrorResponse::new(
-                        format!("Failed to delete steerwish: {}", e),
-                        if not_found { "NOT_FOUND" } else { "INTERNAL_SERVER_ERROR" }
-                    ))
-                )
-            })
-    }).await.map_err(|e| (
+    // DELETE is a marker, not a wait (designs/2026-10-03, lifted to
+    // wishes): enqueue the deletion executor, answer 202 — the client
+    // never holds a connection through destruction. It polls GET
+    // until 404; the wish stays visible in "deleting" (or
+    // "deletion-failed" with its reason) until then.
+    let job_id = tokio::task::spawn_blocking(move || {
+        client.enqueue_steerwish_delete(&id_clone)
+    })
+    .await
+    .map_err(|e| (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
+        Json(ErrorResponse::new(
+            format!("Purge enqueue task failed: {}", e),
+            "INTERNAL_SERVER_ERROR"
+        ))
     ))?
+    .map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse::new(
+            format!("Failed to enqueue steerwish purge: {}", e),
+            "INTERNAL_SERVER_ERROR"
+        ))
+    ))?;
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(DeleteResponse {
+            id,
+            status: "deleting".to_string(),
+            job_id: job_id.to_string(),
+            force: None,
+        }),
+    ))
 }
 
 pub async fn close_steerwish(
