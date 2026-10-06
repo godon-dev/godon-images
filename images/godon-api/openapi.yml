@@ -236,54 +236,66 @@ paths:
       tags:
         - systemtenders
       operationId: deleteSystemtender
-      summary: Delete a systemtender
+      summary: Delete a systemtender (async marker)
       description: |
-        Permanently removes a systemtender and its configuration.
+        Marks a systemtender for deletion and returns immediately (202).
+        Destruction runs behind the marker: windmill enforces worker
+        death (SIGTERM, 5s grace, then SIGKILL — bounded at ~8s), the
+        archive database is dropped only after confirmed worker death,
+        and the registry row is the finalizer, removed last.
 
-        **Default behavior (safe):** Requires workers to be gracefully stopped first.
-        Call `stop_systemtender()` to request graceful shutdown, then delete.
-
-        **Force deletion:** Use `force=true` to cancel workers immediately.
-        Use for automated cleanup or when worker state is not important.
+        The client polls GET /systemtenders/{uuid} until 404. While
+        destruction runs the tender stays visible with status
+        "deleting"; if the executor could not finish it shows status
+        "deletion-failed" with the reason. DELETE is idempotent:
+        re-calling it mid-deletion answers the visible state, and it
+        doubles as the retry path for deletion-failed tenders.
       parameters:
         - name: force
           in: query
           description: |
-            Cancel workers immediately instead of requiring graceful stop.
-            Default is false (safe).
+            Legacy flag, accepted and ignored: cancellation is always
+            immediate under the async deletion contract.
           required: false
           schema:
             type: boolean
             default: false
           example: true
       responses:
-        '200':
-          description: Successfully deleted the systemtender
+        '202':
+          description: Deletion accepted; destruction runs behind the marker
           content:
             application/json:
               schema:
                 type: object
                 required:
                   - id
-                  - deleted
+                  - status
+                  - job_id
                 properties:
                   id:
                     type: string
                     format: uuid
-                    description: The ID of the deleted systemtender
-                  deleted:
+                    description: The ID of the systemtender being deleted
+                  status:
+                    type: string
+                    description: The deletion marker; "deleting" at acceptance time
+                  job_id:
+                    type: string
+                    format: uuid
+                    description: Windmill job id of the deletion executor
+                  force:
                     type: boolean
-                    description: Confirmation that the systemtender was deleted
+                    description: Echo of the legacy force parameter
               examples:
-                deleted:
-                  summary: Deletion confirmation
+                accepted:
+                  summary: Deletion accepted
                   value:
                     id: "550e8400-e29b-41d4-a716-446655440000"
-                    deleted: true
+                    status: "deleting"
+                    job_id: "018f6d2a-7c33-7f2e-9e1a-2b4c6d8e0f12"
         '400':
           $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalServerError'
 
