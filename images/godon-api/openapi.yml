@@ -544,30 +544,55 @@ paths:
       tags:
         - steerwishes
       operationId: deleteSteerwish
-      summary: Purge a steerwish
+      summary: Purge a steerwish (async marker)
       description: |
-        Administrative purge, the holder's act: closes first (unassign +
-        dial revert), then removes the registry rows (events cascade) and
-        the book's card. Forgetting, not stopping.
+        Marks a steerwish for purge and returns immediately (202).
+        Destruction runs behind the marker: the executor closes first
+        (unassign + dial revert — idempotent on already-closed wishes),
+        then removes the registry rows (events cascade) last. The book
+        page is purged by causal's own paired delete path.
+
+        The client polls GET /steerwishes/{wish_id} until 404. While
+        the purge runs the wish is visible with state "deleting"; if
+        the executor could not finish (causal unreachable) it shows
+        "deletion-failed" with the reason. DELETE is idempotent:
+        re-calling it mid-purge answers the visible state, and it
+        doubles as the retry path for deletion-failed wishes.
+        Forgetting, not stopping.
       parameters:
         - $ref: '#/components/parameters/SteerwishId'
       responses:
-        '200':
-          description: Successfully purged the steerwish
+        '202':
+          description: Purge accepted; destruction runs behind the marker
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - id
+                  - status
+                  - job_id
                 properties:
-                  deleted:
+                  id:
                     type: string
                     format: uuid
-                  state_at_purge:
+                    description: The ID of the steerwish being purged
+                  status:
                     type: string
+                    description: The deletion marker; "deleting" at acceptance time
+                  job_id:
+                    type: string
+                    format: uuid
+                    description: Windmill job id of the deletion executor
+              examples:
+                accepted:
+                  summary: Purge accepted
+                  value:
+                    id: "550e8400-e29b-41d4-a716-446655440000"
+                    status: "deleting"
+                    job_id: "018f6d2a-7c33-7f2e-9e1a-2b4c6d8e0f12"
         '400':
           $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalServerError'
 
