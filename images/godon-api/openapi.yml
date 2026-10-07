@@ -1240,9 +1240,22 @@ components:
           example: "genetic-optimizer-1"
         status:
           type: string
-          enum: [active, paused, stopped, error]
-          description: Current operational status of the systemtender
+          enum: [active, paused, stopped, error, deleting, deletion-failed]
+          description: >
+            Current operational status of the systemtender. The deletion
+            state machine surfaces "deleting" while the marker stands and
+            "deletion-failed" when the executor could not finish (the
+            re-DELETE retry path); liveness-derived states (running,
+            finished, presumed_dead) are also possible.
           example: "active"
+        deletion_reason:
+          type: string
+          nullable: true
+          readOnly: true
+          description: >
+            Reason the last deletion attempt failed. Present only while
+            status is deletion-failed; re-DELETE is the retry.
+          example: "worker job(s) not terminal within 30s - windmill wedged, nothing dropped: <job-id>"
         createdAt:
           type: string
           format: date-time
