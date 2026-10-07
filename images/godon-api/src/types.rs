@@ -17,6 +17,13 @@ pub struct Systemtender {
     #[serde(rename = "createdAt")]
     pub created_at: String,
     pub config: serde_json::Value,
+    /// Reason the last deletion attempt failed; present only while
+    /// status is deletion-failed (the re-DELETE retry path). The
+    /// controller's GET has always computed it - the struct dropped it
+    /// at deserialize (live receipt 10-07: deletion-failed rows visible
+    /// but their reason unreachable through the API).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deletion_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
