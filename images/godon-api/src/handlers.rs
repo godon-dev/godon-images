@@ -119,13 +119,16 @@ pub async fn get_systemtender(
     tokio::task::spawn_blocking(move || {
         client.get_systemtender(&id)
             .map(Json)
-            .map_err(|e| (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(
-                    format!("Failed to retrieve systemtender: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
+            .map_err(|e| {
+                let not_found = format!("{}", e).to_lowercase().contains("not found");
+                (
+                    if not_found { StatusCode::NOT_FOUND } else { StatusCode::INTERNAL_SERVER_ERROR },
+                    Json(ErrorResponse::new(
+                        format!("Failed to retrieve systemtender: {}", e),
+                        if not_found { "NOT_FOUND" } else { "INTERNAL_SERVER_ERROR" }
+                    ))
+                )
+            })
     }).await.map_err(|e| (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
