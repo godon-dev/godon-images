@@ -137,13 +137,22 @@ impl WindmillClient {
         }
     }
 
-    pub fn create_systemtender(&self, systemtender_config: serde_json::Value) -> Result<SystemtenderSummary> {
+    /// The create contract's fast half (designs/2026-10-10): the
+    /// controller plants the row in `creating`, dispatches the
+    /// executor and returns at once — the seconds-long archive work
+    /// never rides this connection. `duplicate: true` marks a name
+    /// clash (the API answers 409 + the existing row).
+    pub fn create_systemtender(&self, systemtender_config: serde_json::Value) -> Result<(SystemtenderSummary, bool)> {
         let args = json!({ "request_data": systemtender_config });
         let response = self.run_script("systemtender_create", args)?;
+        let duplicate = response.get("duplicate")
+            .and_then(|d| d.as_bool())
+            .unwrap_or(false);
         let data = Self::unwrap_data(response);
-        
-        serde_json::from_value(data)
-            .context("Failed to parse created systemtender")
+
+        let summary: SystemtenderSummary = serde_json::from_value(data)
+            .context("Failed to parse created systemtender")?;
+        Ok((summary, duplicate))
     }
 
     pub fn get_systemtender(&self, systemtender_id: &str) -> Result<Systemtender> {

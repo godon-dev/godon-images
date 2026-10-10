@@ -72,31 +72,148 @@ pub async fn list_systemtenders(
     ))?
 }
 
+#[derive(Debug, Deserialize)]
+pub struct CreateParams {
+    #[serde(default)]
+    wait: Option<String>,
+    #[serde(default)]
+    timeout: Option<u64>,
+}
+
+/// The create wait polls while the row reads `creating`; any other
+/// state is terminal-for-create (designs/2026-10-10): active/running/
+/// finished/... mean the executor landed, create-failed means it
+/// failed — the verdict rides the state, never the HTTP status.
+fn still_creating(status: &str) -> bool {
+    status == "creating"
+}
+
+/// Server-side wait bound: the caller's N clamped to [1, 120], default
+/// 60. Client budget rule (designs/2026-10-10): the CLI bundles N+30,
+/// so the server bound always expires first — a timeout answers the
+/// row AS-IS, never an error.
+fn clamp_create_wait_timeout(timeout: Option<u64>) -> u64 {
+    timeout.unwrap_or(60).min(120).max(1)
+}
+
+/// Poll cadence of the sync create wait.
+const CREATE_WAIT_POLL_SECS: u64 = 1;
+
 pub async fn create_systemtender(
     State(_config): State<Config>,
+    Query(params): Query<CreateParams>,
     Json(payload): Json<SystemtenderCreate>,
-) -> Result<(StatusCode, Json<SystemtenderSummary>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<ErrorResponse>)> {
     let client = get_client()?;
-    
+
     let systemtender_config = json!({
         "name": payload.name,
         "config": payload.config
     });
-    
-    tokio::task::spawn_blocking(move || {
+
+    // Async by default (designs/2026-10-10): the controller plants the
+    // row in `creating`, dispatches the executor and answers at once —
+    // the seconds-long archive work never rides this connection. A
+    // name clash answers 409 + the existing row.
+    let (summary, duplicate) = tokio::task::spawn_blocking(move || {
         client.create_systemtender(systemtender_config)
-            .map(|b| (StatusCode::CREATED, Json(b)))
-            .map_err(|e| (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(
-                    format!("Failed to create systemtender: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
+    })
+    .await
+    .map_err(|e| (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
     ))?
+    .map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse::new(
+            format!("Failed to create systemtender: {}", e),
+            "INTERNAL_SERVER_ERROR"
+        ))
+    ))?;
+
+    if duplicate {
+        let body = serde_json::to_value(&summary).map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(format!("Serialization error: {}", e), "INTERNAL_SERVER_ERROR"))
+        ))?;
+        return Ok((StatusCode::CONFLICT, Json(body)));
+    }
+
+    // Sync option: ?wait=active&timeout=N — a view over the read path,
+    // owning nothing. Poll until terminal-for-create or the server
+    // bound; a timeout answers 200 + the row AS-IS.
+    if params.wait.as_deref() == Some("active") {
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(clamp_create_wait_timeout(params.timeout));
+        let id = summary.id.clone();
+
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(CREATE_WAIT_POLL_SECS)).await;
+
+            let poll_client = get_client()?;
+            let poll_id = id.clone();
+            let row = tokio::task::spawn_blocking(move || {
+                poll_client.get_systemtender(&poll_id)
+            })
+            .await
+            .map_err(|e| (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
+            ))?
+            .map_err(|e| {
+                let not_found = format!("{}", e).to_lowercase().contains("not found");
+                (
+                    if not_found { StatusCode::NOT_FOUND } else { StatusCode::INTERNAL_SERVER_ERROR },
+                    Json(ErrorResponse::new(
+                        format!("Failed to retrieve systemtender: {}", e),
+                        if not_found { "NOT_FOUND" } else { "INTERNAL_SERVER_ERROR" }
+                    ))
+                )
+            })?;
+
+            if !still_creating(&row.status) {
+                let body = serde_json::to_value(&row).map_err(|e| (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(format!("Serialization error: {}", e), "INTERNAL_SERVER_ERROR"))
+                ))?;
+                return Ok((StatusCode::OK, Json(body)));
+            }
+        }
+
+        // Timeout: the row AS-IS (still `creating`) — the aborted wait
+        // owns nothing; the executor keeps running.
+        let final_client = get_client()?;
+        let final_id = id.clone();
+        let row = tokio::task::spawn_blocking(move || {
+            final_client.get_systemtender(&final_id)
+        })
+        .await
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
+        ))?
+        .map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Failed to retrieve systemtender: {}", e),
+                "INTERNAL_SERVER_ERROR"
+            ))
+        ))?;
+        let body = serde_json::to_value(&row).map_err(|e| (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(format!("Serialization error: {}", e), "INTERNAL_SERVER_ERROR"))
+        ))?;
+        return Ok((StatusCode::OK, Json(body)));
+    }
+
+    let body = serde_json::to_value(&summary).map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse::new(format!("Serialization error: {}", e), "INTERNAL_SERVER_ERROR"))
+    ))?;
+    Ok((StatusCode::ACCEPTED, Json(body)))
 }
 
 pub async fn get_systemtender(
@@ -979,4 +1096,38 @@ pub async fn connectome_causes(
     }
     let client = get_causal_client()?;
     causal_relay(move || client.get(&format!("/causes/{}", systemtender_id))).await
+}
+
+#[cfg(test)]
+mod create_wait_tests {
+    use super::{still_creating, clamp_create_wait_timeout};
+
+    #[test]
+    fn polls_only_while_creating() {
+        // terminal-for-create: every live verdict (active first — the
+        // post-create window before the first heartbeat), and the
+        // failure verdict, which the state carries
+        assert!(still_creating("creating"));
+        for done in ["active", "running", "finished", "presumed_dead", "create-failed"] {
+            assert!(!still_creating(done), "{} is terminal-for-create", done);
+        }
+    }
+
+    #[test]
+    fn timeout_defaults_to_60() {
+        assert_eq!(clamp_create_wait_timeout(None), 60);
+    }
+
+    #[test]
+    fn timeout_caps_at_120() {
+        assert_eq!(clamp_create_wait_timeout(Some(300)), 120);
+        assert_eq!(clamp_create_wait_timeout(Some(120)), 120);
+        assert_eq!(clamp_create_wait_timeout(Some(121)), 120);
+    }
+
+    #[test]
+    fn timeout_floors_at_1() {
+        assert_eq!(clamp_create_wait_timeout(Some(0)), 1);
+        assert_eq!(clamp_create_wait_timeout(Some(45)), 45);
+    }
 }
