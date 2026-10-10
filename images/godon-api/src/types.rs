@@ -24,6 +24,12 @@ pub struct Systemtender {
     /// but their reason unreachable through the API).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deletion_reason: Option<String>,
+    /// Reason the create executor failed; present only while status is
+    /// create-failed (designs/2026-10-10). Mirrors deletion_reason on
+    /// the creation axis - the state carries the verdict, the HTTP
+    /// status never does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

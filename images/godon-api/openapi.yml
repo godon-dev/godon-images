@@ -82,8 +82,43 @@ paths:
       tags:
         - systemtenders
       operationId: createSystemtender
-      summary: Create a new systemtender
-      description: Creates a new optimizer systemtender with the provided configuration
+      summary: Create a new systemtender (async by default)
+      description: >
+        Creates a systemtender: the row is planted in status `creating`,
+        the create executor is dispatched as its own job, and the row is
+        returned at once — the seconds-long archive work never rides the
+        caller's connection (designs 2026-10-10). Poll GET
+        /systemtenders/{uuid} until status is active (or any live
+        verdict) or create-failed (with creation_reason). The caller's
+        wait owns nothing: an aborted poll changes nothing.
+
+        Sync option: ?wait=active&timeout=N (N capped at 120, default
+        60). The server polls the read path ~1s until the row is
+        terminal-for-create or the bound expires; a timeout answers 200
+        with the row AS-IS (still `creating`), never an error. Client
+        budget rule: the client's own timeout should exceed N (the CLI
+        bundles N+30).
+
+        A duplicate name — including a tender still `creating` or one
+        that `create-failed` — answers 409 with the existing row body
+        and its state.
+      parameters:
+        - name: wait
+          in: query
+          required: false
+          description: Set to "active" to wait server-side until the row is terminal-for-create.
+          schema:
+            type: string
+            enum: ["active"]
+        - name: timeout
+          in: query
+          required: false
+          description: Server-side wait bound in seconds (capped at 120, default 60).
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+            maximum: 120
       requestBody:
         required: true
         description: Systemtender configuration details
@@ -97,24 +132,60 @@ paths:
                 value:
                   name: "genetic-optimizer-1"
       responses:
-        '201':
-          description: Successfully created the systemtender
+        '202':
+          description: >
+            Create accepted (async default): the row in `creating`, the
+            executor dispatched. Poll GET for the verdict.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/SystemtenderSummary'
               examples:
-                created:
-                  summary: Newly created systemtender
+                accepted:
+                  summary: Row planted in creating
+                  value:
+                    id: "550e8400-e29b-41d4-a716-446655440000"
+                    name: "genetic-optimizer-1"
+                    status: "creating"
+                    createdAt: "2024-01-15T10:30:00Z"
+        '200':
+          description: >
+            Wait mode (?wait=active): the row terminal-for-create
+            (active/create-failed/...), or — on timeout — the row AS-IS
+            (still `creating`); the executor keeps running either way.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Systemtender'
+              examples:
+                active:
+                  summary: Create landed, row live
                   value:
                     id: "550e8400-e29b-41d4-a716-446655440000"
                     name: "genetic-optimizer-1"
                     status: "active"
                     createdAt: "2024-01-15T10:30:00Z"
+                    config: {}
+                create-failed:
+                  summary: Executor failed; reason on the row
+                  value:
+                    id: "550e8400-e29b-41d4-a716-446655440000"
+                    name: "genetic-optimizer-1"
+                    status: "create-failed"
+                    creation_reason: "Preflight validation failed: unknown parameter"
+                    createdAt: "2024-01-15T10:30:00Z"
+                    config: {}
         '400':
           $ref: '#/components/responses/BadRequest'
         '409':
-          $ref: '#/components/responses/Conflict'
+          description: >
+            A systemtender with this name already exists (any state,
+            including `creating` and `create-failed`) — the existing
+            row body is returned; no second create is dispatched.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemtenderSummary'
         '500':
           $ref: '#/components/responses/InternalServerError'
 
@@ -1199,9 +1270,32 @@ components:
           example: "genetic-optimizer-1"
         status:
           type: string
-          enum: [active, paused, stopped, error]
-          description: Current operational status of the systemtender
+          enum: [active, paused, stopped, error, deleting, deletion-failed, creating, create-failed]
+          description: >
+            Current operational status of the systemtender. Lifecycle
+            state machines override the liveness verdict while their
+            marker stands: deleting/deletion-failed (deletion axis,
+            designs 2026-10-03) and creating/create-failed (creation
+            axis, designs 2026-10-10); liveness-derived states (running,
+            finished, presumed_dead) are also possible.
           example: "active"
+        deletion_reason:
+          type: string
+          nullable: true
+          readOnly: true
+          description: >
+            Reason the last deletion attempt failed. Present only while
+            status is deletion-failed; re-DELETE is the retry.
+          example: "worker job(s) not terminal within 30s - windmill wedged, nothing dropped: <job-id>"
+        creation_reason:
+          type: string
+          nullable: true
+          readOnly: true
+          description: >
+            Reason the create executor failed. Present only while status
+            is create-failed; DELETE clears the failed row, then retry
+            create. Mirrors deletion_reason on the creation axis.
+          example: "Failed to launch 1 worker(s): worker refused"
         createdAt:
           type: string
           format: date-time
@@ -1240,13 +1334,16 @@ components:
           example: "genetic-optimizer-1"
         status:
           type: string
-          enum: [active, paused, stopped, error, deleting, deletion-failed]
+          enum: [active, paused, stopped, error, deleting, deletion-failed, creating, create-failed]
           description: >
             Current operational status of the systemtender. The deletion
             state machine surfaces "deleting" while the marker stands and
             "deletion-failed" when the executor could not finish (the
-            re-DELETE retry path); liveness-derived states (running,
-            finished, presumed_dead) are also possible.
+            re-DELETE retry path); the create state machine surfaces
+            "creating" while the create executor runs and "create-failed"
+            when it could not finish (see creation_reason; DELETE is the
+            cleanup path, then retry create); liveness-derived states
+            (running, finished, presumed_dead) are also possible.
           example: "active"
         deletion_reason:
           type: string
@@ -1256,6 +1353,15 @@ components:
             Reason the last deletion attempt failed. Present only while
             status is deletion-failed; re-DELETE is the retry.
           example: "worker job(s) not terminal within 30s - windmill wedged, nothing dropped: <job-id>"
+        creation_reason:
+          type: string
+          nullable: true
+          readOnly: true
+          description: >
+            Reason the create executor failed. Present only while status
+            is create-failed; DELETE clears the failed row, then retry
+            create. Mirrors deletion_reason on the creation axis.
+          example: "Failed to launch 1 worker(s): worker refused"
         createdAt:
           type: string
           format: date-time
