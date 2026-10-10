@@ -162,17 +162,28 @@ pub async fn create_systemtender(
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-            ))?
-            .map_err(|e| {
-                let not_found = format!("{}", e).to_lowercase().contains("not found");
-                (
-                    if not_found { StatusCode::NOT_FOUND } else { StatusCode::INTERNAL_SERVER_ERROR },
-                    Json(ErrorResponse::new(
-                        format!("Failed to retrieve systemtender: {}", e),
-                        if not_found { "NOT_FOUND" } else { "INTERNAL_SERVER_ERROR" }
-                    ))
-                )
-            })?;
+            ))?;
+            // The wait is a view over the read path: a transient read
+            // error mid-wait (YB DDL-visibility during the executor's
+            // table-build, live receipt 10-10) is a blip, not a verdict
+            // — poll again. 404 stays terminal (the row is gone); the
+            // final read at the deadline surfaces persistent breakage.
+            let row = match row {
+                Ok(row) => row,
+                Err(e) => {
+                    let not_found = format!("{}", e).to_lowercase().contains("not found");
+                    if not_found {
+                        return Err((
+                            StatusCode::NOT_FOUND,
+                            Json(ErrorResponse::new(
+                                format!("Failed to retrieve systemtender: {}", e),
+                                "NOT_FOUND"
+                            ))
+                        ));
+                    }
+                    continue;
+                }
+            };
 
             if !still_creating(&row.status) {
                 let body = serde_json::to_value(&row).map_err(|e| (
