@@ -5,6 +5,7 @@ on:
     branches: [ main ]
     paths:
       - 'images/godon-causal/**'
+      - 'shared/ledger-reader/**'
       - 'build/**'
       - '.github/workflows/godon-causal-ci.yml'
   workflow_dispatch:

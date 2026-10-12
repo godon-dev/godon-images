@@ -348,7 +348,7 @@ execute_build() {
         -v "$(pwd):/output" \
         -e "VERSION=$VERSION" \
         -e "IMAGE_NAME=$IMAGE_NAME" \
-        -e "PROJECT_ROOT=$PROJECT_ROOT" \
+        -e "PROJECT_ROOT=/project-root" \
         -e "BUILD_CORES=$CORES" \
         -e "NIX_FILE=/source/$NIX_FILE" \
         -e "CI_ENV=false" \
