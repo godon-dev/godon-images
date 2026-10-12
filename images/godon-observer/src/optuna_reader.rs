@@ -16,7 +16,7 @@ pub struct StudyInfo {
 /// samplers died).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrialRecord {
-    pub number: i32,
+    pub number: i64,
     pub state: String,
     pub datetime_start: Option<String>,
     pub datetime_complete: Option<String>,
