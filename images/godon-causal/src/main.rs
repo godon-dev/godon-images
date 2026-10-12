@@ -8,6 +8,7 @@ mod otel;
 mod planner;
 mod probe_curves;
 mod query;
+mod seek_plan;
 mod steer;
 mod trial_reader;
 mod wish_book;
@@ -647,8 +648,21 @@ async fn causes(
 
 async fn steer_plan(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<planner::SteerPlanRequest>,
+    Json(raw): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    // The seek wish rides this same door (wire pinned 2026-10-12):
+    // species 'seek' carries its own grammar — validate, pick the
+    // serving tender, ask whether the map already reads the answer.
+    // Everything else is the claims/band grammar, parsed here.
+    if raw.get("species").and_then(|v| v.as_str()) == Some("seek") {
+        return steer_plan_seek(state, raw).await;
+    }
+    let req: planner::SteerPlanRequest = serde_json::from_value(raw).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("unreadable plan request: {e}") })),
+        )
+    })?;
     let entries = state.curves.read().await.snapshot();
     let group = req
         .group_id
@@ -1415,6 +1429,131 @@ async fn rewalk(
 /// runs the judge over fresh hold readings, and re-plans when fresh probe
 /// evidence has arrived since a miss. The call never triggers world-touching
 /// work — it only judges what already landed.
+/// POST /steer/plan, species 'seek' — the commissioned walk's door.
+/// Validate (mirroring the two doors before it), pick the one serving
+/// tender, and ask the one honest question: can the map read the
+/// answer already? A readable FIND-BEST refuses WITH the reading
+/// inside the refusal — the refusal is the answer. Anything else
+/// admits the seek and records it for the serving tender's pulse.
+async fn steer_plan_seek(
+    state: Arc<AppState>,
+    raw: serde_json::Value,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let wish_id = raw
+        .get("wish_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let body_raw = raw
+        .get("seek")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    let body = match seek_plan::validate(&body_raw) {
+        Ok(b) => b,
+        Err(reason) => {
+            info!("STEER /steer/plan (seek): refused at the door - {reason}");
+            if let (Some(w), Ok(client)) = (&wish_id, state.connect_archive_ensured().await) {
+                let _ = wish_book::record_wish(&client, w, &raw, None, "refused").await;
+                let _ = wish_book::append_wish_event(
+                    &client,
+                    w,
+                    "refused",
+                    Some(&serde_json::json!({ "reason": reason })),
+                )
+                .await;
+            }
+            return Ok(Json(serde_json::json!({
+                "status": "refused", "wish_id": wish_id,
+                "reason": "malformed_seek", "detail": reason,
+            })));
+        }
+    };
+
+    let entries = state.curves.read().await.snapshot();
+
+    let Some(sender) = seek_plan::serving_sender(&entries, &body) else {
+        let detail = "no single tender holds every region dial";
+        info!("STEER /steer/plan (seek): refused - {detail}");
+        if let (Some(w), Ok(client)) = (&wish_id, state.connect_archive_ensured().await) {
+            let _ = wish_book::record_wish(&client, w, &raw, None, "refused").await;
+            let _ = wish_book::append_wish_event(
+                &client,
+                w,
+                "refused",
+                Some(&serde_json::json!({ "reason": "region_not_held" })),
+            )
+            .await;
+        }
+        return Ok(Json(serde_json::json!({
+            "status": "refused", "wish_id": wish_id,
+            "reason": "region_not_held", "detail": detail,
+        })));
+    };
+
+    // The map-read: find_best with a resolvable outcome only. An
+    // unresolvable outcome admits the seek — the walk will learn what
+    // the map never measured.
+    let map_read = if body.species == seek_plan::FIND_BEST {
+        match &body.criterion {
+            Some((outcome, _)) => {
+                match planner::resolve_outcome(&entries, outcome) {
+                    Ok((receiver, channel)) => {
+                        seek_plan::read_off_map(&entries, &body, &receiver, &channel)
+                    }
+                    Err(_) => None,
+                }
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    if let Some(read) = map_read {
+        info!("STEER /steer/plan (seek): refused - the map reads it");
+        if let (Some(w), Ok(client)) = (&wish_id, state.connect_archive_ensured().await) {
+            let _ = wish_book::record_wish(&client, w, &raw, None, "refused").await;
+            let _ = wish_book::append_wish_event(
+                &client,
+                w,
+                "refused",
+                Some(&serde_json::json!({
+                    "reason": "map_reads_it", "detail": read,
+                })),
+            )
+            .await;
+        }
+        return Ok(Json(serde_json::json!({
+            "status": "refused", "wish_id": wish_id,
+            "reason": "map_reads_it", "detail": read,
+        })));
+    }
+
+    info!("STEER /steer/plan (seek): planned for tender {sender}");
+    let plan_json = serde_json::json!({
+        "species": "seek", "sender": sender, "seek": body_raw,
+    });
+    if let (Some(w), Ok(client)) = (&wish_id, state.connect_archive_ensured().await) {
+        let terms = serde_json::json!({
+            "species": "seek",
+            "group_id": raw.get("group_id").cloned()
+                .unwrap_or(serde_json::Value::Null),
+            "seek": body_raw,
+        });
+        let _ = wish_book::record_wish(&client, w, &terms, Some(&plan_json), "planned").await;
+        let _ = wish_book::append_wish_event(
+            &client,
+            w,
+            "planned",
+            Some(&serde_json::json!({ "sender": sender })),
+        )
+        .await;
+    }
+    Ok(Json(serde_json::json!({
+        "status": "planned", "wish_id": wish_id, "sender": sender,
+    })))
+}
+
 async fn steer_plan_get(
     State(state): State<Arc<AppState>>,
     Path(wish_id): Path<String>,
@@ -1437,6 +1576,31 @@ async fn steer_plan_get(
             Json(serde_json::json!({ "error": format!("unknown wish: {wish_id}") })),
         ));
     };
+
+    // The seek wish's page: its own grammar, served BEFORE the claims
+    // parse — a seek's terms are not a SteerPlanRequest. The worker's
+    // pulse reads this page; instruction stays 'seek' until the book
+    // releases the wish.
+    if row.terms.get("species").and_then(|v| v.as_str()) == Some("seek") {
+        let instruction = if row.status == "released" || row.status == "closed" {
+            "release"
+        } else {
+            "seek"
+        };
+        let body = row
+            .plan
+            .as_ref()
+            .and_then(|p| p.get("seek").cloned())
+            .or_else(|| row.terms.get("seek").cloned())
+            .unwrap_or(serde_json::Value::Null);
+        return Ok(Json(serde_json::json!({
+            "wish_id": wish_id,
+            "species": "seek",
+            "instruction": instruction,
+            "status": row.status,
+            "seek": body,
+        })));
+    }
 
     let entries = state.curves.read().await.snapshot();
     let group = row
@@ -3269,7 +3433,7 @@ mod tests {
     #[tokio::test]
     async fn test_steer_plan_planned_shape() {
         let state = seeded_plan_state().await;
-        let res = steer_plan(State(state), Json(plan_req("R", 25.0)))
+        let res = steer_plan(State(state), Json(serde_json::to_value(plan_req("R", 25.0)).unwrap()))
             .await
             .expect("planned is Ok");
         assert_eq!(res.0["status"], "planned");
@@ -3290,7 +3454,7 @@ mod tests {
     async fn test_steer_plan_refused_is_ok_json() {
         let state = seeded_plan_state().await;
         // target 75 lies outside the curve's shift range [0, 50]
-        let res = steer_plan(State(state), Json(plan_req("R", 75.0)))
+        let res = steer_plan(State(state), Json(serde_json::to_value(plan_req("R", 75.0)).unwrap()))
             .await
             .expect("a refusal is a legitimate answer, not an error");
         assert_eq!(res.0["status"], "refused");
@@ -3299,9 +3463,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_steer_plan_seek_admits_when_the_map_cannot_read() {
+        let state = seeded_plan_state().await;
+        // Two probes, one big jump — the curve is NOT settled and there
+        // is exactly one reaching dial: the single-dial read requires a
+        // settled curve, so marginal freshness admits the seek.
+        let payload = serde_json::json!({
+            "wish_id": "sw-test-1",
+            "species": "seek",
+            "seek": {
+                "species": "find_best",
+                "region": {"p": [0.0, 100.0, false]},
+                "criterion": {"outcome": "R/objective_0", "direction": "maximize"},
+                "budget": 50, "candidates": 2,
+            },
+        });
+        let res = steer_plan(State(state), Json(payload))
+            .await
+            .expect("seek plan is Ok");
+        assert_eq!(res.0["status"], "planned");
+        assert_eq!(res.0["sender"], "a");
+    }
+
+    #[tokio::test]
+    async fn test_steer_plan_seek_refuses_region_not_held() {
+        let state = seeded_plan_state().await;
+        let payload = serde_json::json!({
+            "species": "seek",
+            "seek": {
+                "species": "find_best",
+                "region": {"nobody_holds_this": [0.0, 10.0, false]},
+                "criterion": {"outcome": "R/objective_0", "direction": "maximize"},
+                "budget": 10, "candidates": 0,
+            },
+        });
+        let res = steer_plan(State(state), Json(payload))
+            .await
+            .expect("refusal is Ok json");
+        assert_eq!(res.0["status"], "refused");
+        assert_eq!(res.0["reason"], "region_not_held");
+    }
+
+    #[tokio::test]
+    async fn test_steer_plan_seek_refuses_impossible_at_the_door() {
+        let state = seeded_plan_state().await;
+        let payload = serde_json::json!({
+            "species": "seek",
+            "seek": {
+                "species": "find_best",
+                "region": {"p": [0.0, 100.0, false]},
+                "criterion": {"outcome": "R/objective_0", "direction": "maximize"},
+                "budget": 5, "candidates": 6,
+            },
+        });
+        let res = steer_plan(State(state), Json(payload))
+            .await
+            .expect("door refusal is Ok json");
+        assert_eq!(res.0["status"], "refused");
+        assert_eq!(res.0["reason"], "malformed_seek");
+        assert!(res.0["detail"].as_str().unwrap().contains("candidates_exceed_budget"));
+    }
+
+    #[tokio::test]
+    async fn test_steer_plan_seek_cover_now_never_reads_the_map() {
+        let state = seeded_plan_state().await;
+        let payload = serde_json::json!({
+            "species": "seek",
+            "seek": {
+                "species": "cover_now",
+                "region": {"p": [0.0, 100.0, false]},
+            },
+        });
+        let res = steer_plan(State(state), Json(payload))
+            .await
+            .expect("cover_now plans");
+        assert_eq!(res.0["status"], "planned");
+        assert_eq!(res.0["sender"], "a");
+    }
+
+    #[tokio::test]
     async fn test_steer_plan_unknown_outcome_is_400() {
         let state = seeded_plan_state().await;
-        let err = steer_plan(State(state), Json(plan_req("nowhere", 25.0)))
+        let err = steer_plan(State(state), Json(serde_json::to_value(plan_req("nowhere", 25.0)).unwrap()))
             .await
             .expect_err("unknown outcome must be a door refusal");
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
