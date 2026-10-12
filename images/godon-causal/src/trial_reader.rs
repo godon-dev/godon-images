@@ -368,7 +368,7 @@ impl ProbeTrials {
             match t.kind.as_str() {
                 "push" => push_trials.push(ProbeTrial {
                     timestamp,
-                    trial_number: t.number,
+                    trial_number: t.number as i32,
                     params: params.clone(),
                     values: values.clone(),
                     observations: observations.clone(),
@@ -376,7 +376,7 @@ impl ProbeTrials {
                 }),
                 "pause" => pause_trials.push(ProbeTrial {
                     timestamp,
-                    trial_number: t.number,
+                    trial_number: t.number as i32,
                     params: params.clone(),
                     values: values.clone(),
                     observations: observations.clone(),
@@ -384,7 +384,7 @@ impl ProbeTrials {
                 }),
                 "hold_calib" => hold_calib_trials.push(ProbeTrial {
                     timestamp,
-                    trial_number: t.number,
+                    trial_number: t.number as i32,
                     params: params.clone(),
                     values: values.clone(),
                     observations: observations.clone(),
@@ -398,7 +398,7 @@ impl ProbeTrials {
                         .to_string();
                     receiver_hold_trials.push(ReceiverTrial {
                         timestamp,
-                        trial_number: t.number,
+                        trial_number: t.number as i32,
                         values: values.clone(),
                         observations,
                         phase: lease_phase,
