@@ -5,6 +5,7 @@ on:
     branches: [ main ]
     paths:
       - 'images/godon-observer/**'
+      - 'shared/ledger-reader/**'
       - 'build/**'
       - '.github/workflows/godon-observer-ci.yml'
   workflow_dispatch:
