@@ -1,7 +1,9 @@
+use ledger_reader::{record_from_row, TrialRecord, FETCH_TRIALS_SQL};
+pub use ledger_reader::TrialRecord as LedgerTrialRecord;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio_postgres::{Error, Row};
+use tokio_postgres::Error;
 
 // ─── DB Config & Reader ─────────────────────────────────────────────
 
@@ -295,26 +297,8 @@ impl TrialReader {
         let db = Self::systemtender_db_name(systemtender_id);
         let client = self.connect(&db).await?;
 
-        let study_name = format!("{}_study", systemtender_id);
-
-        let trial_rows = client
-            .query(
-                "SELECT t.trial_id, t.number, CAST(t.state AS TEXT), \
-                 CAST(t.datetime_start AS TEXT), CAST(t.datetime_complete AS TEXT) \
-                 FROM trials t \
-                 JOIN studies s ON t.study_id = s.study_id \
-                 WHERE s.study_name = $1 \
-                 ORDER BY t.number",
-                &[&study_name],
-            )
-            .await?;
-
-        let mut trials = Vec::new();
-        for row in &trial_rows {
-            let trial_id: i32 = row.get(0);
-            let record = self.build_trial_record(&client, trial_id, row).await?;
-            trials.push(record);
-        }
+        let rows = client.query(FETCH_TRIALS_SQL, &[]).await?;
+        let trials: Vec<TrialRecord> = rows.iter().map(record_from_row).collect();
 
         info!(
             "Loaded {} trials for systemtender {}",
@@ -324,108 +308,12 @@ impl TrialReader {
         Ok(trials)
     }
 
-    async fn build_trial_record(
-        &self,
-        client: &tokio_postgres::Client,
-        trial_id: i32,
-        trial_row: &Row,
-    ) -> Result<TrialRecord, Error> {
-        let number: i32 = trial_row.get(1);
-        let state: String = trial_row.get(2);
-        let datetime_start: Option<String> = trial_row.try_get(3).ok();
-        let datetime_complete: Option<String> = trial_row.try_get(4).ok();
-
-        let param_rows = client
-            .query(
-                "SELECT param_name, param_value FROM trial_params WHERE trial_id = $1",
-                &[&trial_id],
-            )
-            .await?;
-
-        let mut params = HashMap::new();
-        for pr in &param_rows {
-            let name: String = pr.get(0);
-            let value: f64 = pr.get(1);
-            params.insert(name, value);
-        }
-
-        let value_rows = client
-            .query(
-                "SELECT objective, value, CAST(value_type AS TEXT) FROM trial_values \
-                 WHERE trial_id = $1 ORDER BY objective",
-                &[&trial_id],
-            )
-            .await?;
-
-        let mut values = Vec::new();
-        if !value_rows.is_empty() {
-            let max_obj = value_rows
-                .iter()
-                .map(|r: &Row| r.get::<_, i32>(0))
-                .max()
-                .unwrap_or(0);
-            values = vec![None; (max_obj + 1) as usize];
-            for vr in &value_rows {
-                let obj: i32 = vr.get(0);
-                let value_type: String = vr.get(2);
-                let val: Option<f64> = if value_type == "FINITE" {
-                    vr.try_get(1).ok()
-                } else if value_type == "INF_POS" {
-                    Some(f64::INFINITY)
-                } else {
-                    Some(f64::NEG_INFINITY)
-                };
-                values[obj as usize] = val;
-            }
-        }
-
-        let attr_rows = client
-            .query(
-                "SELECT key, value_json FROM trial_user_attributes WHERE trial_id = $1",
-                &[&trial_id],
-            )
-            .await?;
-
-        let mut user_attrs = HashMap::new();
-        for ar in &attr_rows {
-            let key: String = ar.get(0);
-            let val_json: String = ar.get(1);
-            if let Ok(v) = serde_json::from_str(&val_json) {
-                user_attrs.insert(key, v);
-            }
-        }
-
-        Ok(TrialRecord {
-            number,
-            state,
-            datetime_start,
-            datetime_complete,
-            params,
-            values,
-            user_attrs,
-        })
-    }
-
-    // ─── Read classified probe trials ────────────────────────────────
-
     pub async fn read_probe_trials(&self, systemtender_id: &str) -> Result<ProbeTrials, Error> {
         let trials = self.read_trials(systemtender_id).await?;
         Ok(ProbeTrials::from_trials(systemtender_id, &trials))
     }
 }
 
-// ─── Trial Record ───────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrialRecord {
-    pub number: i32,
-    pub state: String,
-    pub datetime_start: Option<String>,
-    pub datetime_complete: Option<String>,
-    pub params: HashMap<String, f64>,
-    pub values: Vec<Option<f64>>,
-    pub user_attrs: HashMap<String, serde_json::Value>,
-}
 
 // ─── Classified Probe Trials ────────────────────────────────────────
 
@@ -450,24 +338,6 @@ impl ProbeTrials {
                 continue;
             }
 
-            let phase = t
-                .user_attrs
-                .get("impulse_phase")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            let detection_mode = t
-                .user_attrs
-                .get("detection_mode")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
-            let coord_state = t
-                .user_attrs
-                .get("coord_state")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-
             let ts = t
                 .datetime_start
                 .as_ref()
@@ -478,32 +348,28 @@ impl ProbeTrials {
                 continue;
             }
 
-            let observations = extract_observations(&t.user_attrs);
-            let impulse_scale = t
-                .user_attrs
-                .get("impulse_scale")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(1.0);
+            let observations = t.observations();
+            let impulse_scale = t.attr_f64("impulse_scale").unwrap_or(1.0);
 
             let timestamp = match ts {
                 Some(ts) => ts,
                 None => continue,
             };
 
-            // The coordinator's stamps renamed once already (push ->
-            // probe_push, the re-walk rung) and the reader starved
-            // silently for two days of runs. Normalize the family
-            // prefix instead of matching literals twice: any future
-            // probe_-prefixed rename classifies by what it IS.
-            let phase = match phase.strip_prefix("probe_") {
-                Some(stripped) => stripped,
-                None => phase,
-            };
-            match phase {
+            // kind is written once by the worker (classify) — no more
+            // string-matching attr literals to bucket a trial (a stamp
+            // rename once starved this reader silently for two days).
+            let params: HashMap<String, f64> = t
+                .params
+                .iter()
+                .filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f)))
+                .collect();
+
+            match t.kind.as_str() {
                 "push" => push_trials.push(ProbeTrial {
                     timestamp,
                     trial_number: t.number,
-                    params: t.params.clone(),
+                    params: params.clone(),
                     values: values.clone(),
                     observations: observations.clone(),
                     impulse_scale,
@@ -511,7 +377,7 @@ impl ProbeTrials {
                 "pause" => pause_trials.push(ProbeTrial {
                     timestamp,
                     trial_number: t.number,
-                    params: t.params.clone(),
+                    params: params.clone(),
                     values: values.clone(),
                     observations: observations.clone(),
                     impulse_scale,
@@ -519,31 +385,26 @@ impl ProbeTrials {
                 "hold_calib" => hold_calib_trials.push(ProbeTrial {
                     timestamp,
                     trial_number: t.number,
-                    params: t.params.clone(),
+                    params: params.clone(),
                     values: values.clone(),
                     observations: observations.clone(),
                     impulse_scale,
                 }),
+                "hold" => {
+                    let lease_phase = t
+                        .attr_str("lease_phase")
+                        .or_else(|| t.attr_str("impulse_phase"))
+                        .unwrap_or("")
+                        .to_string();
+                    receiver_hold_trials.push(ReceiverTrial {
+                        timestamp,
+                        trial_number: t.number,
+                        values: values.clone(),
+                        observations,
+                        phase: lease_phase,
+                    });
+                }
                 _ => {}
-            }
-
-            // Receiver hold: detection_mode == "hold" AND not sender's own hold_calib
-            if detection_mode == "hold" && coord_state != "hold_calib" {
-                let lease_phase = t
-                    .user_attrs
-                    .get("lease_phase")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| t.user_attrs.get("impulse_phase").and_then(|v| v.as_str()))
-                    .unwrap_or("")
-                    .to_string();
-
-                receiver_hold_trials.push(ReceiverTrial {
-                    timestamp,
-                    trial_number: t.number,
-                    values: values.clone(),
-                    observations,
-                    phase: lease_phase,
-                });
             }
         }
 
@@ -723,65 +584,67 @@ mod settled_phase_tests {
 }
 
 #[cfg(test)]
-mod impulse_phase_vocabulary_tests {
-    //! The re-walk rung renamed the coordinator's phase stamps to
-    //! probe_push / probe_pause; the reader kept the original push /
-    //! pause vocabulary and classified every sender trial as nothing —
-    //! builds read receivers but zero senders (run 35389267669: "0
-    //! push, 0 pause, 160 receiver_hold", 0 edges on a full walk).
-    //! These tests pin BOTH vocabularies so no renaming can starve
-    //! detection silently again.
+mod kind_classification_tests {
+    //! History: the re-walk rung renamed the coordinator's phase stamps
+    //! (push -> probe_push); the reader classified by string-matching
+    //! attr literals and starved silently for two days (runs with "0
+    //! push, 0 pause, 160 receiver_hold"). The own-ledger rung moved
+    //! classification into a `kind` column written once by the worker
+    //! (classify()) — these tests pin that attrs, however renamed or
+    //! absent, can no longer drive or starve the bucketing.
 
     use super::*;
 
-    fn trial(phase: &str) -> TrialRecord {
+    fn trial(kind: &str, phase_attr: Option<&str>) -> TrialRecord {
         let mut user_attrs = HashMap::new();
-        if !phase.is_empty() {
+        if let Some(phase) = phase_attr {
             user_attrs.insert("impulse_phase".to_string(), serde_json::json!(phase));
         }
         TrialRecord {
             number: 1,
+            kind: kind.to_string(),
             state: "COMPLETE".to_string(),
             datetime_start: Some("2026-09-18 20:00:00".to_string()),
             datetime_complete: None,
             params: HashMap::new(),
             values: vec![Some(0.5)],
+            error: None,
             user_attrs,
         }
     }
 
     #[test]
-    fn both_push_vocabularies_classify() {
-        for phase in ["push", "probe_push"] {
-            let trials = vec![trial(phase)];
-            let probe = ProbeTrials::from_trials("s", &trials);
+    fn kind_classifies_regardless_of_attr_vocabulary() {
+        for (kind, phase_attr) in [
+            ("push", Some("push")),
+            ("push", Some("probe_push")),
+            ("push", None),
+            ("push", Some("anything_renamed")),
+        ] {
+            let probe = ProbeTrials::from_trials("s", &[trial(kind, phase_attr)]);
             assert_eq!(
-                probe.push_trials.len(),
-                1,
-                "phase={phase} must classify as push"
+                probe.push_trials.len(), 1,
+                "kind={kind} with attr={phase_attr:?} must classify as push"
             );
         }
     }
 
     #[test]
-    fn both_pause_vocabularies_classify() {
-        for phase in ["pause", "probe_pause"] {
-            let trials = vec![trial(phase)];
-            let probe = ProbeTrials::from_trials("s", &trials);
-            assert_eq!(
-                probe.pause_trials.len(),
-                1,
-                "phase={phase} must classify as pause"
-            );
-        }
+    fn receiver_hold_takes_phase_from_lease() {
+        let probe = ProbeTrials::from_trials(
+            "s",
+            &[trial("hold", Some("probe_hold"))],
+        );
+        assert_eq!(probe.receiver_hold_trials.len(), 1);
+        assert_eq!(probe.receiver_hold_trials[0].phase, "probe_hold");
     }
 
     #[test]
-    fn unknown_phase_still_classifies_nothing() {
-        let trials = vec![trial("gibberish")];
-        let probe = ProbeTrials::from_trials("s", &trials);
+    fn unknown_kind_buckets_nowhere() {
+        let probe = ProbeTrials::from_trials("s", &[trial("idle", None)]);
         assert!(probe.push_trials.is_empty());
         assert!(probe.pause_trials.is_empty());
         assert!(probe.hold_calib_trials.is_empty());
+        assert!(probe.receiver_hold_trials.is_empty());
     }
 }
