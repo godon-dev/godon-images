@@ -21,7 +21,7 @@ use tokio_postgres::Row;
 /// decode to the same JSON values the stamps carried.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrialRecord {
-    pub number: i32,
+    pub number: i64,
     pub kind: String,
     #[serde(default)]
     pub params: HashMap<String, serde_json::Value>,
@@ -80,7 +80,10 @@ pub fn record_from_row(row: &Row) -> TrialRecord {
     let value: Option<f64> = row.get("value");
     let kind: String = row.get("kind");
     let state: String = row.get("state");
-    let number: i32 = row.get("number");
+    // BIGSERIAL is 8-byte: read i64 (an i32 read panics the task —
+    // caught live 10-12 by the end-to-end read; invisible to the
+    // fixture's JSON path, which never runs postgres row decoding)
+    let number: i64 = row.get("number");
     let error: Option<String> = row.try_get("error").ok().flatten();
     let params_json: serde_json::Value = row.get("params");
     let attrs_json: serde_json::Value = row.get("attrs");
@@ -161,7 +164,7 @@ pub struct GoldenFixture {
 
 #[derive(Debug, Deserialize)]
 pub struct GoldenTrial {
-    pub number: i32,
+    pub number: i64,
     pub kind: String,
     #[serde(default)]
     pub params: serde_json::Value,
@@ -189,7 +192,7 @@ impl GoldenFixture {
         self.trials
             .iter()
             .map(|t| TrialRecord {
-                number: t.number,
+                number: t.number as i64,
                 kind: t.kind.clone(),
                 params: decode_map(t.params.clone()),
                 values: t.value.map(|v| vec![Some(v)]).unwrap_or_default(),
