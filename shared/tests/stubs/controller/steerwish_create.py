@@ -3,6 +3,13 @@ def main(request_data=None):
     if not request_data:
         return {"result": "FAILURE", "error": "Missing request data"}
 
+    wish_type = request_data.get("type")
+    if wish_type not in ("steer", "seek"):
+        return {
+            "result": "FAILURE",
+            "error": "door refuses: the wish speaks its type (steer or seek, no omission)",
+        }
+
     claims = request_data.get("claims")
     if not claims or not isinstance(claims, list):
         return {

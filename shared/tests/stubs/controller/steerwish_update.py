@@ -6,6 +6,12 @@ def main(request_data=None):
     if not wish_id:
         return {"result": "FAILURE", "error": "Missing required field: wish_id"}
 
+    if data.get("type") != "steer":
+        return {
+            "result": "FAILURE",
+            "error": "door refuses: corrections speak their type (steer - holds only today)",
+        }
+
     claims = data.get("claims")
     if not claims or not isinstance(claims, list):
         return {
