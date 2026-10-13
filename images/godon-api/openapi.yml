@@ -37,8 +37,8 @@ servers:
 tags:
   - name: systemtenders
     description: Operations for managing optimizer systemtenders
-  - name: steerwishes
-    description: Operations for declaring and tending steerwishes (declared outcomes held on the connectome)
+  - name: wishes
+    description: Operations for declaring and tending wishes (declared outcomes held on the connectome)
   - name: credentials
     description: Operations for managing credential catalog
   - name: targets
@@ -486,25 +486,25 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
-  /steerwishes:
+  /wishes:
     get:
       tags:
-        - steerwishes
-      operationId: listSteerwishes
-      summary: List all steerwishes
-      description: Retrieves a list of all declared steerwishes with their derived lifecycle state
+        - wishes
+      operationId: listWishes
+      summary: List all wishes
+      description: Retrieves a list of all declared wishes with their derived lifecycle state
       responses:
         '200':
-          description: Successfully returned list of steerwishes
+          description: Successfully returned list of wishes
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SteerwishSummary'
+                  $ref: '#/components/schemas/WishSummary'
               examples:
-                steerwishes:
-                  summary: Example list of steerwishes
+                wishes:
+                  summary: Example list of wishes
                   value:
                     - id: "550e8400-e29b-41d4-a716-446655440000"
                       claims:
@@ -521,9 +521,9 @@ paths:
 
     post:
       tags:
-        - steerwishes
-      operationId: declareSteerwish
-      summary: Declare a new steerwish
+        - wishes
+      operationId: declareWish
+      summary: Declare a new wish
       description: |
         Declares desired outcomes: the named claims are to be brought into
         their bands and held there, with optional terms the wish must never
@@ -533,11 +533,11 @@ paths:
         happens at the door; a malformed wish is rejected before any planning.
       requestBody:
         required: true
-        description: Steerwish declaration
+        description: Wish declaration
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SteerwishCreate'
+              $ref: '#/components/schemas/WishCreate'
             examples:
               chainend:
                 summary: Hold the chain-end shift at -0.10
@@ -556,14 +556,14 @@ paths:
                   regime: "standing"
       responses:
         '201':
-          description: Successfully declared the steerwish
+          description: Successfully declared the wish
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Steerwish'
+                $ref: '#/components/schemas/Wish'
               examples:
                 declared:
-                  summary: Newly declared steerwish
+                  summary: Newly declared wish
                   value:
                     id: "550e8400-e29b-41d4-a716-446655440000"
                     claims:
@@ -588,22 +588,22 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
-  /steerwishes/{wish_id}:
+  /wishes/{wish_id}:
     get:
       tags:
-        - steerwishes
-      operationId: getSteerwish
-      summary: Get a steerwish
-      description: Retrieves one steerwish with its full event history
+        - wishes
+      operationId: getWish
+      summary: Get a wish
+      description: Retrieves one wish with its full event history
       parameters:
-        - $ref: '#/components/parameters/SteerwishId'
+        - $ref: '#/components/parameters/WishId'
       responses:
         '200':
-          description: Successfully returned the steerwish
+          description: Successfully returned the wish
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Steerwish'
+                $ref: '#/components/schemas/Wish'
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -613,17 +613,17 @@ paths:
 
     delete:
       tags:
-        - steerwishes
-      operationId: deleteSteerwish
-      summary: Purge a steerwish (async marker)
+        - wishes
+      operationId: deleteWish
+      summary: Purge a wish (async marker)
       description: |
-        Marks a steerwish for purge and returns immediately (202).
+        Marks a wish for purge and returns immediately (202).
         Destruction runs behind the marker: the executor closes first
         (unassign + dial revert — idempotent on already-closed wishes),
         then removes the registry rows (events cascade) last. The book
         page is purged by causal's own paired delete path.
 
-        The client polls GET /steerwishes/{wish_id} until 404. While
+        The client polls GET /wishes/{wish_id} until 404. While
         the purge runs the wish is visible with state "deleting"; if
         the executor could not finish (causal unreachable) it shows
         "deletion-failed" with the reason. DELETE is idempotent:
@@ -631,7 +631,7 @@ paths:
         doubles as the retry path for deletion-failed wishes.
         Forgetting, not stopping.
       parameters:
-        - $ref: '#/components/parameters/SteerwishId'
+        - $ref: '#/components/parameters/WishId'
       responses:
         '202':
           description: Purge accepted; destruction runs behind the marker
@@ -647,7 +647,7 @@ paths:
                   id:
                     type: string
                     format: uuid
-                    description: The ID of the steerwish being purged
+                    description: The ID of the wish being purged
                   status:
                     type: string
                     description: The deletion marker; "deleting" at acceptance time
@@ -667,12 +667,12 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
-  /steerwishes/{wish_id}/update:
+  /wishes/{wish_id}/update:
     post:
       tags:
-        - steerwishes
-      operationId: updateSteerwish
-      summary: Correct a steerwish (holder update)
+        - wishes
+      operationId: updateWish
+      summary: Correct a wish (holder update)
       description: |
         The holder corrects the wish: restated claims (and terms) on the
         same identity. Stamps a 'corrected' event carrying the previous
@@ -680,14 +680,14 @@ paths:
         re-asks for a plan through the door (plan, heartbeat check,
         plant). Works on living and unheld wishes; closed ones refuse.
       parameters:
-        - $ref: '#/components/parameters/SteerwishId'
+        - $ref: '#/components/parameters/WishId'
       requestBody:
         required: true
         description: The restated wish, the holder's own
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SteerwishUpdate'
+              $ref: '#/components/schemas/WishUpdate'
             examples:
               reaim:
                 summary: Hold the same claim at the new anchor
@@ -701,11 +701,11 @@ paths:
                   reason: "the world moved - the holder re-promises at the new anchor"
       responses:
         '200':
-          description: Successfully corrected the steerwish
+          description: Successfully corrected the wish
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Steerwish'
+                $ref: '#/components/schemas/Wish'
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -714,28 +714,28 @@ paths:
           $ref: '#/components/responses/InternalServerError'
 
 
-  /steerwishes/{wish_id}/close:
+  /wishes/{wish_id}/close:
     post:
       tags:
-        - steerwishes
-      operationId: closeSteerwish
-      summary: Close a steerwish
+        - wishes
+      operationId: closeWish
+      summary: Close a wish
       description: |
         Closes the wish: the obligation ends (closed wishes bind nothing -
         history, not law). The serving tender releases its setting back to
         neutral on exit.
       parameters:
-        - $ref: '#/components/parameters/SteerwishId'
+        - $ref: '#/components/parameters/WishId'
       responses:
         '200':
-          description: Successfully closed the steerwish
+          description: Successfully closed the wish
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Steerwish'
+                $ref: '#/components/schemas/Wish'
               examples:
                 closed:
-                  summary: Closed steerwish
+                  summary: Closed wish
                   value:
                     id: "550e8400-e29b-41d4-a716-446655440000"
                     claims:
@@ -1213,11 +1213,11 @@ components:
         pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
       example: "550e8400-e29b-41d4-a716-446655440000"
 
-    SteerwishId:
+    WishId:
       name: wish_id
       in: path
       required: true
-      description: Unique identifier (UUID v4) for the steerwish
+      description: Unique identifier (UUID v4) for the wish
       schema:
         type: string
         format: uuid
@@ -1406,16 +1406,33 @@ components:
         $ref: '#/components/schemas/SystemtenderSummary'
       description: Array of systemtender summary objects (without configuration details)
 
-    SteerwishCreate:
-      type: object
-      additionalProperties: true
+    WishCreate:
       description: |
         The wish body, verbatim - the declarer's own. Wish-shape freedom
         (ruled 2026-09-19): this surface does not validate the grammar;
-        the controller owns validation (the door). Today the grammar is
-        claims + terms (N >= 1 claims, M >= 0 terms, one band each - the
-        chainend example below); richer grammars arrive through this
-        same door without API changes.
+        the controller owns validation (the door). The body's species
+        picks the grammar (ruled 2026-10-13, the street name): omitted
+        or "steer" speaks claims and terms; "seek" commissions a walk.
+        The oneOf below documents both grammars; it is description, not
+        enforcement - the door refuses what does not parse, naming its
+        binding constraint.
+      oneOf:
+        - $ref: '#/components/schemas/WishSteerBody'
+        - $ref: '#/components/schemas/WishSeekBody'
+      discriminator:
+        propertyName: species
+        mapping:
+          steer: '#/components/schemas/WishSteerBody'
+          seek: '#/components/schemas/WishSeekBody'
+
+    WishSteerBody:
+      type: object
+      additionalProperties: true
+      description: |
+        The steer species' grammar: claims (the aims the gavel judges,
+        N >= 1, one band each) and optional terms (the price the wish
+        pays), plus optional limits, budget, and regime. Species
+        omitted or "steer".
       example:
         claims:
           - outcome: "chainend.shift"
@@ -1425,7 +1442,30 @@ components:
               target: -0.10
         terms: []
 
-    SteerwishUpdate:
+    WishSeekBody:
+      type: object
+      additionalProperties: true
+      description: |
+        The seek species' grammar: species "seek" plus a seek body
+        under the "seek" key - a commissioned walk. The walk body
+        carries its own species (cover_now walks a region first on
+        standing duty, no budget; find_best searches under a budget),
+        a region of dials to walk (each [lo, hi, is_int]), a criterion
+        for find_best (the reading and the direction), a budget of
+        measured trials, and optional launch candidates. When the map
+        already reads the answer, the refusal carries it. The walk
+        returns the best found with its bars and spend count.
+      example:
+        species: "seek"
+        seek:
+          species: "find_best"
+          region:
+            chainend.push: [-0.4, 0.4]
+          criterion: {outcome: "chainend.shift", direction: "minimize"}
+          budget: 2
+          candidates: 0
+
+    WishUpdate:
       type: object
       additionalProperties: true
       description: |
@@ -1444,7 +1484,7 @@ components:
               target: 0.50
         reason: "the world moved"
 
-    SteerwishEvent:
+    WishEvent:
       type: object
       required:
         - type
@@ -1465,7 +1505,7 @@ components:
           description: Optional evidence or reason (a refusal names its binding constraint)
           example: "target outside measured range"
 
-    Steerwish:
+    Wish:
       type: object
       description: |
         The wish as the API carries it: a lifecycle envelope plus the body
@@ -1482,7 +1522,7 @@ components:
         id:
           type: string
           format: uuid
-          description: Unique identifier for the steerwish
+          description: Unique identifier for the wish
           readOnly: true
           example: "550e8400-e29b-41d4-a716-446655440000"
         state:
@@ -1506,16 +1546,16 @@ components:
         events:
           type: array
           items:
-            $ref: '#/components/schemas/SteerwishEvent'
+            $ref: '#/components/schemas/WishEvent'
           description: Full lifecycle history - truth lives here, state derives from it
           readOnly: true
       additionalProperties: true
 
-    SteerwishSummary:
+    WishSummary:
       type: object
       description: |
         List view: the lifecycle envelope plus the wish body verbatim
-        (see Steerwish - the body is the controller's object).
+        (see Wish - the body is the controller's object).
       required:
         - id
         - state
@@ -1524,7 +1564,7 @@ components:
         id:
           type: string
           format: uuid
-          description: Unique identifier for the steerwish
+          description: Unique identifier for the wish
           readOnly: true
           example: "550e8400-e29b-41d4-a716-446655440000"
         state:
@@ -1541,11 +1581,11 @@ components:
           example: "2026-09-10T10:30:00Z"
       additionalProperties: true
 
-    SteerwishList:
+    WishList:
       type: array
       items:
-        $ref: '#/components/schemas/SteerwishSummary'
-      description: Array of steerwish summary objects (without event history)
+        $ref: '#/components/schemas/WishSummary'
+      description: Array of wish summary objects (without event history)
 
     Error:
       type: object

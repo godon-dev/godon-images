@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::types::{
-    Steerwish, SteerwishSummary, Systemtender, SystemtenderCreate,
+    Wish, WishSummary, Systemtender, SystemtenderCreate,
     SystemtenderSummary, SystemtenderUpdate, Credential, CredentialCreate, DeleteResponse,
     DeletedResponse,
     ErrorResponse, Target, TargetCreate,
@@ -770,23 +770,23 @@ pub async fn delete_target(
     ))?
 }
 
-// ─── Steerwishes ────────────────────────────────────────────────────
+// ─── Wishes ────────────────────────────────────────────────────
 // Wish-shape freedom (ruled 2026-09-19, the wish-stack note): the body
 // is the declarer's own; the controller owns validation (the door).
 // The API forwards it verbatim - transport hygiene only.
 
-pub async fn list_steerwishes(
+pub async fn list_wishes(
     State(_config): State<Config>,
-) -> Result<Json<Vec<SteerwishSummary>>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<Vec<WishSummary>>, (StatusCode, Json<ErrorResponse>)> {
     let client = get_client()?;
 
     tokio::task::spawn_blocking(move || {
-        client.list_steerwishes()
+        client.list_wishes()
             .map(Json)
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
-                    format!("Failed to retrieve steerwishes: {}", e),
+                    format!("Failed to retrieve wishes: {}", e),
                     "INTERNAL_SERVER_ERROR"
                 ))
             ))
@@ -796,10 +796,10 @@ pub async fn list_steerwishes(
     ))?
 }
 
-pub async fn declare_steerwish(
+pub async fn declare_wish(
     State(_config): State<Config>,
     Json(payload): Json<serde_json::Value>,
-) -> Result<(StatusCode, Json<Steerwish>), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<(StatusCode, Json<Wish>), (StatusCode, Json<ErrorResponse>)> {
     // The wish body is not shaped here: the controller validates (the
     // door), the same arrangement as systemtender configs. Only transport
     // hygiene: a JSON object, so the declaration is addressable at all.
@@ -816,12 +816,12 @@ pub async fn declare_steerwish(
     let client = get_client()?;
 
     tokio::task::spawn_blocking(move || {
-        client.create_steerwish(payload)
+        client.create_wish(payload)
             .map(|w| (StatusCode::CREATED, Json(w)))
             .map_err(|e| (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
-                    format!("Failed to declare steerwish: {}", e),
+                    format!("Failed to declare wish: {}", e),
                     "INTERNAL_SERVER_ERROR"
                 ))
             ))
@@ -831,10 +831,10 @@ pub async fn declare_steerwish(
     ))?
 }
 
-pub async fn get_steerwish(
+pub async fn get_wish(
     State(_config): State<Config>,
     Path(id): Path<String>,
-) -> Result<Json<Steerwish>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<Wish>, (StatusCode, Json<ErrorResponse>)> {
     if !UUID_REGEX.is_match(&id) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -849,14 +849,14 @@ pub async fn get_steerwish(
     let client = get_client()?;
 
     tokio::task::spawn_blocking(move || {
-        client.get_steerwish(&id)
+        client.get_wish(&id)
             .map(Json)
             .map_err(|e| {
                 let not_found = format!("{}", e).to_lowercase().contains("not found");
                 (
                     if not_found { StatusCode::NOT_FOUND } else { StatusCode::INTERNAL_SERVER_ERROR },
                     Json(ErrorResponse::new(
-                        format!("Failed to retrieve steerwish: {}", e),
+                        format!("Failed to retrieve wish: {}", e),
                         if not_found { "NOT_FOUND" } else { "INTERNAL_SERVER_ERROR" }
                     ))
                 )
@@ -867,11 +867,11 @@ pub async fn get_steerwish(
     ))?
 }
 
-pub async fn update_steerwish(
+pub async fn update_wish(
     State(_config): State<Config>,
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
-) -> Result<Json<Steerwish>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<Wish>, (StatusCode, Json<ErrorResponse>)> {
     if !UUID_REGEX.is_match(&id) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -886,14 +886,14 @@ pub async fn update_steerwish(
     let client = get_client()?;
 
     tokio::task::spawn_blocking(move || {
-        client.update_steerwish(&id, body)
+        client.update_wish(&id, body)
             .map(Json)
             .map_err(|e| {
                 let not_found = format!("{}", e).to_lowercase().contains("not found");
                 (
                     if not_found { StatusCode::NOT_FOUND } else { StatusCode::INTERNAL_SERVER_ERROR },
                     Json(ErrorResponse::new(
-                        format!("Failed to update steerwish: {}", e),
+                        format!("Failed to update wish: {}", e),
                         if not_found { "NOT_FOUND" } else { "INTERNAL_SERVER_ERROR" }
                     ))
                 )
@@ -904,7 +904,7 @@ pub async fn update_steerwish(
     ))?
 }
 
-pub async fn delete_steerwish(
+pub async fn delete_wish(
     State(_config): State<Config>,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<DeleteResponse>), (StatusCode, Json<ErrorResponse>)> {
@@ -928,7 +928,7 @@ pub async fn delete_steerwish(
     // until 404; the wish stays visible in "deleting" (or
     // "deletion-failed" with its reason) until then.
     let job_id = tokio::task::spawn_blocking(move || {
-        client.enqueue_steerwish_delete(&id_clone)
+        client.enqueue_wish_delete(&id_clone)
     })
     .await
     .map_err(|e| (
@@ -941,7 +941,7 @@ pub async fn delete_steerwish(
     .map_err(|e| (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorResponse::new(
-            format!("Failed to enqueue steerwish purge: {}", e),
+            format!("Failed to enqueue wish purge: {}", e),
             "INTERNAL_SERVER_ERROR"
         ))
     ))?;
@@ -957,10 +957,10 @@ pub async fn delete_steerwish(
     ))
 }
 
-pub async fn close_steerwish(
+pub async fn close_wish(
     State(_config): State<Config>,
     Path(id): Path<String>,
-) -> Result<Json<Steerwish>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<Wish>, (StatusCode, Json<ErrorResponse>)> {
     if !UUID_REGEX.is_match(&id) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -975,14 +975,14 @@ pub async fn close_steerwish(
     let client = get_client()?;
 
     tokio::task::spawn_blocking(move || {
-        client.close_steerwish(&id)
+        client.close_wish(&id)
             .map(Json)
             .map_err(|e| {
                 let not_found = format!("{}", e).to_lowercase().contains("not found");
                 (
                     if not_found { StatusCode::NOT_FOUND } else { StatusCode::INTERNAL_SERVER_ERROR },
                     Json(ErrorResponse::new(
-                        format!("Failed to close steerwish: {}", e),
+                        format!("Failed to close wish: {}", e),
                         if not_found { "NOT_FOUND" } else { "INTERNAL_SERVER_ERROR" }
                     ))
                 )
