@@ -1,3 +1,4 @@
+type: steer
 outcome: chainend.shift
 band:
   lo: -0.14
