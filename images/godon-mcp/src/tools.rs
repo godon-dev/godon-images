@@ -198,38 +198,37 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "wish_declare",
-                description: "Declare a wish - one door, two grammars. Steer: claims (the aims the gavel judges) and optional terms (the price the wish pays); one verdict, kept = every claim in band AND every term honored; omitted budget means upkeep indefinitely. Seek: species 'seek' with a seek body - a commissioned walk (region, criterion, budget, candidates) that returns the best found with its bars and spend count; when the map already reads the answer, the refusal carries it. The door validates; refusals name their binding constraint.",
+                description: "Declare a wish - one door, two grammars, both discriminators always stated. Steer (type steer): claims (the aims the gavel judges) and optional terms (the price the wish pays); one verdict, kept = every claim in band AND every term honored; omitted budget means upkeep indefinitely. Seek (type seek): a commissioned walk with its form (find_best or cover_now), region, criterion, budget, candidates - it returns the best found with its bars and spend count; when the map already reads the answer, the refusal carries it. The door validates; refusals name their binding constraint.",
                 input_schema: serde_json::json!({
                     "type": "object",
-                    "description": "The wish body, verbatim - the controller validates the grammar (the door). Steer speaks claims + terms; seek speaks species 'seek' plus a seek body (region, criterion, budget, candidates).",
+                    "description": "The wish body, verbatim - the controller validates the grammar (the door). Two discriminators, both stated, no omission: type picks the grammar (steer = the hold, seek = the commissioned walk); form is a field of the walk grammar only (find_best or cover_now). Steer speaks claims + terms; seek speaks form, region, criterion, budget, candidates.",
+                    "required": ["type"],
                     "properties": {
-                        "species": {
+                        "type": {
                             "type": "string",
-                            "description": "The wish species: omitted (or steer) holds states; seek commissions a walk",
+                            "description": "The wish's type, always stated: steer holds states; seek commissions a walk",
                             "enum": ["steer", "seek"]
                         },
-                        "seek": {
+                        "form": {
+                            "type": "string",
+                            "description": "The walk's form (type seek, always stated): find_best searches under budget; cover_now walks a region first",
+                            "enum": ["cover_now", "find_best"]
+                        },
+                        "region": {
                             "type": "object",
-                            "description": "The seek body (species seek): a commissioned walk under a budget",
+                            "description": "The dials to walk, each [lo, hi, is_int] - the bounds of the commission",
+                            "additionalProperties": { "type": "array", "items": {} }
+                        },
+                        "criterion": {
+                            "type": "object",
+                            "description": "find_best declares what counts: the reading and the direction",
                             "properties": {
-                                "species": { "type": "string", "enum": ["cover_now", "find_best"], "description": "find_best searches under budget; cover_now walks a region first" },
-                                "region": {
-                                    "type": "object",
-                                    "description": "The dials to walk, each [lo, hi, is_int] - the bounds of the commission",
-                                    "additionalProperties": { "type": "array", "items": {} }
-                                },
-                                "criterion": {
-                                    "type": "object",
-                                    "description": "find_best declares what counts: the reading and the direction",
-                                    "properties": {
-                                        "outcome": { "type": "string", "description": "The reading to optimize" },
-                                        "direction": { "type": "string", "enum": ["maximize", "max", "minimize", "min"] }
-                                    }
-                                },
-                                "budget": { "type": "integer", "description": "find_best: the feelers it may spend - one measured trial each" },
-                                "candidates": { "type": "integer", "description": "Optional launch dice: N random joint settings tried first; they rank but never teach" }
+                                "outcome": { "type": "string", "description": "The reading to optimize" },
+                                "direction": { "type": "string", "enum": ["maximize", "max", "minimize", "min"] }
                             }
                         },
+                        "budget": { "type": "integer", "description": "find_best: the feelers it may spend - one measured trial each" },
+                        "candidates": { "type": "integer", "description": "Optional launch dice: N random joint settings tried first; they rank but never teach" },
                         "claims": {
                             "type": "array",
                             "description": "The aims: one reading, one band each - the atom the gavel judges. N >= 1.",

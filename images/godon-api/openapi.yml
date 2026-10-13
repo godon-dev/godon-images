@@ -1410,17 +1410,18 @@ components:
       description: |
         The wish body, verbatim - the declarer's own. Wish-shape freedom
         (ruled 2026-09-19): this surface does not validate the grammar;
-        the controller owns validation (the door). The body's species
-        picks the grammar (ruled 2026-10-13, the street name): omitted
-        or "steer" speaks claims and terms; "seek" commissions a walk.
-        The oneOf below documents both grammars; it is description, not
-        enforcement - the door refuses what does not parse, naming its
-        binding constraint.
+        the controller owns validation (the door). The body speaks two
+        discriminators, both stated, no omission (§XVII): type picks
+        the grammar (steer = the hold, seek = the commissioned walk),
+        form is a field of the walk grammar only (find_best or
+        cover_now). The oneOf below documents both grammars; it is
+        description, not enforcement - the door refuses what does not
+        parse, naming its binding constraint.
       oneOf:
         - $ref: '#/components/schemas/WishSteerBody'
         - $ref: '#/components/schemas/WishSeekBody'
       discriminator:
-        propertyName: species
+        propertyName: type
         mapping:
           steer: '#/components/schemas/WishSteerBody'
           seek: '#/components/schemas/WishSeekBody'
@@ -1428,12 +1429,22 @@ components:
     WishSteerBody:
       type: object
       additionalProperties: true
+      required:
+        - type
+        - claims
       description: |
-        The steer species' grammar: claims (the aims the gavel judges,
-        N >= 1, one band each) and optional terms (the price the wish
-        pays), plus optional limits, budget, and regime. Species
-        omitted or "steer".
+        The hold's grammar: type "steer" (always stated), claims (the
+        aims the gavel judges, N >= 1, one band each) and optional
+        terms (the price the wish pays), plus optional limits, budget,
+        and regime.
+      properties:
+        type:
+          type: string
+          enum: [steer]
+        claims:
+          type: array
       example:
+        type: "steer"
         claims:
           - outcome: "chainend.shift"
             band:
@@ -1445,37 +1456,57 @@ components:
     WishSeekBody:
       type: object
       additionalProperties: true
+      required:
+        - type
+        - form
+        - region
       description: |
-        The seek species' grammar: species "seek" plus a seek body
-        under the "seek" key - a commissioned walk. The walk body
-        carries its own species (cover_now walks a region first on
-        standing duty, no budget; find_best searches under a budget),
-        a region of dials to walk (each [lo, hi, is_int]), a criterion
-        for find_best (the reading and the direction), a budget of
-        measured trials, and optional launch candidates. When the map
+        The walk's grammar: type "seek", form (find_best searches
+        under a budget; cover_now walks a region first on standing
+        duty, carrying no budget), a region of dials to walk (each
+        [lo, hi, is_int]), a criterion for find_best (the reading and
+        the direction), a budget of measured trials, and optional
+        launch candidates. All stated - no omission. When the map
         already reads the answer, the refusal carries it. The walk
         returns the best found with its bars and spend count.
+      properties:
+        type:
+          type: string
+          enum: [seek]
+        form:
+          type: string
+          enum: [find_best, cover_now]
+        region:
+          type: object
+        criterion:
+          type: object
+        budget:
+          type: integer
+        candidates:
+          type: integer
       example:
-        species: "seek"
-        seek:
-          species: "find_best"
-          region:
-            chainend.push: [-0.4, 0.4]
-          criterion: {outcome: "chainend.shift", direction: "minimize"}
-          budget: 2
-          candidates: 0
+        type: "seek"
+        form: "find_best"
+        region:
+          chainend.push: [-0.4, 0.4]
+        criterion: {outcome: "chainend.shift", direction: "minimize"}
+        budget: 2
+        candidates: 0
 
     WishUpdate:
       type: object
       additionalProperties: true
+      required:
+        - type
+        - claims
       description: |
         The restated wish, verbatim - the holder's own. Wish-shape
         freedom applies here exactly as at declare: this surface does
         not validate the grammar; the controller owns validation (the
-        door). Today the correction carries restated claims and terms
-        (plus a reason); richer grammars arrive through this same door
-        without API changes.
+        door). Corrections state their type (steer - holds only
+        today) and carry restated claims and terms (plus a reason).
       example:
+        type: "steer"
         claims:
           - outcome: "chainend.shift"
             band:
