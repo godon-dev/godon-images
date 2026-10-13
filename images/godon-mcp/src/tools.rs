@@ -188,8 +188,8 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "steerwish_list",
-                description: "List all declared steerwishes with their derived lifecycle state (declared, planned, refused, acted, landed, missed, re_opened, corrected, closed).",
+                name: "wish_list",
+                description: "List all declared wishes with their derived lifecycle state (declared, planned, refused, acted, landed, missed, re_opened, corrected, closed).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -197,7 +197,7 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "steerwish_declare",
+                name: "wish_declare",
                 description: "Declare a wish - one door, two grammars. Steer: claims (the aims the gavel judges) and optional terms (the price the wish pays); one verdict, kept = every claim in band AND every term honored; omitted budget means upkeep indefinitely. Seek: species 'seek' with a seek body - a commissioned walk (region, criterion, budget, candidates) that returns the best found with its bars and spend count; when the map already reads the answer, the refusal carries it. The door validates; refusals name their binding constraint.",
                 input_schema: serde_json::json!({
                     "type": "object",
@@ -276,24 +276,24 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "steerwish_get",
-                description: "Get one steerwish with its full event history (declared, planned, refused, acted, landed, missed, re_opened, corrected, closed).",
+                name: "wish_get",
+                description: "Get one wish with its full event history (declared, planned, refused, acted, landed, missed, re_opened, corrected, closed).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "wish_id": { "type": "string", "description": "UUID of the steerwish" }
+                        "wish_id": { "type": "string", "description": "UUID of the wish" }
                     },
                     "required": ["wish_id"],
                     "additionalProperties": false
                 }),
             },
             ToolDef {
-                name: "steerwish_close",
-                description: "Close a steerwish: append the 'closed' event and release the hold (idempotent on already-closed wishes).",
+                name: "wish_close",
+                description: "Close a wish: append the 'closed' event and release the hold (idempotent on already-closed wishes).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "wish_id": { "type": "string", "description": "UUID of the steerwish to close" }
+                        "wish_id": { "type": "string", "description": "UUID of the wish to close" }
                     },
                     "required": ["wish_id"],
                     "additionalProperties": false
@@ -301,12 +301,12 @@ impl ToolRegistry {
             },
 
             ToolDef {
-                name: "steerwish_update",
+                name: "wish_update",
                 description: "The holder corrects a wish: restated claims (and terms) on the same identity. Stamps a 'corrected' event with the previous band, then re-plans through the door. Works on living and unheld wishes.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "wish_id": { "type": "string", "description": "UUID of the steerwish to correct" },
+                        "wish_id": { "type": "string", "description": "UUID of the wish to correct" },
                         "claims": {
                             "type": "array",
                             "description": "The restated aims: one reading, one band each. N >= 1.",
@@ -336,12 +336,12 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "steerwish_delete",
-                description: "Purge a steerwish: closes it first (unassign + dial revert), then removes registry rows (events cascade) and the book's card. Forgetting, not stopping.",
+                name: "wish_delete",
+                description: "Purge a wish: closes it first (unassign + dial revert), then removes registry rows (events cascade) and the book's card. Forgetting, not stopping.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "wish_id": { "type": "string", "description": "UUID of the steerwish to purge" }
+                        "wish_id": { "type": "string", "description": "UUID of the wish to purge" }
                     },
                     "required": ["wish_id"],
                     "additionalProperties": false
@@ -529,50 +529,50 @@ impl ToolRegistry {
                     .delete(&format!("/targets/{}", urlencoding::encode(id)))
                     .await
             }
-            "steerwish_list" => self.client.get("/steerwishes").await,
-            "steerwish_get" => {
+            "wish_list" => self.client.get("/wishes").await,
+            "wish_get" => {
                 require_id(id, "wish_id")?;
                 self.client
                     .get(&format!(
-                        "/steerwishes/{}",
+                        "/wishes/{}",
                         urlencoding::encode(id)
                     ))
                     .await
             }
-            "steerwish_declare" => {
+            "wish_declare" => {
                 // The wish body, verbatim - the door validates the
                 // grammar (claims, terms), this layer never intervenes.
-                self.client.post("/steerwishes", args.clone()).await
+                self.client.post("/wishes", args.clone()).await
             }
-            "steerwish_close" => {
+            "wish_close" => {
                 require_id(id, "wish_id")?;
                 self.client
                     .post_empty(&format!(
-                        "/steerwishes/{}/close",
+                        "/wishes/{}/close",
                         urlencoding::encode(id)
                     ))
                     .await
             }
 
-            "steerwish_update" => {
+            "wish_update" => {
                 require_id(id, "wish_id")?;
                 // The correction, verbatim (claims, terms, reason) -
                 // the door validates; identity rides the URL.
                 self.client
                     .post(
                         &format!(
-                            "/steerwishes/{}/update",
+                            "/wishes/{}/update",
                             urlencoding::encode(id)
                         ),
                         args.clone(),
                     )
                     .await
             }
-            "steerwish_delete" => {
+            "wish_delete" => {
                 require_id(id, "wish_id")?;
                 self.client
                     .delete(&format!(
-                        "/steerwishes/{}",
+                        "/wishes/{}",
                         urlencoding::encode(id)
                     ))
                     .await
