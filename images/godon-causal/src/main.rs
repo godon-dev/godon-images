@@ -651,10 +651,10 @@ async fn steer_plan(
     Json(raw): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     // The seek wish rides this same door (wire pinned 2026-10-12):
-    // species 'seek' carries its own grammar — validate, pick the
+    // type 'seek' carries its own grammar — validate, pick the
     // serving tender, ask whether the map already reads the answer.
     // Everything else is the claims/band grammar, parsed here.
-    if raw.get("species").and_then(|v| v.as_str()) == Some("seek") {
+    if raw.get("type").and_then(|v| v.as_str()) == Some("seek") {
         return steer_plan_seek(state, raw).await;
     }
     let req: planner::SteerPlanRequest = serde_json::from_value(raw).map_err(|e| {
@@ -1429,7 +1429,7 @@ async fn rewalk(
 /// runs the judge over fresh hold readings, and re-plans when fresh probe
 /// evidence has arrived since a miss. The call never triggers world-touching
 /// work — it only judges what already landed.
-/// POST /steer/plan, species 'seek' — the commissioned walk's door.
+/// POST /steer/plan, type 'seek' — the commissioned walk's door.
 /// Validate (mirroring the two doors before it), pick the one serving
 /// tender, and ask the one honest question: can the map read the
 /// answer already? A readable FIND-BEST refuses WITH the reading
@@ -1493,7 +1493,7 @@ async fn steer_plan_seek(
     // The map-read: find_best with a resolvable outcome only. An
     // unresolvable outcome admits the seek — the walk will learn what
     // the map never measured.
-    let map_read = if body.species == seek_plan::FIND_BEST {
+    let map_read = if body.form == seek_plan::FIND_BEST {
         match &body.criterion {
             Some((outcome, _)) => {
                 match planner::resolve_outcome(&entries, outcome) {
@@ -1531,11 +1531,11 @@ async fn steer_plan_seek(
 
     info!("STEER /steer/plan (seek): planned for tender {sender}");
     let plan_json = serde_json::json!({
-        "species": "seek", "sender": sender, "seek": body_raw,
+        "type": "seek", "sender": sender, "seek": body_raw,
     });
     if let (Some(w), Ok(client)) = (&wish_id, state.connect_archive_ensured().await) {
         let terms = serde_json::json!({
-            "species": "seek",
+            "type": "seek",
             "group_id": raw.get("group_id").cloned()
                 .unwrap_or(serde_json::Value::Null),
             "seek": body_raw,
@@ -1581,7 +1581,7 @@ async fn steer_plan_get(
     // parse — a seek's terms are not a SteerPlanRequest. The worker's
     // pulse reads this page; instruction stays 'seek' until the book
     // releases the wish.
-    if row.terms.get("species").and_then(|v| v.as_str()) == Some("seek") {
+    if row.terms.get("type").and_then(|v| v.as_str()) == Some("seek") {
         let instruction = if row.status == "released" || row.status == "closed" {
             "release"
         } else {
@@ -1595,7 +1595,7 @@ async fn steer_plan_get(
             .unwrap_or(serde_json::Value::Null);
         return Ok(Json(serde_json::json!({
             "wish_id": wish_id,
-            "species": "seek",
+            "type": "seek",
             "instruction": instruction,
             "status": row.status,
             "seek": body,
@@ -3470,9 +3470,9 @@ mod tests {
         // settled curve, so marginal freshness admits the seek.
         let payload = serde_json::json!({
             "wish_id": "sw-test-1",
-            "species": "seek",
+            "type": "seek",
             "seek": {
-                "species": "find_best",
+                "form": "find_best",
                 "region": {"p": [0.0, 100.0, false]},
                 "criterion": {"outcome": "R/objective_0", "direction": "maximize"},
                 "budget": 50, "candidates": 2,
@@ -3489,9 +3489,9 @@ mod tests {
     async fn test_steer_plan_seek_refuses_region_not_held() {
         let state = seeded_plan_state().await;
         let payload = serde_json::json!({
-            "species": "seek",
+            "type": "seek",
             "seek": {
-                "species": "find_best",
+                "form": "find_best",
                 "region": {"nobody_holds_this": [0.0, 10.0, false]},
                 "criterion": {"outcome": "R/objective_0", "direction": "maximize"},
                 "budget": 10, "candidates": 0,
@@ -3508,9 +3508,9 @@ mod tests {
     async fn test_steer_plan_seek_refuses_impossible_at_the_door() {
         let state = seeded_plan_state().await;
         let payload = serde_json::json!({
-            "species": "seek",
+            "type": "seek",
             "seek": {
-                "species": "find_best",
+                "form": "find_best",
                 "region": {"p": [0.0, 100.0, false]},
                 "criterion": {"outcome": "R/objective_0", "direction": "maximize"},
                 "budget": 5, "candidates": 6,
@@ -3528,9 +3528,9 @@ mod tests {
     async fn test_steer_plan_seek_cover_now_never_reads_the_map() {
         let state = seeded_plan_state().await;
         let payload = serde_json::json!({
-            "species": "seek",
+            "type": "seek",
             "seek": {
-                "species": "cover_now",
+                "form": "cover_now",
                 "region": {"p": [0.0, 100.0, false]},
             },
         });

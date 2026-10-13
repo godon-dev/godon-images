@@ -394,12 +394,12 @@ jobs:
           --hostname=godon-api-test --port=9090 --insecure \
           target show --id=00000000-0000-4000-8000-000000000000 || echo "✅ Non-existent target properly handled"
 
-    - name: Test steerwish operations with godon_cli container
+    - name: Test wish operations with godon_cli container
       run: |
-        echo "Testing steerwish operations via godon_cli container..."
+        echo "Testing wish operations via godon_cli container..."
 
-        # List steerwishes (should return stub data)
-        echo "Listing steerwishes:"
+        # List wishes (should return stub data)
+        echo "Listing wishes:"
         docker run --rm --network godon-api-test_default \
           ${{ steps.cli-image.outputs.CLI_CONTAINER_IMAGE }} \
           --hostname=godon-api-test --port=9090 --insecure wish list

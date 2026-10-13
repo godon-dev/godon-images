@@ -328,59 +328,59 @@ impl WindmillClient {
         Ok(())
     }
 
-    // ─── Steerwishes ────────────────────────────────────────────────
+    // ─── Wishes ────────────────────────────────────────────────
     // Backed by Windmill scripts (f/{folder}/steerwish_*); those scripts
     // own the wish records and their lifecycle events. Calculation
     // (plan, verdicts, vigilance) lives in causal, keyed by wish id -
     // this service never computes steering state.
 
-    pub fn list_steerwishes(&self) -> Result<Vec<crate::types::SteerwishSummary>> {
+    pub fn list_wishes(&self) -> Result<Vec<crate::types::WishSummary>> {
         let response = self.run_script("steerwishes_get", json!({}))?;
         let data = Self::unwrap_data(response);
 
         if data.is_array() {
-            let wishes: Vec<crate::types::SteerwishSummary> = serde_json::from_value(data)
-                .context("Failed to parse steerwishes list")?;
+            let wishes: Vec<crate::types::WishSummary> = serde_json::from_value(data)
+                .context("Failed to parse wishes list")?;
             Ok(wishes)
         } else {
             Ok(Vec::new())
         }
     }
 
-    pub fn create_steerwish(&self, wish_data: serde_json::Value) -> Result<crate::types::Steerwish> {
+    pub fn create_wish(&self, wish_data: serde_json::Value) -> Result<crate::types::Wish> {
         let args = json!({ "request_data": wish_data });
         let response = self.run_script("steerwish_create", args)?;
         let data = Self::unwrap_data(response);
 
         serde_json::from_value(data)
-            .context("Failed to parse declared steerwish")
+            .context("Failed to parse declared wish")
     }
 
-    pub fn get_steerwish(&self, wish_id: &str) -> Result<crate::types::Steerwish> {
+    pub fn get_wish(&self, wish_id: &str) -> Result<crate::types::Wish> {
         let args = json!({ "request_data": { "wish_id": wish_id } });
         let response = self.run_script("steerwish_get", args)?;
         let data = Self::unwrap_data(response);
 
-        let wish: crate::types::Steerwish = serde_json::from_value(data)
-            .context("Failed to parse steerwish")?;
+        let wish: crate::types::Wish = serde_json::from_value(data)
+            .context("Failed to parse wish")?;
 
         if wish.id.is_empty() {
-            anyhow::bail!("Invalid steerwish response: missing id field");
+            anyhow::bail!("Invalid wish response: missing id field");
         }
 
         Ok(wish)
     }
 
-    pub fn close_steerwish(&self, wish_id: &str) -> Result<crate::types::Steerwish> {
+    pub fn close_wish(&self, wish_id: &str) -> Result<crate::types::Wish> {
         let args = json!({ "request_data": { "wish_id": wish_id } });
         let response = self.run_script("steerwish_close", args)?;
         let data = Self::unwrap_data(response);
 
         serde_json::from_value(data)
-            .context("Failed to parse closed steerwish")
+            .context("Failed to parse closed wish")
     }
 
-    pub fn update_steerwish(&self, wish_id: &str, body: serde_json::Value) -> Result<crate::types::Steerwish> {
+    pub fn update_wish(&self, wish_id: &str, body: serde_json::Value) -> Result<crate::types::Wish> {
         let mut args = body;
         if let Some(obj) = args.as_object_mut() {
             obj.insert("wish_id".to_string(), serde_json::json!(wish_id));
@@ -389,7 +389,7 @@ impl WindmillClient {
         let data = Self::unwrap_data(response);
 
         serde_json::from_value(data)
-            .context("Failed to parse corrected steerwish")
+            .context("Failed to parse corrected wish")
     }
 
     /// DELETE is a marker, not a wait (designs/2026-10-03, lifted to
@@ -397,7 +397,7 @@ impl WindmillClient {
     /// job id. The client polls GET until 404. Inside the executor:
     /// close first (idempotent on already-closed), causal trouble
     /// flags deletion-failed, registry rows removed last.
-    pub fn enqueue_steerwish_delete(&self, wish_id: &str) -> Result<uuid::Uuid> {
+    pub fn enqueue_wish_delete(&self, wish_id: &str) -> Result<uuid::Uuid> {
         let args = json!({ "request_data": { "wish_id": wish_id } });
         let script_path = self.script_path("steerwish_delete");
         self.client
