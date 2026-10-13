@@ -203,6 +203,16 @@ impl ToolRegistry {
                     "type": "object",
                     "description": "The wish body, verbatim - the controller validates the grammar (the door). Two discriminators, both stated, no omission: type picks the grammar (steer = the hold, seek = the commissioned walk); form is a field of the walk grammar only (find_best or cover_now). Steer speaks claims + terms; seek speaks form, region, criterion, budget, candidates.",
                     "required": ["type"],
+                    "allOf": [
+                        {
+                            "if": { "properties": { "type": { "const": "steer" } } },
+                            "then": { "required": ["claims"] }
+                        },
+                        {
+                            "if": { "properties": { "type": { "const": "seek" } } },
+                            "then": { "required": ["form", "region"] }
+                        }
+                    ],
                     "properties": {
                         "type": {
                             "type": "string",
