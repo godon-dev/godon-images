@@ -1,3 +1,4 @@
+type: steer
 claims:
   - outcome: chainend.shift
     band:

@@ -24,7 +24,7 @@ pub const FIND_BEST: &str = "find_best";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SeekBody {
-    pub species: String,
+    pub form: String,
     /// dial -> (lo, hi, is_int)
     pub region: Vec<(String, f64, f64, bool)>,
     /// (outcome, maximize?) — None for cover_now
@@ -41,21 +41,23 @@ fn direction_maximizes(word: &str) -> Option<bool> {
     }
 }
 
-/// Validate a seek body (the wire's `seek` object). Returns the parsed
+/// Validate a walk body (the wire's `seek` object). Returns the parsed
 /// body or a named refusal reason — the same names the two doors
 /// before it use, so one vocabulary spans all three checks.
 pub fn validate(body: &Value) -> Result<SeekBody, String> {
     let obj = body
         .as_object()
-        .ok_or_else(|| "seek body must be an object".to_string())?;
+        .ok_or_else(|| "walk body must be an object".to_string())?;
 
-    let species = obj
-        .get("species")
+    let form = obj
+        .get("form")
         .and_then(|v| v.as_str())
-        .unwrap_or(FIND_BEST)
+        .ok_or_else(|| {
+            "form is required: find_best or cover_now (no omission)".to_string()
+        })?
         .to_string();
-    if species != COVER_NOW && species != FIND_BEST {
-        return Err(format!("unknown_species: {species}"));
+    if form != COVER_NOW && form != FIND_BEST {
+        return Err(format!("unknown_form: {form}"));
     }
 
     let region_obj = obj
@@ -88,7 +90,7 @@ pub fn validate(body: &Value) -> Result<SeekBody, String> {
 
     let mut criterion = None;
     let mut budget = None;
-    if species == FIND_BEST {
+    if form == FIND_BEST {
         let c = obj
             .get("criterion")
             .and_then(|v| v.as_object())
@@ -121,7 +123,7 @@ pub fn validate(body: &Value) -> Result<SeekBody, String> {
     if candidates < 0 {
         return Err("negative_candidates".to_string());
     }
-    if species == FIND_BEST {
+    if form == FIND_BEST {
         if let Some(b) = budget {
             if candidates > b {
                 return Err(format!("candidates_exceed_budget: {candidates} > {b}"));
@@ -130,7 +132,7 @@ pub fn validate(body: &Value) -> Result<SeekBody, String> {
     }
 
     Ok(SeekBody {
-        species,
+        form,
         region,
         criterion,
         budget,
@@ -246,7 +248,7 @@ mod tests {
         candidates: i64,
     ) -> Value {
         let mut o = serde_json::Map::new();
-        o.insert("species".into(), json!(FIND_BEST));
+        o.insert("form".into(), json!(FIND_BEST));
         o.insert("region".into(), region);
         o.insert(
             "criterion".into(),
@@ -279,7 +281,7 @@ mod tests {
         let err = validate(&body_json(json!({}), None, Some(50), 0)).unwrap_err();
         assert!(err.contains("region"));
         let err = validate(&serde_json::json!({
-            "species": "cover_now", "region": {"a": [0.0, 1.0, false]},
+            "form": "cover_now", "region": {"a": [0.0, 1.0, false]},
             "budget": 10,
         }))
         .unwrap_err();
@@ -291,10 +293,10 @@ mod tests {
     #[test]
     fn cover_now_admits_with_empty_search_fields() {
         let v = serde_json::json!({
-            "species": "cover_now", "region": {"a": [0.0, 1.0, false]},
+            "form": "cover_now", "region": {"a": [0.0, 1.0, false]},
         });
         let b = validate(&v).unwrap();
-        assert_eq!(b.species, COVER_NOW);
+        assert_eq!(b.form, COVER_NOW);
         assert!(b.criterion.is_none() && b.budget.is_none());
     }
 
@@ -424,7 +426,7 @@ mod tests {
     #[test]
     fn cover_now_never_reads_the_map() {
         let v = serde_json::json!({
-            "species": "cover_now", "region": {"a": [0.0, 1.0, false]},
+            "form": "cover_now", "region": {"a": [0.0, 1.0, false]},
         });
         let b = validate(&v).unwrap();
         assert_eq!(

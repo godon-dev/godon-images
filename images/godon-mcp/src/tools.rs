@@ -188,8 +188,8 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "steerwish_list",
-                description: "List all declared steerwishes with their derived lifecycle state (declared, planned, refused, acted, landed, missed, re_opened, corrected, closed).",
+                name: "wish_list",
+                description: "List all declared wishes with their derived lifecycle state (declared, planned, refused, acted, landed, missed, re_opened, corrected, closed).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -197,39 +197,48 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "steerwish_declare",
-                description: "Declare a wish - one door, two grammars. Steer: claims (the aims the gavel judges) and optional terms (the price the wish pays); one verdict, kept = every claim in band AND every term honored; omitted budget means upkeep indefinitely. Seek: species 'seek' with a seek body - a commissioned walk (region, criterion, budget, candidates) that returns the best found with its bars and spend count; when the map already reads the answer, the refusal carries it. The door validates; refusals name their binding constraint.",
+                name: "wish_declare",
+                description: "Declare a wish - one door, two grammars, both discriminators always stated. Steer (type steer): claims (the aims the gavel judges) and optional terms (the price the wish pays); one verdict, kept = every claim in band AND every term honored; omitted budget means upkeep indefinitely. Seek (type seek): a commissioned walk with its form (find_best or cover_now), region, criterion, budget, candidates - it returns the best found with its bars and spend count; when the map already reads the answer, the refusal carries it. The door validates; refusals name their binding constraint.",
                 input_schema: serde_json::json!({
                     "type": "object",
-                    "description": "The wish body, verbatim - the controller validates the grammar (the door). Steer speaks claims + terms; seek speaks species 'seek' plus a seek body (region, criterion, budget, candidates).",
+                    "description": "The wish body, verbatim - the controller validates the grammar (the door). Two discriminators, both stated, no omission: type picks the grammar (steer = the hold, seek = the commissioned walk); form is a field of the walk grammar only (find_best or cover_now). Steer speaks claims + terms; seek speaks form, region, criterion, budget, candidates.",
+                    "required": ["type"],
+                    "allOf": [
+                        {
+                            "if": { "properties": { "type": { "const": "steer" } } },
+                            "then": { "required": ["claims"] }
+                        },
+                        {
+                            "if": { "properties": { "type": { "const": "seek" } } },
+                            "then": { "required": ["form", "region"] }
+                        }
+                    ],
                     "properties": {
-                        "species": {
+                        "type": {
                             "type": "string",
-                            "description": "The wish species: omitted (or steer) holds states; seek commissions a walk",
+                            "description": "The wish's type, always stated: steer holds states; seek commissions a walk",
                             "enum": ["steer", "seek"]
                         },
-                        "seek": {
+                        "form": {
+                            "type": "string",
+                            "description": "The walk's form (type seek, always stated): find_best searches under budget; cover_now walks a region first",
+                            "enum": ["cover_now", "find_best"]
+                        },
+                        "region": {
                             "type": "object",
-                            "description": "The seek body (species seek): a commissioned walk under a budget",
+                            "description": "The dials to walk, each [lo, hi, is_int] - the bounds of the commission",
+                            "additionalProperties": { "type": "array", "items": {} }
+                        },
+                        "criterion": {
+                            "type": "object",
+                            "description": "find_best declares what counts: the reading and the direction",
                             "properties": {
-                                "species": { "type": "string", "enum": ["cover_now", "find_best"], "description": "find_best searches under budget; cover_now walks a region first" },
-                                "region": {
-                                    "type": "object",
-                                    "description": "The dials to walk, each [lo, hi, is_int] - the bounds of the commission",
-                                    "additionalProperties": { "type": "array", "items": {} }
-                                },
-                                "criterion": {
-                                    "type": "object",
-                                    "description": "find_best declares what counts: the reading and the direction",
-                                    "properties": {
-                                        "outcome": { "type": "string", "description": "The reading to optimize" },
-                                        "direction": { "type": "string", "enum": ["maximize", "max", "minimize", "min"] }
-                                    }
-                                },
-                                "budget": { "type": "integer", "description": "find_best: the feelers it may spend - one measured trial each" },
-                                "candidates": { "type": "integer", "description": "Optional launch dice: N random joint settings tried first; they rank but never teach" }
+                                "outcome": { "type": "string", "description": "The reading to optimize" },
+                                "direction": { "type": "string", "enum": ["maximize", "max", "minimize", "min"] }
                             }
                         },
+                        "budget": { "type": "integer", "description": "find_best: the feelers it may spend - one measured trial each" },
+                        "candidates": { "type": "integer", "description": "Optional launch dice: N random joint settings tried first; they rank but never teach" },
                         "claims": {
                             "type": "array",
                             "description": "The aims: one reading, one band each - the atom the gavel judges. N >= 1.",
@@ -276,24 +285,24 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "steerwish_get",
-                description: "Get one steerwish with its full event history (declared, planned, refused, acted, landed, missed, re_opened, corrected, closed).",
+                name: "wish_get",
+                description: "Get one wish with its full event history (declared, planned, refused, acted, landed, missed, re_opened, corrected, closed).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "wish_id": { "type": "string", "description": "UUID of the steerwish" }
+                        "wish_id": { "type": "string", "description": "UUID of the wish" }
                     },
                     "required": ["wish_id"],
                     "additionalProperties": false
                 }),
             },
             ToolDef {
-                name: "steerwish_close",
-                description: "Close a steerwish: append the 'closed' event and release the hold (idempotent on already-closed wishes).",
+                name: "wish_close",
+                description: "Close a wish: append the 'closed' event and release the hold (idempotent on already-closed wishes).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "wish_id": { "type": "string", "description": "UUID of the steerwish to close" }
+                        "wish_id": { "type": "string", "description": "UUID of the wish to close" }
                     },
                     "required": ["wish_id"],
                     "additionalProperties": false
@@ -301,12 +310,12 @@ impl ToolRegistry {
             },
 
             ToolDef {
-                name: "steerwish_update",
+                name: "wish_update",
                 description: "The holder corrects a wish: restated claims (and terms) on the same identity. Stamps a 'corrected' event with the previous band, then re-plans through the door. Works on living and unheld wishes.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "wish_id": { "type": "string", "description": "UUID of the steerwish to correct" },
+                        "wish_id": { "type": "string", "description": "UUID of the wish to correct" },
                         "claims": {
                             "type": "array",
                             "description": "The restated aims: one reading, one band each. N >= 1.",
@@ -336,12 +345,12 @@ impl ToolRegistry {
                 }),
             },
             ToolDef {
-                name: "steerwish_delete",
-                description: "Purge a steerwish: closes it first (unassign + dial revert), then removes registry rows (events cascade) and the book's card. Forgetting, not stopping.",
+                name: "wish_delete",
+                description: "Purge a wish: closes it first (unassign + dial revert), then removes registry rows (events cascade) and the book's card. Forgetting, not stopping.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "wish_id": { "type": "string", "description": "UUID of the steerwish to purge" }
+                        "wish_id": { "type": "string", "description": "UUID of the wish to purge" }
                     },
                     "required": ["wish_id"],
                     "additionalProperties": false
@@ -529,50 +538,50 @@ impl ToolRegistry {
                     .delete(&format!("/targets/{}", urlencoding::encode(id)))
                     .await
             }
-            "steerwish_list" => self.client.get("/steerwishes").await,
-            "steerwish_get" => {
+            "wish_list" => self.client.get("/wishes").await,
+            "wish_get" => {
                 require_id(id, "wish_id")?;
                 self.client
                     .get(&format!(
-                        "/steerwishes/{}",
+                        "/wishes/{}",
                         urlencoding::encode(id)
                     ))
                     .await
             }
-            "steerwish_declare" => {
+            "wish_declare" => {
                 // The wish body, verbatim - the door validates the
                 // grammar (claims, terms), this layer never intervenes.
-                self.client.post("/steerwishes", args.clone()).await
+                self.client.post("/wishes", args.clone()).await
             }
-            "steerwish_close" => {
+            "wish_close" => {
                 require_id(id, "wish_id")?;
                 self.client
                     .post_empty(&format!(
-                        "/steerwishes/{}/close",
+                        "/wishes/{}/close",
                         urlencoding::encode(id)
                     ))
                     .await
             }
 
-            "steerwish_update" => {
+            "wish_update" => {
                 require_id(id, "wish_id")?;
                 // The correction, verbatim (claims, terms, reason) -
                 // the door validates; identity rides the URL.
                 self.client
                     .post(
                         &format!(
-                            "/steerwishes/{}/update",
+                            "/wishes/{}/update",
                             urlencoding::encode(id)
                         ),
                         args.clone(),
                     )
                     .await
             }
-            "steerwish_delete" => {
+            "wish_delete" => {
                 require_id(id, "wish_id")?;
                 self.client
                     .delete(&format!(
-                        "/steerwishes/{}",
+                        "/wishes/{}",
                         urlencoding::encode(id)
                     ))
                     .await

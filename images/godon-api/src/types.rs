@@ -140,10 +140,10 @@ impl ErrorResponse {
     }
 }
 
-// ─── Steerwish ──────────────────────────────────────────────────────
+// ─── Wish ──────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SteerwishEvent {
+pub struct WishEvent {
     #[serde(rename = "type")]
     pub event_type: String,
     #[serde(rename = "at")]
@@ -159,7 +159,7 @@ pub struct SteerwishEvent {
 /// grammar the door validates - today claims + terms - passes through
 /// unshaped, in both directions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Steerwish {
+pub struct Wish {
     pub id: String,
     pub state: String,
     #[serde(rename = "createdAt")]
@@ -167,13 +167,13 @@ pub struct Steerwish {
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub events: Vec<SteerwishEvent>,
+    pub events: Vec<WishEvent>,
     #[serde(flatten)]
     pub body: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SteerwishSummary {
+pub struct WishSummary {
     pub id: String,
     pub state: String,
     #[serde(rename = "createdAt")]
