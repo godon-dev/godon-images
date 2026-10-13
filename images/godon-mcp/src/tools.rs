@@ -198,11 +198,38 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "steerwish_declare",
-                description: "Declare a steerwish: claims (the aims the gavel judges) and optional terms (claims that carry no dial - the price the wish pays). One verdict: kept = every claim in band AND every term honored. The door validates the grammar; refusals name their binding constraint. Omitted budget means upkeep indefinitely.",
+                description: "Declare a wish - one door, two grammars. Steer: claims (the aims the gavel judges) and optional terms (the price the wish pays); one verdict, kept = every claim in band AND every term honored; omitted budget means upkeep indefinitely. Seek: species 'seek' with a seek body - a commissioned walk (region, criterion, budget, candidates) that returns the best found with its bars and spend count; when the map already reads the answer, the refusal carries it. The door validates; refusals name their binding constraint.",
                 input_schema: serde_json::json!({
                     "type": "object",
-                    "description": "The wish body, verbatim - the controller validates the grammar (the door). The wish speaks the stack: claims + terms.",
+                    "description": "The wish body, verbatim - the controller validates the grammar (the door). Steer speaks claims + terms; seek speaks species 'seek' plus a seek body (region, criterion, budget, candidates).",
                     "properties": {
+                        "species": {
+                            "type": "string",
+                            "description": "The wish species: omitted (or steer) holds states; seek commissions a walk",
+                            "enum": ["steer", "seek"]
+                        },
+                        "seek": {
+                            "type": "object",
+                            "description": "The seek body (species seek): a commissioned walk under a budget",
+                            "properties": {
+                                "species": { "type": "string", "enum": ["cover_now", "find_best"], "description": "find_best searches under budget; cover_now walks a region first" },
+                                "region": {
+                                    "type": "object",
+                                    "description": "The dials to walk, each [lo, hi, is_int] - the bounds of the commission",
+                                    "additionalProperties": { "type": "array", "items": {} }
+                                },
+                                "criterion": {
+                                    "type": "object",
+                                    "description": "find_best declares what counts: the reading and the direction",
+                                    "properties": {
+                                        "outcome": { "type": "string", "description": "The reading to optimize" },
+                                        "direction": { "type": "string", "enum": ["maximize", "max", "minimize", "min"] }
+                                    }
+                                },
+                                "budget": { "type": "integer", "description": "find_best: the feelers it may spend - one measured trial each" },
+                                "candidates": { "type": "integer", "description": "Optional launch dice: N random joint settings tried first; they rank but never teach" }
+                            }
+                        },
                         "claims": {
                             "type": "array",
                             "description": "The aims: one reading, one band each - the atom the gavel judges. N >= 1.",
