@@ -17,6 +17,16 @@
 //!   unmeasured_path        - a candidate exists but is not invertible as
 //!                            measured (thin window, non-monotone or flat
 //!                            branch; branch selection is a later era)
+//!   unmeasured_outcome     - the named reading has no measured pair at
+//!                            all: the map cannot speak for it (an
+//!                            answer, never an HTTP error — §XVII)
+//!   ambience_drift         - local ground exists but not at the
+//!                            current ambience — the resting spot
+//!                            moved (re-measure first)
+//!   outside_entry_window   - the ambience entry's measured window
+//!                            cannot reach the wish's aim from here
+//!                            (the refusal carries its numbers and the
+//!                            ambience it is true at)
 //!
 //! Candidates come from the CURVE REGISTRY (measurement first: a curve is
 //! direct evidence of influence - data over badge). The connectome is read
@@ -679,6 +689,7 @@ fn solve_claim(
     ranges: &HashMap<String, (f64, f64)>,
     max_change: Option<f64>,
     wander: &HashMap<(String, String), f64>,
+    ambiences: &HashMap<(String, String), crate::ambiences::AmbienceConsult>,
 ) -> Result<ClaimPlan, PlanDecision> {
     let target = band.target.unwrap_or(0.5 * (band.lo + band.hi));
     let shift_target = target - anchor;
@@ -704,6 +715,58 @@ fn solve_claim(
             )
         })
         .collect();
+
+    // ── the local-ground consult (§XVIII) ───────────────────────────
+    // Own-reading claims only: the receiver's own dial, measured at
+    // its resting spot, joins the candidate pool. The two scopes
+    // never compose — the patch is its own candidate, never merged
+    // with chain points. A missing patch leaves the ladder untouched.
+    let mut consult_refusals: Vec<CandidateRefusal> = Vec::new();
+    match ambiences.get(&(receiver.to_string(), channel.to_string())) {
+        None | Some(crate::ambiences::AmbienceConsult::NoEntries) => {}
+        Some(crate::ambiences::AmbienceConsult::Drift { current, banked }) => {
+            // local ground exists but not HERE — the resting spot
+            // moved. A candidate-level refusal (rank: it evaluated
+            // nothing numeric, same progress class as not-invertible);
+            // if a chain candidate plans, the wish plans.
+            consult_refusals.push(CandidateRefusal::new(
+                RANK_NOT_INVERTIBLE,
+                "ambience_drift",
+                named(format!(
+                    "ambience drifted - re-measure first: resting spot now {}, banked at {}",
+                    current,
+                    banked.join(", ")
+                )),
+            ));
+        }
+        Some(crate::ambiences::AmbienceConsult::Patch { param, baseline, anchor: entry_anchor, points }) => {
+            // the patch's reachable reading span, in thermometer
+            // numbers the wish already speaks
+            let span_lo = points.iter().map(|p| p.shift).fold(f64::INFINITY, f64::min);
+            let span_hi = points
+                .iter()
+                .map(|p| p.shift)
+                .fold(f64::NEG_INFINITY, f64::max);
+            if shift_target < span_lo || shift_target > span_hi {
+                consult_refusals.push(CandidateRefusal::new(
+                    RANK_TARGET_UNREACHABLE,
+                    "outside_entry_window",
+                    named(format!(
+                        "not reachable from here: at {} the measured span is [{:.3}, {:.3}]; \
+                         your band asks [{:.3}, {:.3}] (aim {:.3})",
+                        baseline,
+                        anchor + span_lo,
+                        anchor + span_hi,
+                        band.lo,
+                        band.hi,
+                        target
+                    )),
+                ));
+            } else {
+                candidates.push((receiver.to_string(), param.clone(), points.clone()));
+            }
+        }
+    }
     candidates.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
 
     // the wander floor, shared helper (claims and terms price the same law)
@@ -713,7 +776,7 @@ fn solve_claim(
         return Err(refused);
     }
 
-    let mut refusals: Vec<CandidateRefusal> = Vec::new();
+    let mut refusals: Vec<CandidateRefusal> = consult_refusals;
     // (hops, predicted bar, sender, param, answer) - sort key, in order
     let mut plans: Vec<(usize, f64, String, String, ClaimPlan)> = Vec::new();
 
@@ -909,10 +972,13 @@ fn resolve_named(
 }
 
 /// Plan a wish against the measured map. Err = door refusal (malformed
-/// request or unresolvable outcome - never planned). Ok(Refused) = the
-/// binding constraint, named - claim or term. Ok(Planned) = the compile
-/// speaks: one move-set keeping every claim in band and every term
-/// honored, or the empty region named.
+/// request shape — never planned, never an unmeasured outcome: those
+/// are answers now). Ok(Refused) = the binding constraint, named -
+/// claim or term. Ok(Planned) = the compile speaks: one move-set
+/// keeping every claim in band and every term honored, or the empty
+/// region named. `ambiences` carries the local-ground consult per
+/// (receiver, channel) — own-reading claims consult their patch
+/// (§XVIII); an empty map is the pre-rung-5 behavior entire.
 pub fn plan(
     entries: &[CurveEntry],
     graph: Option<&CausalGraph>,
@@ -920,6 +986,7 @@ pub fn plan(
     anchor: Option<f64>,
     claim_anchors: &HashMap<(String, String), f64>,
     wander: &HashMap<(String, String), f64>,
+    ambiences: &HashMap<(String, String), crate::ambiences::AmbienceConsult>,
 ) -> Result<PlanDecision, String> {
     // limits door: shape before meaning
     if let Some(max_change) = req.limits.as_ref().and_then(|l| l.max_change) {
@@ -1010,16 +1077,31 @@ pub fn plan(
 
     let mut resolved_claims: Vec<NamedReading> = Vec::new();
     for c in &claims {
-        match resolve_named(entries, c, "claim", &anchor_of)? {
-            ResolvedNamed::Named(n) => resolved_claims.push(n),
-            ResolvedNamed::Unanchored(dec) => return Ok(dec),
+        match resolve_named(entries, c, "claim", &anchor_of) {
+            Ok(ResolvedNamed::Named(n)) => resolved_claims.push(n),
+            Ok(ResolvedNamed::Unanchored(dec)) => return Ok(dec),
+            // An unmeasured outcome is an ANSWER, never a door error
+            // (§XVII's motion): the map cannot speak for this reading
+            // yet, and the refusal says what it CAN name.
+            Err(e) => {
+                return Ok(PlanDecision::Refused {
+                    reason: "unmeasured_outcome".to_string(),
+                    detail: e,
+                })
+            }
         }
     }
     let mut resolved_terms: Vec<NamedReading> = Vec::new();
     for t in &terms {
-        match resolve_named(entries, t, "term", &anchor_of)? {
-            ResolvedNamed::Named(n) => resolved_terms.push(n),
-            ResolvedNamed::Unanchored(dec) => return Ok(dec),
+        match resolve_named(entries, t, "term", &anchor_of) {
+            Ok(ResolvedNamed::Named(n)) => resolved_terms.push(n),
+            Ok(ResolvedNamed::Unanchored(dec)) => return Ok(dec),
+            Err(e) => {
+                return Ok(PlanDecision::Refused {
+                    reason: "unmeasured_outcome".to_string(),
+                    detail: e,
+                })
+            }
         }
     }
 
@@ -1039,6 +1121,7 @@ pub fn plan(
             &ranges,
             max_change,
             wander,
+            ambiences,
         ) {
             Ok(p) => solved.push((c.clone(), p)),
             Err(dec) => return Ok(dec),
@@ -1409,7 +1492,7 @@ mod tests {
     fn single_hop_lands_on_target() {
         let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
         let r = req("R", 25.0, None, None);
-        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Planned {
                 moves,
                 predicted_value,
@@ -1436,7 +1519,7 @@ mod tests {
     fn target_outside_measured_range_refuses() {
         let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
         let r = req("R", 75.0, None, None); // shift range is [0, 50]
-        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, .. } => assert_eq!(reason, "outside_measured_range"),
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -1450,7 +1533,7 @@ mod tests {
         // "move +25" and aim the dial where the move is +25 (level 50).
         let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
         let r = req("R", 115.0, None, None);
-        match plan(&entries, None, &r, Some(90.0), &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, Some(90.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Planned {
                 moves,
                 predicted_value,
@@ -1477,7 +1560,7 @@ mod tests {
         // thermometer numbers.
         let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
         let r = req("R", 165.0, None, None);
-        match plan(&entries, None, &r, Some(90.0), &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, Some(90.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, .. } => assert_eq!(reason, "outside_measured_range"),
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -1487,7 +1570,7 @@ mod tests {
     fn unanchored_outcome_refuses_named() {
         let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
         let r = req("R", 25.0, None, None);
-        match plan(&entries, None, &r, None, &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, None, &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, detail } => {
                 assert_eq!(reason, "unanchored_outcome");
                 assert!(detail.contains("neutral"), "detail should teach: {detail}");
@@ -1513,7 +1596,7 @@ mod tests {
             max_change: Some(0.2),
         };
         let r = req("R", 10.0, Some(limits), Some(ranges));
-        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, .. } => assert_eq!(reason, "magnitude_bound"),
             other => panic!("expected magnitude_bound, got {other:?}"),
         }
@@ -1527,7 +1610,7 @@ mod tests {
             max_change: None,
         };
         let r = req("R", 25.0, Some(limits), None);
-        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, detail } => {
                 assert_eq!(reason, "excluded_input");
                 assert!(detail.contains('p'), "detail must name the excluded param");
@@ -1552,7 +1635,7 @@ mod tests {
         ];
         let entries = vec![entry("a", "R", "p", "objective_0", pts)];
         let r = req("R", 20.0, None, None);
-        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Planned {
                 moves, predicted_value, ..
             } => {
@@ -1577,7 +1660,7 @@ mod tests {
         ];
         let entries = vec![entry("a", "R", "p", "objective_0", pts)];
         let r = req("R", 20.0, None, None);
-        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Planned { moves, .. } => {
                 assert_eq!(moves[0].param, "p");
                 assert!((moves[0].setting - 30.0).abs() < 1.0);
@@ -1602,7 +1685,7 @@ mod tests {
             ),
         ];
         let r = req("R", 20.0, None, None);
-        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Planned { moves, path, .. } => {
                 assert_eq!(moves[0].sender, "M", "direct dial on the middle node");
                 assert_eq!(moves[0].param, "t");
@@ -1626,7 +1709,7 @@ mod tests {
             entry("aa_early", "R", "p1", "objective_0", loose),
         ];
         let r = req("R", 50.0, None, None);
-        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Planned {
                 moves,
                 predicted_bars,
@@ -1646,7 +1729,7 @@ mod tests {
         for outcome in ["R", "R.objective_0", "R/objective_0"] {
             let r = req(outcome, 25.0, None, None);
             assert!(
-                plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).is_ok(),
+                plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).is_ok(),
                 "'{outcome}' must resolve"
             );
         }
@@ -1658,17 +1741,30 @@ mod tests {
             entry("a", "R", "p", "objective_0", GAIN_UP),
             entry("b", "R", "q", "objective_1", GAIN_UP),
         ];
+        // Ambiguous and unknown outcome names are ANSWERS now
+        // (§XVII): refusals that say how to fix the ask, never door
+        // errors - the controller books refused, not plan_error.
         let r = req("R", 25.0, None, None);
-        let err = plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).unwrap_err();
-        assert!(err.contains("ambiguous"), "two channels: {err}");
-        assert!(err.contains("objective_0") && err.contains("objective_1"));
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
+            PlanDecision::Refused { reason, detail } => {
+                assert_eq!(reason, "unmeasured_outcome");
+                assert!(detail.contains("ambiguous"), "two channels: {detail}");
+                assert!(detail.contains("objective_0") && detail.contains("objective_1"));
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
 
         let r = req("nowhere", 25.0, None, None);
-        let err = plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).unwrap_err();
-        assert!(
-            err.contains("resolvable"),
-            "unknown outcome lists what exists: {err}"
-        );
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
+            PlanDecision::Refused { reason, detail } => {
+                assert_eq!(reason, "unmeasured_outcome");
+                assert!(
+                    detail.contains("resolvable"),
+                    "unknown outcome lists what exists: {detail}"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1690,7 +1786,7 @@ mod tests {
             claims: Vec::new(),
             terms: Vec::new(),
         };
-        assert!(plan(&entries, None, &bad_band, Some(0.0), &HashMap::new(), &HashMap::new()).is_err());
+        assert!(plan(&entries, None, &bad_band, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).is_err());
         // maxChange outside (0, 1)
         let r = req(
             "R",
@@ -1701,12 +1797,134 @@ mod tests {
             }),
             None,
         );
-        assert!(plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).is_err());
+        assert!(plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).is_err());
         // inverted declared range
         let mut ranges = HashMap::new();
         ranges.insert("p".to_string(), [100.0, 0.0]);
         let r = req("R", 25.0, None, Some(ranges));
-        assert!(plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).is_err());
+        assert!(plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).is_err());
+    }
+
+    // ─── the local-ground consult (§XVIII, ambience vocabulary) ─────
+
+    fn consult_map(
+        pairs: Vec<(&str, &str, crate::ambiences::AmbienceConsult)>,
+    ) -> HashMap<(String, String), crate::ambiences::AmbienceConsult> {
+        pairs
+            .into_iter()
+            .map(|(r, c, v)| ((r.to_string(), c.to_string()), v))
+            .collect()
+    }
+
+    #[test]
+    fn ambience_drift_refuses_when_no_entry_at_current_resting_spot() {
+        // A self-curve makes the outcome resolvable but contributes no
+        // chain candidate (sender == receiver is excluded); the only
+        // local knowledge is a patch banked at a DIFFERENT ambience.
+        let entries = vec![entry("R", "R", "p", "objective_0", GAIN_UP)];
+        let r = req("R", 25.0, None, None);
+        let slices = consult_map(vec![(
+            "R",
+            "objective_0",
+            crate::ambiences::AmbienceConsult::Drift {
+                current: "p=50.0".to_string(),
+                banked: vec!["p@40.000".to_string()],
+            },
+        )]);
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &slices).unwrap() {
+            PlanDecision::Refused { reason, detail } => {
+                assert_eq!(reason, "ambience_drift");
+                assert!(
+                    detail.contains("re-measure first"),
+                    "the refusal says what to do: {detail}"
+                );
+                assert!(
+                    detail.contains("p@40.000"),
+                    "the refusal names where the ground IS banked: {detail}"
+                );
+            }
+            other => panic!("expected ambience_drift, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outside_entry_window_refuses_with_numbers_and_ambience() {
+        let entries = vec![entry("R", "R", "p", "objective_0", GAIN_UP)];
+        // aim 75 -> shift 75; the patch's shifts only span [10, 40]
+        let r = req("R", 75.0, None, None);
+        let slices = consult_map(vec![(
+            "R",
+            "objective_0",
+            crate::ambiences::AmbienceConsult::Patch {
+                param: "p".to_string(),
+                baseline: "resting spot anchor 50.000".to_string(),
+                anchor: 50.0,
+                points: vec![
+                    CurvePoint { level: 45.0, shift: 10.0, bar: 0.02 },
+                    CurvePoint { level: 55.0, shift: 40.0, bar: 0.02 },
+                ],
+            },
+        )]);
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &slices).unwrap() {
+            PlanDecision::Refused { reason, detail } => {
+                assert_eq!(reason, "outside_entry_window");
+                assert!(
+                    detail.contains("not reachable from here"),
+                    "the §XVIII refusal shape: {detail}"
+                );
+                assert!(
+                    detail.contains("[10.000, 40.000]") && detail.contains("[70.000, 80.000]"),
+                    "carries the measured span AND the band asked: {detail}"
+                );
+                assert!(
+                    detail.contains("anchor 50.000"),
+                    "carries the ambience it is true at: {detail}"
+                );
+            }
+            other => panic!("expected outside_entry_window, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn in_window_patch_plans_on_the_own_dial() {
+        let entries = vec![entry("R", "R", "p", "objective_0", GAIN_UP)];
+        // aim 25 -> shift 25; patch spans [10, 40] -> level 50
+        let r = req("R", 25.0, None, None);
+        let slices = consult_map(vec![(
+            "R",
+            "objective_0",
+            crate::ambiences::AmbienceConsult::Patch {
+                param: "p".to_string(),
+                baseline: "resting spot anchor 50.000".to_string(),
+                anchor: 50.0,
+                points: vec![
+                    CurvePoint { level: 45.0, shift: 10.0, bar: 0.02 },
+                    CurvePoint { level: 55.0, shift: 40.0, bar: 0.02 },
+                ],
+            },
+        )]);
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &slices).unwrap() {
+            PlanDecision::Planned { moves, .. } => {
+                assert_eq!(moves[0].sender, "R", "the own dial answers");
+                assert_eq!(moves[0].param, "p");
+                assert!((moves[0].setting - 50.0).abs() < 1e-6);
+            }
+            other => panic!("expected a plan from the patch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_slices_leaves_the_chain_ladder_untouched() {
+        // The pre-rung-5 behavior entire: an empty consult map and a
+        // chain candidate answer exactly as before.
+        let entries = vec![entry("a", "R", "p", "objective_0", GAIN_UP)];
+        let r = req("R", 25.0, None, None);
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
+            PlanDecision::Planned { moves, .. } => {
+                assert_eq!(moves[0].sender, "a");
+            }
+            other => panic!("expected the chain plan, got {other:?}"),
+        }
     }
 
     // ─── the joint compile: claims + terms per wish ─────────────────
@@ -1760,7 +1978,7 @@ mod tests {
             &[(0.0, 0.0, 0.30), (100.0, 50.0, 0.30)],
         )];
         let r = req_claims(vec![claim("R", -0.2, 0.2, 0.0)], vec![], None);
-        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, detail } => {
                 assert_eq!(reason, "wander_floor");
                 assert!(
@@ -1783,7 +2001,7 @@ mod tests {
             &[(0.0, 0.0, 0.30), (100.0, 50.0, 0.30)],
         )];
         let r = req_claims(vec![claim("R", -2.5, 2.5, 0.0)], vec![], None);
-        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Planned { .. } => {}
             other => panic!("expected a plan, got {:?}", other),
         }
@@ -1804,7 +2022,7 @@ mod tests {
         let mut wander = HashMap::new();
         wander.insert(("R".to_string(), "objective_0".to_string()), 0.30);
         let r = req_claims(vec![claim("R", -0.25, 0.25, 0.0)], vec![], None);
-        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &wander).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &wander, &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, detail } => {
                 assert_eq!(reason, "wander_floor");
                 assert!(
@@ -1830,7 +2048,7 @@ mod tests {
         let mut wander = HashMap::new();
         wander.insert(("R".to_string(), "objective_0".to_string()), 0.05);
         let r = req_claims(vec![claim("R", -0.2, 0.2, 0.0)], vec![], None);
-        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &wander).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &wander, &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, detail } => {
                 assert_eq!(reason, "wander_floor");
                 assert!(
@@ -1858,7 +2076,7 @@ mod tests {
             vec![claim("R", -0.2, 0.2, 0.0)],
             None,
         );
-        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, Some(0.0), &HashMap::new(), &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, detail } => {
                 assert_eq!(reason, "wander_floor");
                 assert!(
@@ -1886,7 +2104,7 @@ mod tests {
             None,
         );
         let map = anchors(&[("R1", 0.0), ("R2", 0.0)]);
-        match plan(&entries, None, &r, None, &map, &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, None, &map, &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Planned {
                 moves,
                 claim_predictions,
@@ -1934,7 +2152,7 @@ mod tests {
             None,
         );
         let map = anchors(&[("R1", 0.0), ("R2", 0.0)]);
-        match plan(&entries, None, &r, None, &map, &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, None, &map, &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, detail } => {
                 assert_eq!(reason, "joint_compile_empty");
                 assert!(detail.contains("R1") && detail.contains("R2"),
@@ -1960,7 +2178,7 @@ mod tests {
             None,
         );
         let map = anchors(&[("R1", 0.0), ("R2", 0.0)]);
-        match plan(&entries, None, &r, None, &map, &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, None, &map, &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Planned { moves, .. } => {
                 assert!(
                     (moves[0].setting - 40.0).abs() < 1e-6,
@@ -1984,7 +2202,7 @@ mod tests {
             None,
         );
         let map = anchors(&[("R1", 0.0), ("R2", 0.0)]);
-        match plan(&entries, None, &r, None, &map, &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, None, &map, &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, detail } => {
                 assert_eq!(reason, "joint_compile_empty");
                 assert!(detail.contains("term") && detail.contains("R2") && detail.contains("R1"),
@@ -2007,7 +2225,7 @@ mod tests {
         );
         // only R1 banked a neutral: R2 is refused, named
         let map = anchors(&[("R1", 0.0)]);
-        match plan(&entries, None, &r, None, &map, &HashMap::new()).unwrap() {
+        match plan(&entries, None, &r, None, &map, &HashMap::new(), &HashMap::new()).unwrap() {
             PlanDecision::Refused { reason, detail } => {
                 assert_eq!(reason, "unanchored_outcome");
                 assert!(detail.contains("R2"), "the refusal names the claim: {detail}");

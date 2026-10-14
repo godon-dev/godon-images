@@ -27,7 +27,7 @@ pub struct CurvePointRow {
     /// Standing dials of the group at measurement time — the regime
     /// this point was measured under. Rows persisted before the
     /// column existed replay as NULL (regime unrecorded).
-    pub ambient: Option<String>,
+    pub ambience: Option<String>,
 }
 
 pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), Error> {
@@ -72,14 +72,36 @@ pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), E
         )
         .await?;
     // Regime stamp: the group's standing dials at measurement time.
+    // Vocabulary sealed 2026-10-14: the climate a point was measured
+    // in is the AMBIENCE — the legacy column (causal <= 0.22.x) said
+    // `ambient`; the rename is guarded and idempotent so a deploy
+    // converges old tables without a migration script.
     client
         .execute(
             "ALTER TABLE curve_points \
-             ADD COLUMN IF NOT EXISTS ambient JSONB",
+             ADD COLUMN IF NOT EXISTS ambience JSONB",
+            &[],
+        )
+        .await?;
+    let legacy: bool = client
+        .query_one(
+            "SELECT COUNT(*) = 1 FROM information_schema.columns \
+             WHERE table_name = 'curve_points' AND column_name = 'ambient'",
             &[],
         )
         .await
-        .map(|_| ())
+        .map(|row| row.get::<_, i64>(0) == 1)
+        .unwrap_or(false);
+    if legacy {
+        client
+            .execute(
+                "UPDATE curve_points SET ambience = ambient WHERE ambience IS NULL; \
+                 ALTER TABLE curve_points DROP COLUMN ambient",
+                &[],
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 pub async fn insert_curve_point(
@@ -93,12 +115,12 @@ pub async fn insert_curve_point(
     shift: f64,
     bar: f64,
     convergence_threshold: f64,
-    ambient: Option<&str>,
+    ambience: Option<&str>,
 ) -> Result<(), Error> {
     client
         .execute(
             "INSERT INTO curve_points \
-             (group_id, sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, convergence_threshold, ambient) \
+             (group_id, sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, convergence_threshold, ambience) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, ($10::text)::jsonb)",
             &[
                 &group_id,
@@ -110,7 +132,7 @@ pub async fn insert_curve_point(
                 &shift,
                 &bar,
                 &convergence_threshold,
-                &ambient,
+                &ambience,
             ],
         )
         .await
@@ -123,7 +145,7 @@ pub async fn load_curve_points(
     let rows = client
         .query(
             "SELECT group_id, sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, \
-             convergence_threshold, CAST(ambient AS TEXT) FROM curve_points ORDER BY id",
+             convergence_threshold, CAST(ambience AS TEXT) FROM curve_points ORDER BY id",
             &[],
         )
         .await?;
@@ -140,7 +162,7 @@ pub async fn load_curve_points(
             shift: row.get(6),
             bar: row.get(7),
             convergence_threshold: row.get(8),
-            ambient: row.get(9),
+            ambience: row.get(9),
         })
         .collect())
 }
@@ -158,7 +180,7 @@ pub async fn persist_point(
     shift: f64,
     bar: f64,
     convergence_threshold: f64,
-    ambient: Option<&str>,
+    ambience: Option<&str>,
 ) {
     if let Err(e) = insert_curve_point(
         client,
@@ -171,7 +193,7 @@ pub async fn persist_point(
         shift,
         bar,
         convergence_threshold,
-        ambient,
+        ambience,
     )
     .await
     {
@@ -196,7 +218,7 @@ pub async fn persist_point(
             shift,
             bar,
             convergence_threshold,
-            ambient,
+            ambience,
         )
         .await
         {
