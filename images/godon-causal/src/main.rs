@@ -9,6 +9,8 @@ mod planner;
 mod probe_curves;
 mod query;
 mod seek_plan;
+mod ambience_store;
+mod ambiences;
 mod steer;
 mod trial_reader;
 mod wish_book;
@@ -49,6 +51,11 @@ struct AppState {
     /// Persisted in outcome_anchors with group kept as provenance,
     /// loaded at boot, refreshed by every probe's pause window.
     anchors: RwLock<HashMap<(String, String), (f64, f64)>>,
+    /// The local ground (rung 5): ambience entries per (group, tender,
+    /// param, channel, baseline) — the own-effects measured where the
+    /// tender lives. Write-through on bank, boot-restored, curves
+    /// idiom. The two map scopes (chain vs ambience entry) never compose.
+    ambiences: ambiences::AmbienceRegistry,
     /// The derived wander floor's bank, tier 2: per (receiver, channel),
     /// the rolling judged-window P95 prices of |reading - median|.
     /// Consulted at plan time once WANDER_MIN_WINDOWS windows exist;
@@ -155,6 +162,7 @@ impl AppState {
             connectomes: RwLock::new(HashMap::new()),
             build_status: RwLock::new(BuildStatus::default()),
             curves: RwLock::new(probe_curves::CurveRegistry::new()),
+            ambiences: ambiences::AmbienceRegistry::new(),
             anchors: RwLock::new(HashMap::new()),
             wander: RwLock::new(HashMap::new()),
             tables_ensured: std::sync::atomic::AtomicBool::new(false),
@@ -646,6 +654,119 @@ async fn causes(
 
 // ─── Steering: the wish's plan, from the measured map ───────────────
 
+/// The planner's local-ground consult, built per wish: for every
+/// named outcome that resolves to (receiver, channel), gather the
+/// receiver's ambience entries for that channel. Exact-match on the
+/// canonical current baseline — the dial pinned at its CURRENT held
+/// value (a patch banked at a different anchor does not match);
+/// nearest-within-bars is the named later motion if churn proves
+/// real. Deterministic pick among matching params: most freshest
+/// points, then param name.
+async fn build_ambience_consult(
+    state: &AppState,
+    group: &str,
+    entries: &[probe_curves::CurveEntry],
+    req: &planner::SteerPlanRequest,
+) -> HashMap<(String, String), ambiences::AmbienceConsult> {
+    let mut names: Vec<&str> = Vec::new();
+    if req.claims.is_empty() {
+        if !req.outcome.is_empty() {
+            names.push(req.outcome.as_str());
+        }
+    } else {
+        names.extend(req.claims.iter().map(|c| c.outcome.as_str()));
+    }
+    let mut out: HashMap<(String, String), ambiences::AmbienceConsult> = HashMap::new();
+    if names.is_empty() {
+        return out;
+    }
+    let standing = state.reader.read_standing_params(group).await.ok();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    for name in names {
+        let Ok((receiver, channel)) = planner::resolve_outcome(entries, name) else {
+            continue; // the ladder's unmeasured_outcome refusal speaks
+        };
+        let mut all: Vec<(String, ambiences::Patch)> = Vec::new(); // (param, patch)
+        for param in state.ambiences.params_with_patches(group, &receiver, &channel) {
+            for (key, patch) in state.ambiences.patches(group, &receiver, &param, &channel) {
+                let _ = key;
+                all.push((param.clone(), patch));
+            }
+        }
+        if all.is_empty() {
+            continue; // no entries: the chain ladder answers alone
+        }
+        let Some(held) = standing
+            .as_ref()
+            .and_then(|st| st.get(&receiver))
+            .and_then(|v| v.as_object().cloned())
+        else {
+            continue;
+        };
+        // exact-match: the current baseline key per param
+        let mut matching: Vec<(String, ambiences::Patch)> = Vec::new();
+        let mut banked_spots: Vec<String> = Vec::new();
+        for (param, patch) in &all {
+            let Some(anchor) = held.get(param).and_then(|v| v.as_f64()) else {
+                continue;
+            };
+            let current = ambiences::canonical_baseline(
+                standing.as_ref().unwrap(),
+                &receiver,
+                param,
+                anchor,
+            );
+            let hit = state
+                .ambiences
+                .patches(group, &receiver, param, &channel)
+                .iter()
+                .any(|(k, _)| *k == current);
+            if hit {
+                matching.push((param.clone(), patch.clone()));
+            }
+            let short = format!("{}@{:.3}", param, patch.anchor);
+            if !banked_spots.contains(&short) {
+                banked_spots.push(short);
+            }
+        }
+        let consult = if matching.is_empty() {
+            let current_short = held
+                .iter()
+                .map(|(k, v)| format!("{}={:.3}", k, v.as_f64().unwrap_or(0.0)))
+                .collect::<Vec<_>>()
+                .join(",");
+            ambiences::AmbienceConsult::Drift {
+                current: current_short,
+                banked: banked_spots,
+            }
+        } else {
+            matching.sort_by(|a, b| {
+                b.1.freshest()
+                    .len()
+                    .cmp(&a.1.freshest().len())
+                    .then_with(|| a.0.cmp(&b.0))
+            });
+            let (param, patch) = matching.remove(0);
+            let _ = now;
+            ambiences::AmbienceConsult::Patch {
+                param,
+                baseline: format!("resting spot anchor {:.3}", patch.anchor),
+                anchor: patch.anchor,
+                points: patch
+                    .freshest()
+                    .into_iter()
+                    .map(|p| steer::CurvePoint { level: p.level, shift: p.shift, bar: p.bar })
+                    .collect(),
+            }
+        };
+        out.insert((receiver, channel), consult);
+    }
+    out
+}
+
 async fn steer_plan(
     State(state): State<Arc<AppState>>,
     Json(raw): Json<serde_json::Value>,
@@ -811,7 +932,25 @@ async fn steer_plan(
         m
     };
     let wander = state.wander_consult().await;
-    match planner::plan(&entries, graph.as_ref(), &req, anchor, &claim_anchors, &wander) {
+    // The local-ground consult (rung 5): per own-reading outcome, the
+    // patch at the CURRENT resting spot (or the drift refusal's
+    // facts). Chain-map work — seeks, cover_now — never consults.
+    let ambiences = build_ambience_consult(
+        &state,
+        &group,
+        &entries,
+        &req,
+    )
+    .await;
+    match planner::plan(
+        &entries,
+        graph.as_ref(),
+        &req,
+        anchor,
+        &claim_anchors,
+        &wander,
+        &ambiences,
+    ) {
         // door refusal: malformed request or unresolvable outcome
         Err(door) => Err((
             StatusCode::BAD_REQUEST,
@@ -1321,7 +1460,7 @@ async fn rewalk(
         // The re-walk replans with the tier-1 bar floor only: no state
         // here to consult the bank, and a wish the door refused for
         // wander never reached a hold to re-walk. Named in the PR.
-        match planner::plan(entries, graph, terms_req, Some(anchor), &HashMap::new(), &HashMap::new()) {
+        match planner::plan(entries, graph, terms_req, Some(anchor), &HashMap::new(), &HashMap::new(), &HashMap::new()) {
             Ok(planner::PlanDecision::Planned {
                 moves,
                 predicted_value,
@@ -2032,7 +2171,7 @@ async fn steer_plan_get(
                     m
                 };
                 let wander = state.wander_consult().await;
-                match planner::plan(&entries, graph.as_ref(), &terms_req, None, &claim_anchors, &wander)
+                match planner::plan(&entries, graph.as_ref(), &terms_req, None, &claim_anchors, &wander, &HashMap::new())
                 {
                     Ok(planner::PlanDecision::Planned {
                         moves,
@@ -2439,6 +2578,13 @@ struct ProbeResultRequest {
     /// Declared parameter range (upper - lower) from the systemtender.
     /// Scales gap ignorance; absent → observed level span.
     param_range: Option<f64>,
+    /// The fenced walk's anchor (rung 5): present = this probe is a
+    /// ambience trial, banked as local ground at the resting spot causal
+    /// keys from its own standing-params read, pinned here.
+    ambience_anchor: Option<f64>,
+    /// The re-measure generation the duty page named for this walk.
+    #[serde(default)]
+    ambience_epoch: Option<u64>,
 }
 
 async fn probe_result(
@@ -2708,15 +2854,12 @@ async fn probe_result(
         .unwrap_or(f64::MAX / 2.0);
 
     // Regime stamp: the group's standing dials at measurement time —
-    // the ambient this round was measured under. Assembled from
+    // the ambience this round was measured under. Assembled from
     // purely local publications; None on failure (regime unrecorded,
     // the same honesty legacy rows carry).
-    let ambient: Option<String> = state
-        .reader
-        .read_standing_params(&req.group_id)
-        .await
-        .ok()
-        .map(|v| v.to_string());
+    let ambience_value: Option<serde_json::Value> =
+        state.reader.read_standing_params(&req.group_id).await.ok();
+    let ambience: Option<String> = ambience_value.as_ref().map(|v| v.to_string());
 
     // Self-curve: the sender's own node readings in the same windows
     // (its push/pause trials publish them). The pause window is the
@@ -2829,7 +2972,7 @@ async fn probe_result(
                     c.shift,
                     c.shift_bar,
                     req.convergence_threshold,
-                    ambient.as_deref(),
+                    ambience.as_deref(),
                 )
                 .await;
             }
@@ -2846,9 +2989,66 @@ async fn probe_result(
                 *shift,
                 *bar,
                 req.convergence_threshold,
-                ambient.as_deref(),
+                ambience.as_deref(),
             )
             .await;
+        }
+        // Local ground (rung 5): the fenced walk's own-effect points,
+        // keyed by the resting spot — the ambience stamp finally READ.
+        // Baseline = the standing map with the walked dial pinned at
+        // the declared anchor (stable across the window's levels).
+        if let (Some(anchor), Some(standing)) = (req.ambience_anchor, ambience_value.as_ref()) {
+            let baseline = ambiences::canonical_baseline(
+                standing,
+                &req.sender_id,
+                &req.probe_param,
+                anchor,
+            );
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            let epoch = req.ambience_epoch.unwrap_or(0);
+            for (name, shift, bar) in self_channels.iter() {
+                let point = ambiences::AmbiencePoint {
+                    level: req.probe_level,
+                    shift: *shift,
+                    bar: *bar,
+                    epoch,
+                    written_at: now,
+                };
+                state.ambiences.record(
+                    &req.group_id,
+                    &req.sender_id,
+                    &req.probe_param,
+                    name,
+                    &baseline,
+                    anchor,
+                    point,
+                );
+                let _ = ambience_store::insert_ambience_point(
+                    &client,
+                    &ambience_store::AmbienceRow {
+                        group_id: req.group_id.clone(),
+                        tender_id: req.sender_id.clone(),
+                        ambience_param: req.probe_param.clone(),
+                        channel: name.clone(),
+                        baseline: baseline.clone(),
+                        anchor,
+                        level: req.probe_level,
+                        shift: *shift,
+                        bar: *bar,
+                        epoch,
+                        written_at: now,
+                    },
+                )
+                .await;
+            }
+            info!(
+                "AMBIENCE BANK: tender {} param {} level {} anchor {} epoch {} — {} channel(s) at baseline {}",
+                req.sender_id, req.probe_param, req.probe_level, anchor, epoch,
+                self_channels.len(), baseline
+            );
         }
     } else {
         log::error!(
@@ -3008,7 +3208,7 @@ async fn probe_result(
         "channels": channels_json,
         "receivers": receivers_json,
         "self": self_json,
-        "ambient": ambient,
+        "ambience": ambience,
         "k_retire": crate::probe_curves::k_retire(),
     })))
 }
@@ -3133,7 +3333,163 @@ struct WalkViewParams {
 /// The notebook page for one sender's param: every banked curve with
 /// levels, gaps (each carrying its own bars_sum), convergence — plus the
 /// persisted refinement level. The walker is a pure function of this.
+// ─── Ambience duty (rung 5): the map names its local-ground debt ────
+
+#[derive(serde::Deserialize)]
+struct AmbienceDutyParams {
+    group: Option<String>,
+}
+
+/// What standing duty consults at its DONE boundary: the tender's
+/// named debt — dials the map carries with no patch at the current
+/// resting spot (unmeasured_operating_point), and patches gone stale
+/// under vigilance (window_aging). Coupled dials first (the dial's
+/// curve count — more listeners, more coupling), then name order.
+/// Placement stays the caller's: this page carries the window, the
+/// measured levels, and the priced gaps, nothing else.
+async fn ambience_duty(
+    State(state): State<Arc<AppState>>,
+    Path(tender_id): Path<String>,
+    Query(params): Query<AmbienceDutyParams>,
+) -> Json<serde_json::Value> {
+    let group = params
+        .group
+        .unwrap_or_else(|| connectome_store::DEFAULT_GROUP.to_string());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+
+    // The resting spot: the group's standing publications. No entry
+    // for this tender = no held values to anchor windows around —
+    // the duty page names nothing (coverage owns unheld dials).
+    let standing = state.reader.read_standing_params(&group).await.ok();
+    let Some(standing) = standing else {
+        return Json(serde_json::json!({ "debt": [] }));
+    };
+    let Some(held) = standing.get(&tender_id).and_then(|v| v.as_object().cloned()) else {
+        return Json(serde_json::json!({ "debt": [] }));
+    };
+
+    // Map presence: dials this tender has curves on (any receiver).
+    // Coupling order rides the curve count.
+    let entries = state.curves.read().await.snapshot();
+    let mut presence: Vec<(String, usize)> = Vec::new();
+    for e in entries.iter().filter(|e| e.sender_id == tender_id) {
+        match presence.iter_mut().find(|(p, _)| *p == e.param) {
+            Some((_, n)) => *n += 1,
+            None => presence.push((e.param.clone(), 1)),
+        }
+    }
+    presence.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    let mut debt: Vec<ambiences::DebtEntry> = Vec::new();
+    for (param, _coupling) in &presence {
+        let Some(anchor) = held.get(param).and_then(|v| v.as_f64()) else {
+            continue; // not held: no window to fence
+        };
+        let baseline = ambiences::canonical_baseline(&standing, &tender_id, param, anchor);
+        // the primary self channel: most points at this baseline,
+        // name order on ties — the walk banks all channels at once
+        let mut best: Option<(String, ambiences::Patch)> = None;
+        for channel in self_channels_for(&entries, &tender_id, param) {
+            for (key, patch) in state.ambiences.patches(&group, &tender_id, param, &channel) {
+                if key != baseline {
+                    continue;
+                }
+                let better = best
+                    .as_ref()
+                    .map(|(c, p)| {
+                        patch.freshest().len() > p.freshest().len()
+                            || (patch.freshest().len() == p.freshest().len() && channel < *c)
+                    })
+                    .unwrap_or(true);
+                if better {
+                    best = Some((channel.clone(), patch));
+                }
+            }
+        }
+        let Some((_channel, patch)) = best else {
+            debt.push(ambiences::DebtEntry {
+                param: param.clone(),
+                anchor,
+                baseline,
+                window: [anchor, anchor],
+                epoch: 0,
+                reason: "unmeasured_operating_point",
+                levels: Vec::new(),
+                gaps: Vec::new(),
+            });
+            continue;
+        };
+        let freshest = patch.freshest();
+        let age = now - patch.newest_written_at().unwrap_or(0.0);
+        if age <= ambiences::AMBIENCE_AGING_SECS {
+            continue; // fresh local ground: no debt
+        }
+        // the dial's banked declared range: the widest param span the
+        // curves for this dial recorded, else the observed level span
+        let mut param_range: Option<f64> = None;
+        for e in entries
+            .iter()
+            .filter(|e| e.sender_id == tender_id && e.param == *param)
+        {
+            let span = e
+                .state
+                .points
+                .iter()
+                .map(|(l, _, _)| *l)
+                .fold(f64::NEG_INFINITY, f64::max)
+                - e.state
+                    .points
+                    .iter()
+                    .map(|(l, _, _)| *l)
+                    .fold(f64::INFINITY, f64::min);
+            if span > 1e-9 {
+                param_range = Some(param_range.map_or(span, |a: f64| a.max(span)));
+            }
+        }
+        let window = ambiences::patch_window(anchor, param_range, &freshest);
+        let gaps = ambiences::patch_gaps(&freshest);
+        let mut levels: Vec<f64> = freshest.iter().map(|p| p.level).collect();
+        levels.sort_by(f64::total_cmp);
+        // the resting spot itself is the most important unmeasured
+        // level: the join point the planner's consult interpolates from
+        if !levels.iter().any(|l| (*l - anchor).abs() < 1e-9) {
+            levels.insert(levels.partition_point(|&l| l < anchor), anchor);
+        }
+        debt.push(ambiences::DebtEntry {
+            param: param.clone(),
+            anchor,
+            baseline,
+            window,
+            epoch: patch.max_epoch() + 1,
+            reason: "window_aging",
+            levels,
+            gaps: gaps.into_iter().map(ambiences::GapOut::from).collect(),
+        });
+    }
+    Json(serde_json::json!({ "debt": debt }))
+}
+
+/// The tender's self channels for a param (the diagonal's channels).
+fn self_channels_for(
+    entries: &[probe_curves::CurveEntry],
+    tender_id: &str,
+    param: &str,
+) -> Vec<String> {
+    let mut out: Vec<String> = entries
+        .iter()
+        .filter(|e| e.sender_id == tender_id && e.receiver_id == tender_id && e.param == param)
+        .map(|e| e.channel.clone())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 async fn walk_view(
+
     State(state): State<Arc<AppState>>,
     Path(sender_id): Path<String>,
     Query(params): Query<WalkViewParams>,
@@ -3292,6 +3648,37 @@ async fn main() {
                 }
                 Err(e) => log::error!("curve point load failed: {}", e),
             }
+            // Restart recovery for the local ground (rung 5): the
+            // duty page and the planner's consult read the in-memory
+            // registry; without this, a restart would forget every
+            // entry and name unmeasured debt for walked ground.
+            if let Err(e) = ambience_store::ensure_ambience_table(&client).await {
+                log::error!("ambience_points ensure failed: {} (duty starts empty)", e);
+            }
+            match ambience_store::load_ambience_points(&client).await {
+                Ok(rows) => {
+                    let n = rows.len();
+                    for r in &rows {
+                        boot_state.ambiences.record(
+                            &r.group_id,
+                            &r.tender_id,
+                            &r.ambience_param,
+                            &r.channel,
+                            &r.baseline,
+                            r.anchor,
+                            ambiences::AmbiencePoint {
+                                level: r.level,
+                                shift: r.shift,
+                                bar: r.bar,
+                                epoch: r.epoch,
+                                written_at: r.written_at,
+                            },
+                        );
+                    }
+                    info!("loaded {} persisted ambience points into registry", n);
+                }
+                Err(e) => log::error!("ambience point load failed: {}", e),
+            }
             // Restart recovery for the anchors: the wish doors read the
             // in-memory map; without this, a restart would forget every
             // banked neutral and wishes would refuse until re-probed.
@@ -3360,6 +3747,7 @@ async fn main() {
         )
         .route("/curves", get(get_curves))
         .route("/walk-view/{sender_id}", get(walk_view))
+        .route("/ambience-duty/{tender_id}", get(ambience_duty))
         .route("/walk-view/refine", post(walk_view_refine))
         .route("/curves/{sender_id}", delete(delete_curves_for_sender))
         .route("/predict", post(predict))
@@ -3542,13 +3930,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_steer_plan_unknown_outcome_is_400() {
+    async fn test_steer_plan_unknown_outcome_is_a_refusal() {
+        // §XVII's motion: an unmeasured outcome is an ANSWER, never an
+        // HTTP 400 booked plan_error. The map cannot speak for the
+        // reading yet, and the refusal says what it CAN name.
         let state = seeded_plan_state().await;
-        let err = steer_plan(State(state), Json(serde_json::to_value(plan_req("nowhere", 25.0)).unwrap()))
+        let res = steer_plan(State(state), Json(serde_json::to_value(plan_req("nowhere", 25.0)).unwrap()))
             .await
-            .expect_err("unknown outcome must be a door refusal");
-        assert_eq!(err.0, StatusCode::BAD_REQUEST);
-        assert!(err.1 .0["error"].as_str().unwrap().contains("resolvable"));
+            .expect("unknown outcome must answer, not error");
+        assert_eq!(res.0["status"], "refused");
+        assert_eq!(res.0["reason"], "unmeasured_outcome");
+        assert!(
+            res.0["detail"].as_str().unwrap().contains("resolvable"),
+            "the refusal lists what IS resolvable: {}",
+            res.0["detail"]
+        );
     }
 
     // ─── parse_iso_to_epoch ───────────────────────────────────────
