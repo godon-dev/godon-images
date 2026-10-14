@@ -189,7 +189,7 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "wish_list",
-                description: "List all declared wishes with their derived lifecycle state (declared, planned, refused, acted, landed, missed, re_opened, corrected, closed).",
+                description: "List all declared wishes with their derived lifecycle state (declared, planned, assigned, refused, acted, landed, missed, re_opened, corrected, returned, closed, plan_error).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -198,10 +198,10 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "wish_declare",
-                description: "Declare a wish - one door, two grammars, both discriminators always stated. Steer (type steer): claims (the aims the gavel judges) and optional terms (the price the wish pays); one verdict, kept = every claim in band AND every term honored; omitted budget means upkeep indefinitely. Seek (type seek): a commissioned walk with its form (find_best or cover_now), region, criterion, budget, candidates - it returns the best found with its bars and spend count; when the map already reads the answer, the refusal carries it. The door validates; refusals name their binding constraint.",
+                description: "Declare a wish. The body states its type. Steer: claims (the outcomes to hold, each with its band) and optional terms (the price the wish pays); one verdict, kept = every claim in band AND every term honored; omitted budget means upkeep indefinitely. Seek: a commissioned walk with its form (find_best or cover_now), region, criterion, budget, candidates - find_best returns the best found with its error bars and the trials spent; when the map already reads the answer, the refusal carries it. A malformed wish is rejected with the reason.",
                 input_schema: serde_json::json!({
                     "type": "object",
-                    "description": "The wish body, verbatim - the controller validates the grammar (the door). Two discriminators, both stated, no omission: type picks the grammar (steer = the hold, seek = the commissioned walk); form is a field of the walk grammar only (find_best or cover_now). Steer speaks claims + terms; seek speaks form, region, criterion, budget, candidates.",
+                    "description": "The wish body, verbatim. Two discriminators, both always stated: type picks the grammar (steer = the hold, seek = the commissioned walk); form is a field of the walk grammar only (find_best or cover_now). Steer speaks claims + terms; seek speaks form, region, criterion, budget, candidates.",
                     "required": ["type"],
                     "allOf": [
                         {
@@ -216,7 +216,7 @@ impl ToolRegistry {
                     "properties": {
                         "type": {
                             "type": "string",
-                            "description": "The wish's type, always stated: steer holds states; seek commissions a walk",
+                            "description": "The wish's type, always stated: steer holds outcomes in their bands; seek commissions a walk",
                             "enum": ["steer", "seek"]
                         },
                         "form": {
@@ -237,11 +237,11 @@ impl ToolRegistry {
                                 "direction": { "type": "string", "enum": ["maximize", "max", "minimize", "min"] }
                             }
                         },
-                        "budget": { "type": "integer", "description": "find_best: the feelers it may spend - one measured trial each" },
+                        "budget": { "type": "integer", "description": "find_best: the measured trials it may spend - one trial each" },
                         "candidates": { "type": "integer", "description": "Optional launch dice: N random joint settings tried first; they rank but never teach" },
                         "claims": {
                             "type": "array",
-                            "description": "The aims: one reading, one band each - the atom the gavel judges. N >= 1.",
+                            "description": "The outcomes to hold: one reading, one band each. N >= 1.",
                             "items": {
                                 "type": "object",
                                 "properties": {
@@ -286,7 +286,7 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "wish_get",
-                description: "Get one wish with its full event history (declared, planned, refused, acted, landed, missed, re_opened, corrected, closed).",
+                description: "Get one wish with its full event history (declared, planned, assigned, refused, acted, landed, missed, re_opened, corrected, returned, closed, plan_error).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -311,7 +311,7 @@ impl ToolRegistry {
 
             ToolDef {
                 name: "wish_update",
-                description: "The holder corrects a wish: restated claims (and terms) on the same identity. Stamps a 'corrected' event with the previous band, then re-plans through the door. Works on living and unheld wishes.",
+                description: "The holder corrects a wish: restated claims (and terms) on the same identity. Stamps a 'corrected' event with the previous band, then asks for a new plan. Works on living and unheld wishes.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
