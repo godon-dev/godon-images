@@ -507,6 +507,7 @@ paths:
                   summary: Example list of wishes
                   value:
                     - id: "550e8400-e29b-41d4-a716-446655440000"
+                      type: "steer"
                       claims:
                         - outcome: "chainend.shift"
                           band:
@@ -525,12 +526,19 @@ paths:
       operationId: declareWish
       summary: Declare a new wish
       description: |
-        Declares desired outcomes: the named claims are to be brought into
-        their bands and held there, with optional terms the wish must never
-        push out of band. One verdict: kept = every claim in band AND every
-        term honored. The declaration is a durable, withdrawable
-        record - the safety device for everything that acts on it. Validation
-        happens at the door; a malformed wish is rejected before any planning.
+        Declares a wish. The body states its type. A steer wish holds
+        one or more measured outcomes in their bands, under optional
+        terms the wish must never push out of band; one verdict: kept =
+        every claim in band AND every term honored. A seek wish
+        commissions a measured walk over a region of dials: find_best
+        searches under a declared budget and returns the best setting
+        found with its error bars and the trials spent; cover_now walks
+        the region to extend map coverage first and carries no budget.
+        When the map already answers the question, the wish is refused
+        with the reading in the refusal. The declaration is a durable,
+        withdrawable record - the safety device for everything that acts
+        on it. Validation happens before any planning; a malformed wish
+        is rejected with the reason.
       requestBody:
         required: true
         description: Wish declaration
@@ -539,9 +547,10 @@ paths:
             schema:
               $ref: '#/components/schemas/WishCreate'
             examples:
-              chainend:
-                summary: Hold the chain-end shift at -0.10
+              hold:
+                summary: Steer - hold the chain-end shift at -0.10
                 value:
+                  type: "steer"
                   claims:
                     - outcome: "chainend.shift"
                       band:
@@ -554,6 +563,24 @@ paths:
                     maxChange: 0.5
                   budget: 2
                   regime: "standing"
+              findBest:
+                summary: Seek - find the best chain-end push under a budget
+                value:
+                  type: "seek"
+                  form: "find_best"
+                  region:
+                    chainend.push: [-0.4, 0.4]
+                  criterion:
+                    outcome: "chainend.shift"
+                    direction: "minimize"
+                  budget: 12
+              coverNow:
+                summary: Seek - walk a region now to extend map coverage
+                value:
+                  type: "seek"
+                  form: "cover_now"
+                  region:
+                    chainend.push: [-0.4, 0.4]
       responses:
         '201':
           description: Successfully declared the wish
@@ -566,6 +593,7 @@ paths:
                   summary: Newly declared wish
                   value:
                     id: "550e8400-e29b-41d4-a716-446655440000"
+                    type: "steer"
                     claims:
                       - outcome: "chainend.shift"
                         band:
@@ -677,8 +705,8 @@ paths:
         The holder corrects the wish: restated claims (and terms) on the
         same identity. Stamps a 'corrected' event carrying the previous
         band and the holder's reason, removes the stale assignment, and
-        re-asks for a plan through the door (plan, heartbeat check,
-        plant). Works on living and unheld wishes; closed ones refuse.
+        asks for a new plan. Works on living and unheld wishes; closed
+        ones refuse.
       parameters:
         - $ref: '#/components/parameters/WishId'
       requestBody:
@@ -692,6 +720,7 @@ paths:
               reaim:
                 summary: Hold the same claim at the new anchor
                 value:
+                  type: "steer"
                   claims:
                     - outcome: "chainend.shift"
                       band:
@@ -738,6 +767,7 @@ paths:
                   summary: Closed wish
                   value:
                     id: "550e8400-e29b-41d4-a716-446655440000"
+                    type: "steer"
                     claims:
                       - outcome: "chainend.shift"
                         band:
@@ -1408,15 +1438,12 @@ components:
 
     WishCreate:
       description: |
-        The wish body, verbatim - the declarer's own. Wish-shape freedom
-        (ruled 2026-09-19): this surface does not validate the grammar;
-        the controller owns validation (the door). The body speaks two
-        discriminators, both stated, no omission (§XVII): type picks
-        the grammar (steer = the hold, seek = the commissioned walk),
-        form is a field of the walk grammar only (find_best or
-        cover_now). The oneOf below documents both grammars; it is
-        description, not enforcement - the door refuses what does not
-        parse, naming its binding constraint.
+        The wish body, verbatim - the declarer's own. Two discriminators,
+        both always stated: type picks the grammar (steer = the hold,
+        seek = the commissioned walk); form is a field of the walk
+        grammar only (find_best or cover_now). Validation happens before
+        any planning; a malformed wish is rejected with the reason. The
+        oneOf below documents both grammars.
       oneOf:
         - $ref: '#/components/schemas/WishSteerBody'
         - $ref: '#/components/schemas/WishSeekBody'
@@ -1434,7 +1461,7 @@ components:
         - claims
       description: |
         The hold's grammar: type "steer" (always stated), claims (the
-        aims the gavel judges, N >= 1, one band each) and optional
+        outcomes to hold, one or more, each with its band) and optional
         terms (the price the wish pays), plus optional limits, budget,
         and regime.
       properties:
@@ -1461,14 +1488,16 @@ components:
         - form
         - region
       description: |
-        The walk's grammar: type "seek", form (find_best searches
-        under a budget; cover_now walks a region first on standing
-        duty, carrying no budget), a region of dials to walk (each
-        [lo, hi, is_int]), a criterion for find_best (the reading and
-        the direction), a budget of measured trials, and optional
-        launch candidates. All stated - no omission. When the map
-        already reads the answer, the refusal carries it. The walk
-        returns the best found with its bars and spend count.
+        The walk's grammar: type "seek" (always stated) and its form.
+        find_best searches the region under a budget: the criterion
+        declares what counts (the outcome and the direction), and the
+        walk returns the best setting found with its error bars and
+        the number of measured trials spent. cover_now walks the
+        region to extend map coverage first and carries no budget.
+        The region names the dials to walk, each as [lo, hi, is_int];
+        optional candidates add measured launch points that count
+        against the same budget. When the map already reads the
+        answer, the refusal carries it.
       properties:
         type:
           type: string
@@ -1500,11 +1529,9 @@ components:
         - type
         - claims
       description: |
-        The restated wish, verbatim - the holder's own. Wish-shape
-        freedom applies here exactly as at declare: this surface does
-        not validate the grammar; the controller owns validation (the
-        door). Corrections state their type (steer - holds only
-        today) and carry restated claims and terms (plus a reason).
+        The restated wish, verbatim - the holder's own. Corrections
+        state their type (steer - holds only today) and carry restated
+        claims and terms, plus a reason.
       example:
         type: "steer"
         claims:
@@ -1523,8 +1550,8 @@ components:
       properties:
         type:
           type: string
-          enum: [declared, planned, refused, acted, landed, missed, re_opened, corrected, closed]
-          description: Lifecycle event kind (corrected is stamped by the holder-update endpoint)
+          enum: [declared, planned, assigned, refused, acted, landed, missed, re_opened, corrected, returned, closed, plan_error]
+          description: Lifecycle event kind (assigned names the serving tender; returned carries a walk's finding; plan_error marks a planning failure)
           example: "declared"
         at:
           type: string
@@ -1539,12 +1566,11 @@ components:
     Wish:
       type: object
       description: |
-        The wish as the API carries it: a lifecycle envelope plus the body
-        verbatim (wish-shape freedom, 2026-09-21). The envelope fields are
-        the front door's concern - addressing and the book; the body is the
-        controller's object, carried unshaped in both directions. Today the
-        body carries claims + terms (and optional limits/budget/regime);
-        richer grammars arrive without API changes.
+        The wish as the API carries it: a lifecycle envelope plus the
+        declared body verbatim, its grammar stated by the type field
+        (steer or seek). The envelope fields - id, state, timestamps,
+        events - are addressing and record-keeping; the body is the
+        declarer's own, carried unshaped in both directions.
       required:
         - id
         - state
@@ -1558,7 +1584,7 @@ components:
           example: "550e8400-e29b-41d4-a716-446655440000"
         state:
           type: string
-          enum: [declared, planned, refused, acted, landed, missed, re_opened, closed]
+          enum: [declared, planned, assigned, refused, acted, landed, missed, re_opened, corrected, returned, closed, plan_error]
           description: Derived lifecycle state - the latest event, computed on read (never stored)
           readOnly: true
           example: "declared"
@@ -1600,7 +1626,7 @@ components:
           example: "550e8400-e29b-41d4-a716-446655440000"
         state:
           type: string
-          enum: [declared, planned, refused, acted, landed, missed, re_opened, closed]
+          enum: [declared, planned, assigned, refused, acted, landed, missed, re_opened, corrected, returned, closed, plan_error]
           description: Derived lifecycle state
           readOnly: true
           example: "declared"
