@@ -1132,6 +1132,18 @@ paths:
             application/json:
               schema:
                 type: object
+  /positions:
+    get:
+      tags: [wishes]
+      summary: The standing positions
+      description: Every live wish's place on the dials, derived fresh on every read - a hold's level and bands, a search's walked window, an orphan's history. Three row kinds and no more (held, measuring, orphaned).
+      responses:
+        '200':
+          description: The standing positions
+          content:
+            application/json:
+              schema:
+                type: object
   /connectome/curves:
     get:
       tags: [connectomes]
