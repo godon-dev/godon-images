@@ -1468,6 +1468,22 @@ components:
         type:
           type: string
           enum: [steer]
+        answer:
+          type: string
+          enum: [now, later]
+          description: |
+            When the reachability consult answers. later (the default):
+            the declare returns once the wish stands, and the answers
+            (planned, or a refusal with its numbers) surface as events,
+            at serving time and in status. now: the consult answers in
+            the same breath - the declare response already carries it.
+        divisibility:
+          type: string
+          enum: [joint, alternatives]
+          description: |
+            Whether partial service is meaningful. joint (the default
+            for holds): one kept state - a half-kept wish is a lying
+            wish. alternatives: the best of several candidates counts.
         claims:
           type: array
       example:
@@ -1502,6 +1518,14 @@ components:
         type:
           type: string
           enum: [seek]
+        answer:
+          type: string
+          enum: [now, later]
+          description: When the consult answers - same breath (now) or at serving time (later, the default); see the hold's grammar.
+        divisibility:
+          type: string
+          enum: [joint, alternatives]
+          description: alternatives (the default for walks) - a seek's candidates are partial service by nature; joint = one kept state.
         form:
           type: string
           enum: [find_best, cover_now]
@@ -1584,8 +1608,8 @@ components:
           example: "550e8400-e29b-41d4-a716-446655440000"
         state:
           type: string
-          enum: [declared, planned, assigned, refused, acted, landed, missed, re_opened, corrected, returned, closed, plan_error]
-          description: Derived lifecycle state - the latest event, computed on read (never stored)
+          enum: [declared, planned, assigned, unservable, acted, landed, missed, re_opened, corrected, returned, closed, plan_error]
+          description: Derived lifecycle state - the latest event, computed on read (never stored); a standing refusal (latest event refused, no serve since) reads unservable
           readOnly: true
           example: "declared"
         createdAt:
@@ -1626,8 +1650,8 @@ components:
           example: "550e8400-e29b-41d4-a716-446655440000"
         state:
           type: string
-          enum: [declared, planned, assigned, refused, acted, landed, missed, re_opened, corrected, returned, closed, plan_error]
-          description: Derived lifecycle state
+          enum: [declared, planned, assigned, unservable, acted, landed, missed, re_opened, corrected, returned, closed, plan_error]
+          description: Derived lifecycle state (a standing refusal reads unservable)
           readOnly: true
           example: "declared"
         createdAt:

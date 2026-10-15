@@ -52,7 +52,7 @@ pub const BISECTION_ITERS: usize = 60;
 
 // ─── Request shape (the /steer/plan contract) ───────────────────────
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SteerPlanRequest {
     /// Inference group whose connectome enriches refusals. Absent = the
     /// engine's default group.
@@ -62,6 +62,15 @@ pub struct SteerPlanRequest {
     /// over GET). Absent = anonymous one-shot plan — exactly the
     /// pre-book behavior.
     pub wish_id: Option<String>,
+    /// Declaration options (§XIX), carried verbatim into the book's
+    /// terms: when the consult answers ('now' | 'later'), and whether
+    /// partial service is meaningful ('joint' | 'alternatives').
+    /// Advisory to the engine tonight — the door states them, the book
+    /// remembers them; their mechanical bite rides later rungs.
+    #[serde(default)]
+    pub answer: Option<String>,
+    #[serde(default)]
+    pub divisibility: Option<String>,
     /// The owner's outer total, in repair rounds. None = standing, no
     /// cap — the wish dies only by derived evidence (wall, sign flip,
     /// refusal). The first round is free; the allowance counts repairs
@@ -119,7 +128,7 @@ impl Default for Band {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Limits {
     #[serde(default)]
     pub exclude: Vec<String>,
@@ -1472,6 +1481,8 @@ mod tests {
         SteerPlanRequest {
             group_id: None,
             wish_id: None,
+            answer: None,
+            divisibility: None,
             budget: None,
             outcome: outcome.to_string(),
             band: Band {
@@ -1774,6 +1785,8 @@ mod tests {
         let bad_band = SteerPlanRequest {
             group_id: None,
             wish_id: None,
+            answer: None,
+            divisibility: None,
             budget: None,
             outcome: "R".into(),
             band: Band {
@@ -1944,6 +1957,8 @@ mod tests {
         SteerPlanRequest {
             group_id: None,
             wish_id: None,
+            answer: None,
+            divisibility: None,
             budget: None,
             outcome: String::new(),
             band: Band::default(),

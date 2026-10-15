@@ -189,7 +189,7 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "wish_list",
-                description: "List all declared wishes with their derived lifecycle state (declared, planned, assigned, refused, acted, landed, missed, re_opened, corrected, returned, closed, plan_error).",
+                description: "List all declared wishes with their derived lifecycle state (declared, planned, assigned, unservable - a standing refusal -, acted, landed, missed, re_opened, corrected, returned, closed, plan_error).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {},
@@ -198,7 +198,7 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "wish_declare",
-                description: "Declare a wish. The body states its type. Steer: claims (the outcomes to hold, each with its band) and optional terms (the price the wish pays); one verdict, kept = every claim in band AND every term honored; omitted budget means upkeep indefinitely. Seek: a commissioned walk with its form (find_best or cover_now), region, criterion, budget, candidates - find_best returns the best found with its error bars and the trials spent; when the map already reads the answer, the refusal carries it. A malformed wish is rejected with the reason.",
+                description: "Declare a wish. The body states its type. Steer: claims (the outcomes to hold, each with its band) and optional terms (the price the wish pays); one verdict, kept = every claim in band AND every term honored; omitted budget means upkeep indefinitely. Seek: a commissioned walk with its form (find_best or cover_now), region, criterion, budget, candidates - find_best returns the best found with its error bars and the trials spent; when the map already reads the answer, the refusal carries it. A malformed wish is rejected with the reason. Two declaration options, both optional: answer (now = the consult answers in the same breath; later = the default, answers surface as events and in status) and divisibility (joint = the default for holds, one kept state; alternatives = the default for walks, candidates count).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "description": "The wish body, verbatim. Two discriminators, both always stated: type picks the grammar (steer = the hold, seek = the commissioned walk); form is a field of the walk grammar only (find_best or cover_now). Steer speaks claims + terms; seek speaks form, region, criterion, budget, candidates.",
@@ -239,6 +239,16 @@ impl ToolRegistry {
                         },
                         "budget": { "type": "integer", "description": "find_best: the measured trials it may spend - one trial each" },
                         "candidates": { "type": "integer", "description": "Optional launch dice: N random joint settings tried first; they rank but never teach" },
+                        "answer": {
+                            "type": "string",
+                            "enum": ["now", "later"],
+                            "description": "When the reachability consult answers: now = in the same breath (the declare response carries it); later = the default, at serving time and in status"
+                        },
+                        "divisibility": {
+                            "type": "string",
+                            "enum": ["joint", "alternatives"],
+                            "description": "Whether partial service is meaningful: joint = the hold default, one kept state (a half-kept wish is a lying wish); alternatives = the walk default, the best of several candidates counts"
+                        },
                         "claims": {
                             "type": "array",
                             "description": "The outcomes to hold: one reading, one band each. N >= 1.",

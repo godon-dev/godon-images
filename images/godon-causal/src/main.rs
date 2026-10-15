@@ -8,6 +8,7 @@ mod otel;
 mod planner;
 mod probe_curves;
 mod query;
+mod room;
 mod seek_plan;
 mod ambience_store;
 mod ambiences;
@@ -942,10 +943,34 @@ async fn steer_plan(
         &req,
     )
     .await;
+    // ── the room consult (§XIX) ─────────────────────────────────────
+    // The other live wishes' claims ride the compile as terms: a plan
+    // is admitted only when it keeps every incumbent's band — joint
+    // reachability through the measured map, answered by the same
+    // machinery with the same numbers and bars. A refusal naming a
+    // room-owned outcome becomes room_conflict, carrying the complete
+    // repair instruction; the room as it stands keeps serving the
+    // incumbent, and coexistence is found by wishers re-declaring
+    // outside. Unmeasured coupling cannot refuse (honest silence);
+    // the per-serve promise check and vigilance catch actual breakage.
+    let room = match state.connect_archive_ensured().await {
+        Ok(client) => room::room_terms(
+            &client,
+            req.wish_id.as_deref().unwrap_or(""),
+        )
+        .await
+        .unwrap_or_default(),
+        Err(e) => {
+            info!("STEER /steer/plan: room consult skipped - book unreachable ({e})");
+            Vec::new()
+        }
+    };
+    let mut room_req = req.clone();
+    room_req.terms.extend(room.iter().map(|rc| rc.as_term()));
     match planner::plan(
         &entries,
         graph.as_ref(),
-        &req,
+        &room_req,
         anchor,
         &claim_anchors,
         &wander,
@@ -1026,7 +1051,19 @@ async fn steer_plan(
             })))
         }
         Ok(planner::PlanDecision::Refused { reason, detail }) => {
-            // a refusal is a legitimate answer: the binding constraint, named
+            // a refusal is a legitimate answer: the binding constraint, named.
+            // The room's refusal (§XIX): when the binding constraint is
+            // another live wish's band, the refusal becomes room_conflict
+            // carrying the complete repair instruction — which objective,
+            // held where by which wish since when, with the compile's own
+            // numbers. The mover re-declares outside; nothing is displaced.
+            let (reason, detail) = match room::owns_outcome(&room, &detail) {
+                Some(rc) => {
+                    let (text, _payload) = room::repair_instruction(rc, &detail);
+                    ("room_conflict".to_string(), text)
+                }
+                None => (reason, detail),
+            };
             info!("STEER /steer/plan: refused ({reason}) - {detail}");
             // refusals are book entries too: the wish stood, the map said no
             if let Some(wish_id) = &req.wish_id {
@@ -2171,7 +2208,17 @@ async fn steer_plan_get(
                     m
                 };
                 let wander = state.wander_consult().await;
-                match planner::plan(&entries, graph.as_ref(), &terms_req, None, &claim_anchors, &wander, &HashMap::new())
+                // The room consult rides the re-walk too (§XIX): every
+                // repair move is room-checked — the plans negotiate by
+                // refusing. A repair that would break another held band
+                // is refused with numbers; the wish freezes at the
+                // boundary and the standing event keeps the record.
+                let room = room::room_terms(&client, &wish_id)
+                    .await
+                    .unwrap_or_default();
+                let mut room_req = terms_req.clone();
+                room_req.terms.extend(room.iter().map(|rc| rc.as_term()));
+                match planner::plan(&entries, graph.as_ref(), &room_req, None, &claim_anchors, &wander, &HashMap::new())
                 {
                     Ok(planner::PlanDecision::Planned {
                         moves,
@@ -2233,13 +2280,25 @@ async fn steer_plan_get(
                         // Fresh evidence, and the compile still says no:
                         // the refusal is named, the evidence is consumed,
                         // and the wish stays in remeasure until the map
-                        // moves again.
+                        // moves again. A room-attributed refusal (§XIX)
+                        // becomes room_conflict with the complete repair
+                        // instruction, and the standing event keeps the
+                        // record while the wish sits refused at the
+                        // boundary — the freeze, with numbers standing.
+                        let (reason, detail) = match room::owns_outcome(&room, &detail) {
+                            Some(rc) => {
+                                let (text, _payload) = room::repair_instruction(rc, &detail);
+                                ("room_conflict".to_string(), text)
+                            }
+                            None => (reason, detail),
+                        };
                         info!(
                             "REWALK {wish_id}: re-compile refused ({reason}) - staying in remeasure"
                         );
                         if let Some(plan) = row.plan.as_mut() {
                             plan["curve_fp"] = fingerprint.clone();
                         }
+                        room::standing_refusal(&client, &wish_id, &reason, &detail).await;
                         walk_state = Some(serde_json::json!({
                             "outcome": "refused",
                             "reason": reason,
@@ -2280,6 +2339,39 @@ async fn steer_plan_get(
         "walk": walk_state,
         "events": events_tail,
     })))
+}
+
+/// GET /room — the derived room view (§XIX): what every live wish
+/// holds, computed fresh from the book's plan journals on every read,
+/// never stored, nothing to go stale. Three row kinds and no more —
+/// held (a hold wish's dial, level and bands), measuring (a seek's
+/// walked window), orphaned (a live wish whose serving tender no
+/// longer appears in the map: history — hints speak, promises never,
+/// until re-measured). Wishers get outcomes, never settings;
+/// observers may see the machinery.
+async fn room_view_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let client = state.connect_archive_ensured().await.map_err(|e| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": format!("archive DB unavailable: {e}") })),
+        )
+    })?;
+    let entries = state.curves.read().await.snapshot();
+    let live: Vec<String> = entries
+        .iter()
+        .map(|e| e.sender_id.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let rows = room::room_view(&client, &live).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("room view failed: {e}") })),
+        )
+    })?;
+    Ok(Json(serde_json::json!({ "room": rows })))
 }
 
 /// Discovery — the tender's per-beat ask: any open wish naming me?
@@ -3746,6 +3838,7 @@ async fn main() {
             get(get_artifact_group).post(upload_artifact_group),
         )
         .route("/curves", get(get_curves))
+        .route("/room", get(room_view_handler))
         .route("/walk-view/{sender_id}", get(walk_view))
         .route("/ambience-duty/{tender_id}", get(ambience_duty))
         .route("/walk-view/refine", post(walk_view_refine))
@@ -3804,6 +3897,8 @@ mod tests {
         planner::SteerPlanRequest {
             group_id: None,
             wish_id: None,
+            answer: None,
+            divisibility: None,
             budget: None,
             outcome: outcome.to_string(),
             band: planner::Band {
