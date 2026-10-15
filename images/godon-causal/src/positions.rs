@@ -38,6 +38,9 @@ pub struct PositionClaim {
     pub level: f64,
     /// The plan's last update (book time) — the "since when".
     pub since: f64,
+    /// The standing plan's own error bar for this claim (from its
+    /// per-claim predictions), when it carries one — the guard margin.
+    pub bars: Option<f64>,
 }
 
 impl PositionClaim {
@@ -105,6 +108,20 @@ pub async fn positions_terms(client: &Client, wish_id: &str) -> Result<Vec<Posit
         let Some(claims) = terms.get("claims").and_then(|c| c.as_array()) else {
             continue;
         };
+        // the standing plan's per-claim predictions carry each claim's
+        // error bar — the honest margin a guard widens with
+        let mut pred_bars: std::collections::HashMap<String, f64> =
+            std::collections::HashMap::new();
+        if let Some(preds) = plan.get("claims").and_then(|c| c.as_array()) {
+            for p in preds {
+                if let (Some(o), Some(b)) = (
+                    p.get("outcome").and_then(|o| o.as_str()),
+                    p.get("bars").and_then(|b| b.as_f64()),
+                ) {
+                    pred_bars.insert(o.to_string(), b);
+                }
+            }
+        }
         for c in claims {
             let (Some(outcome), Some(band)) = (
                 c.get("outcome").and_then(|o| o.as_str()),
@@ -127,6 +144,7 @@ pub async fn positions_terms(client: &Client, wish_id: &str) -> Result<Vec<Posit
                 param: param.clone(),
                 level,
                 since,
+                bars: pred_bars.get(outcome).copied(),
             });
         }
     }
@@ -304,6 +322,7 @@ mod tests {
             param: "p".to_string(),
             level: 40.0,
             since: 100.0,
+            bars: None,
         }
     }
 
