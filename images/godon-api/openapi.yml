@@ -433,9 +433,11 @@ paths:
       operationId: startSystemtender
       summary: Start/resume a systemtender
       description: |
-        Starts or resumes a stopped systemtender by clearing the shutdown flag
-        and relaunching workers. Use this to resume optimization after
-        calling stop_systemtender().
+        Starts or resumes a systemtender by clearing the stop flag and
+        relaunching workers. The response names the case it resolved:
+        a systemtender resumed after a deliberate stop, after worker
+        failure (detected by silent heartbeats), or while still
+        running, and a first start.
       parameters:
         - $ref: '#/components/parameters/SystemtenderUuid'
       responses:
@@ -470,6 +472,15 @@ paths:
                       workers_started:
                         type: integer
                         description: Number of worker jobs that were launched
+                      resumed_from:
+                        type: string
+                        enum: [fresh, stopped, running, presumed_dead]
+                        description: >
+                          The case this start resolved. fresh: first
+                          start. stopped: resumed after a deliberate
+                          stop. running: the systemtender was still
+                          live. presumed_dead: resumed after worker
+                          failure, detected by silent heartbeats.
               examples:
                 started:
                   summary: Systemtender started successfully
@@ -479,6 +490,7 @@ paths:
                       systemtender_id: "550e8400-e29b-41d4-a716-446655440000"
                       workers_started: 3
                       status: "ACTIVE"
+                      resumed_from: "presumed_dead"
         '400':
           $ref: '#/components/responses/BadRequest'
         '404':
@@ -1326,6 +1338,32 @@ components:
             is create-failed; DELETE clears the failed row, then retry
             create. Mirrors deletion_reason on the creation axis.
           example: "Failed to launch 1 worker(s): worker refused"
+        relaunches:
+          type: integer
+          readOnly: true
+          description: >
+            How many times this systemtender was resumed after worker
+            failure (detected by silent heartbeats). Deliberate stops
+            and restarts are never counted here.
+          example: 0
+        last_relaunch:
+          type: object
+          nullable: true
+          readOnly: true
+          description: >
+            The most recent resume after worker failure, with its
+            timestamp, the liveness age that detected the failure, and
+            the verdict it resumed from. Present only after at least
+            one such resume.
+          properties:
+            ts:
+              type: string
+              format: date-time
+            resumed_from:
+              type: string
+              enum: [presumed_dead]
+            liveness_age_secs:
+              type: number
         createdAt:
           type: string
           format: date-time
