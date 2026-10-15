@@ -1,20 +1,20 @@
-//! The room (design §XIX): the derived picture of what every live
-//! wish holds, and the coexistence consult.
+//! Positions (design §XIX): the derived picture of what every live
+//! wish holds on the dials, and the coexistence consult.
 //!
 //! One mechanism serves both: the OTHER live wishes' claims ride the
 //! compile as terms — a plan is admitted only when it keeps every
 //! incumbent's band (joint reachability through the measured map,
 //! answered with the compile's own numbers and bars). A refusal that
-//! names a room-owned outcome is a `room_conflict`: the mover's ask
-//! refuses with a complete repair instruction, the room as it stands
-//! keeps serving the incumbent, and coexistence is found by wishers
+//! names an outcome owned by a standing position is a `position_conflict`: the mover's ask
+//! refuses with a complete repair instruction, the positions as they stand
+//! keep serving the incumbent, and coexistence is found by wishers
 //! re-declaring outside — never by an engine-chosen settlement.
 //! Unmeasured ground is honest silence here: the compile can only
 //! refuse on measured evidence, so an unmeasured coupling does not
 //! block the move — the per-serve promise check and vigilance catch
 //! actual breakage with numbers, and the ground gets measured next.
 //!
-//! The view (`GET /room`) derives fresh on every read from what
+//! The view (`GET /positions`) derives fresh on every read from what
 //! already exists — the book's plan journals — and is never stored:
 //! three row kinds and no more (held, measuring, orphaned).
 
@@ -23,10 +23,10 @@ use tokio_postgres::Client;
 
 use crate::planner::{Band, ClaimSpec};
 
-/// One claim of one OTHER live wish — a term the room adds to every
+/// One claim of one OTHER live wish — a term the standing positions add to every
 /// compile. Derived fresh from the book; never stored.
 #[derive(Debug, Clone)]
-pub struct RoomClaim {
+pub struct PositionClaim {
     pub wish_id: String,
     pub outcome: String,
     pub lo: f64,
@@ -40,8 +40,8 @@ pub struct RoomClaim {
     pub since: f64,
 }
 
-impl RoomClaim {
-    /// The claim as a compile term: same shape, same law — the room's
+impl PositionClaim {
+    /// The claim as a compile term: same shape, same law — the positions's
     /// bands are protected readings the mover must never push out.
     pub fn as_term(&self) -> ClaimSpec {
         ClaimSpec {
@@ -67,11 +67,11 @@ fn plan_dial(plan: &Value) -> Option<(String, String, f64)> {
     Some((sender, param, level))
 }
 
-/// The other live wishes' claims — the room's terms. Seeks walk their
+/// The other live wishes' claims — the positions's terms. Seeks walk their
 /// own region on their own dial (trial-level movement: detect and
 /// surface, §XIX's spillover split), so only hold wishes contribute
-/// terms. Best-effort callers may treat an error as an empty room.
-pub async fn room_terms(client: &Client, wish_id: &str) -> Result<Vec<RoomClaim>, tokio_postgres::Error> {
+/// terms. Best-effort callers may treat an error as an empty set.
+pub async fn positions_terms(client: &Client, wish_id: &str) -> Result<Vec<PositionClaim>, tokio_postgres::Error> {
     let rows = client
         .query(
             &format!(
@@ -118,7 +118,7 @@ pub async fn room_terms(client: &Client, wish_id: &str) -> Result<Vec<RoomClaim>
             ) else {
                 continue;
             };
-            out.push(RoomClaim {
+            out.push(PositionClaim {
                 wish_id: other.clone(),
                 outcome: outcome.to_string(),
                 lo,
@@ -133,22 +133,23 @@ pub async fn room_terms(client: &Client, wish_id: &str) -> Result<Vec<RoomClaim>
     Ok(out)
 }
 
-/// Does a refusal's detail speak a room-owned outcome? The compile
+/// Does a refusal's detail speak an outcome owned by a standing
+/// position? The compile
 /// names its binding constraint ("term 'X': ..." / "claim 'X': ...");
 /// when the named outcome belongs to another wish, the refusal is the
-/// room's, and the mover deserves the full repair instruction.
-pub fn owns_outcome<'a>(room: &'a [RoomClaim], detail: &str) -> Option<&'a RoomClaim> {
-    room.iter()
+/// position's, and the mover deserves the full repair instruction.
+pub fn owns_outcome<'a>(positions: &'a [PositionClaim], detail: &str) -> Option<&'a PositionClaim> {
+    positions.iter()
         .find(|rc| detail.contains(&format!("'{}'", rc.outcome)))
-        .or_else(|| room.iter().find(|rc| detail.contains(&rc.outcome)))
+        .or_else(|| positions.iter().find(|rc| detail.contains(&rc.outcome)))
 }
 
-/// The complete repair instruction for a room conflict: enough numbers
+/// The complete repair instruction for a position conflict: enough numbers
 /// to design the coexisting wish in one round (which outcome, held
 /// where by which wish since when, the compile's own numbers).
-pub fn repair_instruction(rc: &RoomClaim, detail: &str) -> (String, Value) {
+pub fn repair_instruction(rc: &PositionClaim, detail: &str) -> (String, Value) {
     let text = format!(
-        "room conflict: your plan would break a held band. outcome '{}' is \
+        "position conflict: your plan would break a held band. outcome '{}' is \
          held by wish {} (band [{:.4}, {:.4}]) on dial {}/{} at level {:.4} \
          since t={:.0}; the compile says: {}. Coexistence is found by \
          re-declaring outside: retarget, widen a band, or release theirs — \
@@ -167,12 +168,12 @@ pub fn repair_instruction(rc: &RoomClaim, detail: &str) -> (String, Value) {
     (text, payload)
 }
 
-/// GET /room — the derived room view: three row kinds and no more,
+/// GET /positions — the derived positions view: three row kinds and no more,
 /// computed fresh from the book's plan journals on every read, never
 /// stored. `live_senders` (the graph's current senders) marks rows
 /// whose serving tender is gone: orphaned settings are history —
 /// hints speak, promises never, until re-measured.
-pub async fn room_view(
+pub async fn positions_view(
     client: &Client,
     live_senders: &[String],
 ) -> Result<Vec<Value>, tokio_postgres::Error> {
@@ -293,8 +294,8 @@ pub async fn standing_refusal(
 mod tests {
     use super::*;
 
-    fn claim(wish: &str, outcome: &str, lo: f64, hi: f64) -> RoomClaim {
-        RoomClaim {
+    fn claim(wish: &str, outcome: &str, lo: f64, hi: f64) -> PositionClaim {
+        PositionClaim {
             wish_id: wish.to_string(),
             outcome: outcome.to_string(),
             lo,
@@ -308,17 +309,17 @@ mod tests {
 
     #[test]
     fn owns_outcome_matches_the_named_outcome() {
-        let room = vec![
+        let positions = vec![
             claim("w1", "chainend.shift", -0.1, 0.1),
             claim("w2", "room/objective_1", 0.0, 1.0),
         ];
         let hit = owns_outcome(
-            &room,
+            &positions,
             "term 'room/objective_1': band [0.0000, 1.0000] ...",
         )
-        .expect("room owns the named outcome");
+        .expect("the standing position owns the named outcome");
         assert_eq!(hit.wish_id, "w2");
-        assert!(owns_outcome(&room, "claim 'other'").is_none());
+        assert!(owns_outcome(&positions, "claim 'other'").is_none());
     }
 
     #[test]
