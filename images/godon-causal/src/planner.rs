@@ -64,13 +64,13 @@ pub struct SteerPlanRequest {
     pub wish_id: Option<String>,
     /// Declaration options (§XIX), carried verbatim into the book's
     /// terms: when the consult answers ('now' | 'later'), and whether
-    /// partial service is meaningful ('joint' | 'alternatives').
+    /// what counts as kept ('all' | 'best').
     /// Advisory to the engine tonight — the door states them, the book
     /// remembers them; their mechanical bite rides later rungs.
     #[serde(default)]
     pub answer: Option<String>,
     #[serde(default)]
-    pub divisibility: Option<String>,
+    pub standard: Option<String>,
     /// The owner's outer total, in repair rounds. None = standing, no
     /// cap — the wish dies only by derived evidence (wall, sign flip,
     /// refusal). The first round is free; the allowance counts repairs
@@ -1482,7 +1482,7 @@ mod tests {
             group_id: None,
             wish_id: None,
             answer: None,
-            divisibility: None,
+            standard: None,
             budget: None,
             outcome: outcome.to_string(),
             band: Band {
@@ -1786,7 +1786,7 @@ mod tests {
             group_id: None,
             wish_id: None,
             answer: None,
-            divisibility: None,
+            standard: None,
             budget: None,
             outcome: "R".into(),
             band: Band {
@@ -1958,7 +1958,7 @@ mod tests {
             group_id: None,
             wish_id: None,
             answer: None,
-            divisibility: None,
+            standard: None,
             budget: None,
             outcome: String::new(),
             band: Band::default(),
