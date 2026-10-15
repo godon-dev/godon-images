@@ -1237,8 +1237,8 @@ pub fn plan(
 
     // (b) the corridor: each dial's final setting must also keep every
     // OTHER reading it measurably reaches inside its own band - the
-    // wish's terms (the price) and the neighbouring claims (the room
-    // is one). A dial with no measured reach on a reading cannot touch
+    // wish's terms (the price) and the neighbouring claims (positions
+    // are one). A dial with no measured reach on a reading cannot touch
     // it; coupling the map learns later surfaces at the notice rung.
     for i in 0..solved.len() {
         let dial = solved[i].1.dial.clone();
