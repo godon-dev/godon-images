@@ -1055,6 +1055,11 @@ pub async fn get_connectome_artifact(State(_config): State<Config>) -> Result<Re
     causal_relay(move || client.get("/artifact")).await
 }
 
+pub async fn get_positions(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let client = get_causal_client()?;
+    causal_relay(move || client.get("/positions")).await
+}
+
 pub async fn connectome_predict(
     State(_config): State<Config>,
     Json(body): Json<Value>,
