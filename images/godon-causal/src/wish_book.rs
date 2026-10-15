@@ -341,8 +341,16 @@ pub async fn wish_for(
         let Ok(plan) = serde_json::from_str::<Value>(&plan_s) else {
             continue;
         };
-        if plan["moves"][0]["sender"].as_str() == Some(uuid) {
-            return Ok(Some((row.get::<_, String>(0), "sender")));
+        // Joint serving: a multi-claim plan may name several senders —
+        // every tender holding one of the plan's moves must discover
+        // the wish as its own, not only the first move's sender.
+        if let Some(moves) = plan["moves"].as_array() {
+            if moves
+                .iter()
+                .any(|m| m["sender"].as_str() == Some(uuid))
+            {
+                return Ok(Some((row.get::<_, String>(0), "sender")));
+            }
         }
         let receiver = plan["path"].as_array().and_then(|p| p.last());
         if receiver.and_then(|v| v.as_str()) == Some(uuid) {
