@@ -51,6 +51,7 @@ async fn main() {
         .route("/connectome/predict/multihop", post(handlers::connectome_predict_multihop))
         .route("/connectome/impact/{systemtender_id}", get(handlers::connectome_impact))
         .route("/connectome/causes/{systemtender_id}", get(handlers::connectome_causes))
+        .route("/positions", get(handlers::get_positions))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
         .with_state(cfg.clone());
 
