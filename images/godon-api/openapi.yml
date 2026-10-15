@@ -1376,6 +1376,20 @@ components:
               enum: [presumed_dead]
             liveness_age_secs:
               type: number
+        instruments:
+          type: object
+          nullable: true
+          readOnly: true
+          additionalProperties: true
+          description: >
+            The worker's instruments (the rung-7 field-sets:
+            strategies_run, wish, seek_spend), stamped into the
+            tender's own state row and passed through verbatim.
+            Present once the worker has stamped; null before.
+          example:
+            strategies_run: ["hold"]
+            wish: null
+            seek_spend: null
         createdAt:
           type: string
           format: date-time
