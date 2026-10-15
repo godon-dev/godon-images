@@ -2788,6 +2788,13 @@ struct ProbeResultRequest {
     /// The re-measure generation the duty page named for this walk.
     #[serde(default)]
     ambience_epoch: Option<u64>,
+    /// Successor adoption (rung 8, designs/2026-10-11 XX): EXPLICIT
+    /// and default-off. Only a bank that declares the takeover
+    /// re-parents orphaned local ground on this dial. Nothing sets it
+    /// today — the declaration point arrives with the first real
+    /// takeover.
+    #[serde(default)]
+    adopt_orphans: Option<bool>,
 }
 
 async fn probe_result(
@@ -3252,6 +3259,42 @@ async fn probe_result(
                 req.sender_id, req.probe_param, req.probe_level, anchor, epoch,
                 self_channels.len(), baseline
             );
+
+            // Successor adoption, declared only (rung 8,
+            // designs/2026-10-11 XX + amendment): orphaned local
+            // ground on this dial re-parents to the tender that banks
+            // here — ONLY when this bank declares the takeover. The
+            // default is the frozen-prior doctrine: hints, until
+            // re-walked or declared. Liveness is the same truth the
+            // positions view derives; DB flip and registry move
+            // together; adopted rows keep their provenance.
+            if req.adopt_orphans == Some(true) {
+                let entries = state.curves.read().await.snapshot();
+                let live: Vec<String> = entries
+                    .iter()
+                    .map(|e| e.sender_id.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                let db_n = ambience_store::reparent_orphaned(
+                    &client,
+                    &req.group_id,
+                    &req.sender_id,
+                    &req.probe_param,
+                    &live,
+                )
+                .await
+                .unwrap_or(0);
+                let mem_n = state
+                    .ambiences
+                    .reparent(&req.group_id, &req.sender_id, &req.probe_param, &live);
+                if db_n > 0 || mem_n > 0 {
+                    info!(
+                        "AMBIENCE ADOPT: {} orphaned row(s) on dial {} re-parented to tender {} (registry points moved: {})",
+                        db_n, req.probe_param, req.sender_id, mem_n
+                    );
+                }
+            }
         }
     } else {
         log::error!(
