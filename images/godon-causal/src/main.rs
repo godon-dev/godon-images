@@ -1730,7 +1730,116 @@ async fn steer_plan_seek(
     })))
 }
 
+/// The walk's guards (§XIX spillover, pre-step prevention): for every
+/// region dial of a served seek, the claims of other live wishes that
+/// MEASURED coupling connects to this tender's dial. Each guard states
+/// the standing band, the reading now (the judge's own source — the
+/// receiver's recent observations), the standing plan's error bar, and
+/// the measured curve (level, shift pairs) from this dial to that
+/// reading. The walk avoids the settings that would push the band out;
+/// unmeasured ground publishes no guard — detection still covers it,
+/// and the ground gets measured next. Computed fresh on every page
+/// serve, never stored.
+async fn build_seek_guards(
+    state: &Arc<AppState>,
+    client: &tokio_postgres::Client,
+    row: &wish_book::WishRow,
+) -> Vec<serde_json::Value> {
+    let Some(sender) = row
+        .plan
+        .as_ref()
+        .and_then(|p| p.get("sender"))
+        .and_then(|s| s.as_str())
+        .map(str::to_string)
+    else {
+        return Vec::new();
+    };
+    let body = row
+        .plan
+        .as_ref()
+        .and_then(|p| p.get("seek").cloned())
+        .or_else(|| row.terms.get("seek").cloned())
+        .unwrap_or(serde_json::Value::Null);
+    let Some(region) = body.get("region").and_then(|r| r.as_object()) else {
+        return Vec::new();
+    };
+    let Ok(standing) = positions::positions_terms(client, &row.wish_id).await else {
+        return Vec::new();
+    };
+    if standing.is_empty() {
+        return Vec::new();
+    }
+    let entries = state.curves.read().await.snapshot();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let mut guards: Vec<serde_json::Value> = Vec::new();
+    for (param, _spec) in region {
+        for c in &standing {
+            let Ok((receiver, channel)) =
+                planner::resolve_outcome(&entries, &c.outcome)
+            else {
+                continue;
+            };
+            let Some(curve) = entries.iter().find(|e| {
+                e.sender_id == sender
+                    && e.param == *param
+                    && e.receiver_id == receiver
+                    && e.channel == channel
+            }) else {
+                continue; // no measured coupling: no guard, honest
+            };
+            if curve.state.points.len() < 2 {
+                continue;
+            }
+            // the reading now: the judge's own source
+            let reading_now = state
+                .reader
+                .read_receiver_observations_for(
+                    &receiver,
+                    now - wish_book::JUDGE_LOOKBACK_SECS,
+                    now,
+                )
+                .await
+                .ok()
+                .and_then(|by_ch| by_ch.get(channel.as_str()).cloned())
+                .and_then(|series| {
+                    if series.is_empty() {
+                        None
+                    } else {
+                        Some(trial_reader::median(&series))
+                    }
+                });
+            let Some(reading_now) = reading_now else {
+                continue; // no live reading to protect from: detection covers
+            };
+            guards.push(serde_json::json!({
+                "param": param,
+                "outcome": c.outcome,
+                "lo": c.lo,
+                "hi": c.hi,
+                "margin": c.bars.unwrap_or(0.0),
+                "now": reading_now,
+                "held_by": c.wish_id,
+                "curve": curve.state.points.iter()
+                    .map(|(l, s, _b)| serde_json::json!([l, s]))
+                    .collect::<Vec<_>>(),
+            }));
+        }
+    }
+    if !guards.is_empty() {
+        info!(
+            "SEEK page {wish_id}: {} guard(s) published - the walk avoids the measured breakers",
+            guards.len(),
+            wish_id = row.wish_id
+        );
+    }
+    guards
+}
+
 async fn steer_plan_get(
+
     State(state): State<Arc<AppState>>,
     Path(wish_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
@@ -1769,12 +1878,14 @@ async fn steer_plan_get(
             .and_then(|p| p.get("seek").cloned())
             .or_else(|| row.terms.get("seek").cloned())
             .unwrap_or(serde_json::Value::Null);
+        let guards = build_seek_guards(&state, &client, &row).await;
         return Ok(Json(serde_json::json!({
             "wish_id": wish_id,
             "type": "seek",
             "instruction": instruction,
             "status": row.status,
             "seek": body,
+            "guards": guards,
         })));
     }
 
