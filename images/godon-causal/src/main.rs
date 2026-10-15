@@ -8,7 +8,7 @@ mod otel;
 mod planner;
 mod probe_curves;
 mod query;
-mod room;
+mod positions;
 mod seek_plan;
 mod ambience_store;
 mod ambiences;
@@ -943,34 +943,34 @@ async fn steer_plan(
         &req,
     )
     .await;
-    // ── the room consult (§XIX) ─────────────────────────────────────
+    // ── the positions consult (§XIX) ─────────────────────────────────────
     // The other live wishes' claims ride the compile as terms: a plan
     // is admitted only when it keeps every incumbent's band — joint
     // reachability through the measured map, answered by the same
     // machinery with the same numbers and bars. A refusal naming a
-    // room-owned outcome becomes room_conflict, carrying the complete
-    // repair instruction; the room as it stands keeps serving the
+    // claim owned by a standing position becomes position_conflict, carrying the complete
+    // repair instruction; the positions as they stand keeps serving the
     // incumbent, and coexistence is found by wishers re-declaring
     // outside. Unmeasured coupling cannot refuse (honest silence);
     // the per-serve promise check and vigilance catch actual breakage.
-    let room = match state.connect_archive_ensured().await {
-        Ok(client) => room::room_terms(
+    let positions = match state.connect_archive_ensured().await {
+        Ok(client) => positions::positions_terms(
             &client,
             req.wish_id.as_deref().unwrap_or(""),
         )
         .await
         .unwrap_or_default(),
         Err(e) => {
-            info!("STEER /steer/plan: room consult skipped - book unreachable ({e})");
+            info!("STEER /steer/plan: positions consult skipped - book unreachable ({e})");
             Vec::new()
         }
     };
-    let mut room_req = req.clone();
-    room_req.terms.extend(room.iter().map(|rc| rc.as_term()));
+    let mut positions_req = req.clone();
+    positions_req.terms.extend(positions.iter().map(|rc| rc.as_term()));
     match planner::plan(
         &entries,
         graph.as_ref(),
-        &room_req,
+        &positions_req,
         anchor,
         &claim_anchors,
         &wander,
@@ -1052,15 +1052,15 @@ async fn steer_plan(
         }
         Ok(planner::PlanDecision::Refused { reason, detail }) => {
             // a refusal is a legitimate answer: the binding constraint, named.
-            // The room's refusal (§XIX): when the binding constraint is
-            // another live wish's band, the refusal becomes room_conflict
+            // The refusal of the standing positions (§XIX): when the binding constraint is
+            // another live wish's band, the refusal becomes position_conflict
             // carrying the complete repair instruction — which objective,
             // held where by which wish since when, with the compile's own
             // numbers. The mover re-declares outside; nothing is displaced.
-            let (reason, detail) = match room::owns_outcome(&room, &detail) {
+            let (reason, detail) = match positions::owns_outcome(&positions, &detail) {
                 Some(rc) => {
-                    let (text, _payload) = room::repair_instruction(rc, &detail);
-                    ("room_conflict".to_string(), text)
+                    let (text, _payload) = positions::repair_instruction(rc, &detail);
+                    ("position_conflict".to_string(), text)
                 }
                 None => (reason, detail),
             };
@@ -2208,17 +2208,17 @@ async fn steer_plan_get(
                     m
                 };
                 let wander = state.wander_consult().await;
-                // The room consult rides the re-walk too (§XIX): every
-                // repair move is room-checked — the plans negotiate by
+                // The positions consult rides the re-walk too (§XIX): every
+                // repair move is checked against the standing positions — the plans negotiate by
                 // refusing. A repair that would break another held band
                 // is refused with numbers; the wish freezes at the
                 // boundary and the standing event keeps the record.
-                let room = room::room_terms(&client, &wish_id)
+                let positions = positions::positions_terms(&client, &wish_id)
                     .await
                     .unwrap_or_default();
-                let mut room_req = terms_req.clone();
-                room_req.terms.extend(room.iter().map(|rc| rc.as_term()));
-                match planner::plan(&entries, graph.as_ref(), &room_req, None, &claim_anchors, &wander, &HashMap::new())
+                let mut positions_req = terms_req.clone();
+                positions_req.terms.extend(positions.iter().map(|rc| rc.as_term()));
+                match planner::plan(&entries, graph.as_ref(), &positions_req, None, &claim_anchors, &wander, &HashMap::new())
                 {
                     Ok(planner::PlanDecision::Planned {
                         moves,
@@ -2280,15 +2280,15 @@ async fn steer_plan_get(
                         // Fresh evidence, and the compile still says no:
                         // the refusal is named, the evidence is consumed,
                         // and the wish stays in remeasure until the map
-                        // moves again. A room-attributed refusal (§XIX)
-                        // becomes room_conflict with the complete repair
+                        // moves again. A positions-attributed refusal (§XIX)
+                        // becomes position_conflict with the complete repair
                         // instruction, and the standing event keeps the
                         // record while the wish sits refused at the
                         // boundary — the freeze, with numbers standing.
-                        let (reason, detail) = match room::owns_outcome(&room, &detail) {
+                        let (reason, detail) = match positions::owns_outcome(&positions, &detail) {
                             Some(rc) => {
-                                let (text, _payload) = room::repair_instruction(rc, &detail);
-                                ("room_conflict".to_string(), text)
+                                let (text, _payload) = positions::repair_instruction(rc, &detail);
+                                ("position_conflict".to_string(), text)
                             }
                             None => (reason, detail),
                         };
@@ -2298,7 +2298,7 @@ async fn steer_plan_get(
                         if let Some(plan) = row.plan.as_mut() {
                             plan["curve_fp"] = fingerprint.clone();
                         }
-                        room::standing_refusal(&client, &wish_id, &reason, &detail).await;
+                        positions::standing_refusal(&client, &wish_id, &reason, &detail).await;
                         walk_state = Some(serde_json::json!({
                             "outcome": "refused",
                             "reason": reason,
@@ -2341,7 +2341,7 @@ async fn steer_plan_get(
     })))
 }
 
-/// GET /room — the derived room view (§XIX): what every live wish
+/// GET /positions — the derived positions view (§XIX): what every live wish
 /// holds, computed fresh from the book's plan journals on every read,
 /// never stored, nothing to go stale. Three row kinds and no more —
 /// held (a hold wish's dial, level and bands), measuring (a seek's
@@ -2349,7 +2349,7 @@ async fn steer_plan_get(
 /// longer appears in the map: history — hints speak, promises never,
 /// until re-measured). Wishers get outcomes, never settings;
 /// observers may see the machinery.
-async fn room_view_handler(
+async fn positions_view_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let client = state.connect_archive_ensured().await.map_err(|e| {
@@ -2365,13 +2365,13 @@ async fn room_view_handler(
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
-    let rows = room::room_view(&client, &live).await.map_err(|e| {
+    let rows = positions::positions_view(&client, &live).await.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("room view failed: {e}") })),
+            Json(serde_json::json!({ "error": format!("positions view failed: {e}") })),
         )
     })?;
-    Ok(Json(serde_json::json!({ "room": rows })))
+    Ok(Json(serde_json::json!({ "positions": rows })))
 }
 
 /// Discovery — the tender's per-beat ask: any open wish naming me?
@@ -3838,7 +3838,7 @@ async fn main() {
             get(get_artifact_group).post(upload_artifact_group),
         )
         .route("/curves", get(get_curves))
-        .route("/room", get(room_view_handler))
+        .route("/positions", get(positions_view_handler))
         .route("/walk-view/{sender_id}", get(walk_view))
         .route("/ambience-duty/{tender_id}", get(ambience_duty))
         .route("/walk-view/refine", post(walk_view_refine))
@@ -4205,7 +4205,7 @@ mod tests {
             "the self bracket joins the union — key 2 now sees it"
         );
 
-        // An UNSTABLE self curve flips key 1 — the room-stillness AND.
+        // An UNSTABLE self curve flips key 1 — the positions-stillness AND.
         let mut gaps2 = vec![];
         let self_unstable = vec![self_out("objective_0", 0.3, false, vec![])];
         assert!(!fold_self_verdict(true, &mut gaps2, &self_unstable));
