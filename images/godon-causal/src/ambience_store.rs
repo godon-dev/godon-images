@@ -42,6 +42,12 @@ pub async fn ensure_ambience_table(client: &tokio_postgres::Client) -> Result<()
         .await?;
     client
         .execute(
+            "ALTER TABLE ambience_points ADD COLUMN IF NOT EXISTS adopted_from TEXT",
+            &[],
+        )
+        .await?;
+    client
+        .execute(
             "CREATE INDEX IF NOT EXISTS ambience_points_key ON ambience_points \
              (group_id, tender_id, ambience_param, channel, baseline)",
             &[],
@@ -104,4 +110,31 @@ pub async fn load_ambience_points(
             written_at: row.get::<_, f64>(10),
         })
         .collect())
+}
+
+/// Successor adoption, persistence side (rung 8, designs/2026-10-11
+/// XX + amendment): orphaned ambience rows on one dial — rows whose
+/// tender no longer appears in the room — re-parent to the tender
+/// that banks there, ONLY on a bank that declared the takeover. The
+/// row keeps its provenance: adopted_from carries the prior tender,
+/// attribution time stays its own, and the prior tender's ledger is
+/// never read. Returns rows re-parented.
+pub async fn reparent_orphaned(
+    client: &tokio_postgres::Client,
+    group_id: &str,
+    successor: &str,
+    ambience_param: &str,
+    live: &[String],
+) -> Result<u64, Error> {
+    let live_vec: Vec<String> = live.to_vec();
+    let n = client
+        .execute(
+            "UPDATE ambience_points SET tender_id = $1, adopted_from = tender_id \
+             WHERE group_id = $2 AND ambience_param = $3 \
+             AND tender_id <> $1 \
+             AND NOT (tender_id = ANY($4))",
+            &[&successor.to_string(), &group_id.to_string(), &ambience_param.to_string(), &live_vec],
+        )
+        .await?;
+    Ok(n)
 }
