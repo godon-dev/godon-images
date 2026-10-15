@@ -3252,6 +3252,41 @@ async fn probe_result(
                 req.sender_id, req.probe_param, req.probe_level, anchor, epoch,
                 self_channels.len(), baseline
             );
+
+            // Successor adoption, lazy at first bank (rung 8,
+            // designs/2026-10-11 XX): orphaned local ground on this
+            // dial re-parents to the tender that actually works it.
+            // Liveness is the same truth the positions view derives —
+            // the senders the room's curves still speak of. DB flip
+            // and in-memory registry move together or the consult
+            // reads stale ownership until reboot.
+            {
+                let entries = state.curves.read().await.snapshot();
+                let live: Vec<String> = entries
+                    .iter()
+                    .map(|e| e.sender_id.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                let db_n = ambience_store::reparent_orphaned(
+                    &client,
+                    &req.group_id,
+                    &req.sender_id,
+                    &req.probe_param,
+                    &live,
+                )
+                .await
+                .unwrap_or(0);
+                let mem_n = state
+                    .ambiences
+                    .reparent(&req.group_id, &req.sender_id, &req.probe_param, &live);
+                if db_n > 0 || mem_n > 0 {
+                    info!(
+                        "AMBIENCE ADOPT: {} orphaned row(s) on dial {} re-parented to tender {} (registry points moved: {})",
+                        db_n, req.probe_param, req.sender_id, mem_n
+                    );
+                }
+            }
         }
     } else {
         log::error!(
