@@ -3898,7 +3898,7 @@ mod tests {
             group_id: None,
             wish_id: None,
             answer: None,
-            divisibility: None,
+            standard: None,
             budget: None,
             outcome: outcome.to_string(),
             band: planner::Band {

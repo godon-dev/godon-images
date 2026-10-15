@@ -1477,13 +1477,14 @@ components:
             (planned, or a refusal with its numbers) surface as events,
             at serving time and in status. now: the consult answers in
             the same breath - the declare response already carries it.
-        divisibility:
+        standard:
           type: string
-          enum: [joint, alternatives]
+          enum: [all, best]
           description: |
-            Whether partial service is meaningful. joint (the default
-            for holds): one kept state - a half-kept wish is a lying
-            wish. alternatives: the best of several candidates counts.
+            The wish's standard of success. all (the default for
+            holds): one kept state - every claim in band and every
+            protected reading honored; a half-kept wish is a lying
+            wish. best: the best of several candidates counts.
         claims:
           type: array
       example:
@@ -1522,10 +1523,10 @@ components:
           type: string
           enum: [now, later]
           description: When the consult answers - same breath (now) or at serving time (later, the default); see the hold's grammar.
-        divisibility:
+        standard:
           type: string
-          enum: [joint, alternatives]
-          description: alternatives (the default for walks) - a seek's candidates are partial service by nature; joint = one kept state.
+          enum: [all, best]
+          description: best (the default for walks) - a seek's candidates are partial service by nature; all = one kept state.
         form:
           type: string
           enum: [find_best, cover_now]
