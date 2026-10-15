@@ -198,7 +198,7 @@ impl ToolRegistry {
             },
             ToolDef {
                 name: "wish_declare",
-                description: "Declare a wish. The body states its type. Steer: claims (the outcomes to hold, each with its band) and optional terms (the price the wish pays); one verdict, kept = every claim in band AND every term honored; omitted budget means upkeep indefinitely. Seek: a commissioned walk with its form (find_best or cover_now), region, criterion, budget, candidates - find_best returns the best found with its error bars and the trials spent; when the map already reads the answer, the refusal carries it. A malformed wish is rejected with the reason. Two declaration options, both optional: answer (now = the consult answers in the same breath; later = the default, answers surface as events and in status) and divisibility (joint = the default for holds, one kept state; alternatives = the default for walks, candidates count).",
+                description: "Declare a wish. The body states its type. Steer: claims (the outcomes to hold, each with its band) and optional terms (the price the wish pays); one verdict, kept = every claim in band AND every term honored; omitted budget means upkeep indefinitely. Seek: a commissioned walk with its form (find_best or cover_now), region, criterion, budget, candidates - find_best returns the best found with its error bars and the trials spent; when the map already reads the answer, the refusal carries it. A malformed wish is rejected with the reason. Two declaration options, both optional: answer (now = the consult answers in the same breath; later = the default, answers surface as events and in status) and standard (all = the default for holds, one kept state; best = the default for walks, candidates count).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "description": "The wish body, verbatim. Two discriminators, both always stated: type picks the grammar (steer = the hold, seek = the commissioned walk); form is a field of the walk grammar only (find_best or cover_now). Steer speaks claims + terms; seek speaks form, region, criterion, budget, candidates.",
@@ -244,10 +244,10 @@ impl ToolRegistry {
                             "enum": ["now", "later"],
                             "description": "When the reachability consult answers: now = in the same breath (the declare response carries it); later = the default, at serving time and in status"
                         },
-                        "divisibility": {
+                        "standard": {
                             "type": "string",
-                            "enum": ["joint", "alternatives"],
-                            "description": "Whether partial service is meaningful: joint = the hold default, one kept state (a half-kept wish is a lying wish); alternatives = the walk default, the best of several candidates counts"
+                            "enum": ["all", "best"],
+                            "description": "The wish's standard of success: all = the hold default, one kept state (a half-kept wish is a lying wish); best = the walk default, the best of several candidates counts"
                         },
                         "claims": {
                             "type": "array",
