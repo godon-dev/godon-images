@@ -30,6 +30,11 @@ pub struct Systemtender {
     /// status never does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creation_reason: Option<String>,
+    /// The worker's instruments (the rung-7 field-sets: strategies_run,
+    /// wish, seek_spend), stamped into the tender's own state row and
+    /// passed through verbatim. Present once the worker has stamped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruments: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
