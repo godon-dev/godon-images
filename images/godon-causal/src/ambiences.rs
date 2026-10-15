@@ -148,6 +148,39 @@ impl AmbienceRegistry {
             .unwrap_or_default()
     }
 
+    /// Successor adoption, memory side (rung 8, designs/2026-10-11 XX):
+    /// orphaned patches on one dial — patches whose tender no longer
+    /// appears in the room — move to the successor. The DB flip
+    /// (ambience_store::reparent_orphaned) and this must move together
+    /// or the consult reads stale ownership until reboot. A live
+    /// tender's ground never moves; the successor's own baselines
+    /// merge, never overwrite.
+    pub fn reparent(&self, group: &str, successor: &str, param: &str, live: &[String]) -> usize {
+        let mut guard = self.inner.write().expect("ambience registry lock");
+        let keys: Vec<(String, String, String, String)> = guard.keys().cloned().collect();
+        let mut moved = 0;
+        for k in keys {
+            let (g, t, p, c) = k.clone();
+            if g != group || p != param || t == successor || live.iter().any(|l| *l == t) {
+                continue;
+            }
+            let Some(baselines) = guard.remove(&k) else {
+                continue;
+            };
+            let dest = guard.entry((g, successor.to_string(), p, c)).or_default();
+            for (b, patch) in baselines {
+                moved += patch.points.len();
+                match dest.get_mut(&b) {
+                    Some(existing) => existing.points.extend(patch.points),
+                    None => {
+                        dest.insert(b, patch);
+                    }
+                }
+            }
+        }
+        moved
+    }
+
     /// Every param carrying any patch for (group, tender, channel).
     pub fn params_with_patches(
         &self,
@@ -375,5 +408,48 @@ mod tests {
         let patches = r.patches("g", "t", "p", "objective_0");
         assert_eq!(patches.len(), 2);
         assert_eq!(r.params_with_patches("g", "t", "objective_0"), vec!["p".to_string()]);
+    }
+
+    #[test]
+    fn reparent_moves_only_orphaned_ground_on_the_dial() {
+        let r = AmbienceRegistry::new();
+        r.record("g", "t-dead", "p", "objective_0", "{\"k\":1}", 50.0, pt(50.0, 0.2, 0.01, 0, 1.0));
+        r.record("g", "t-dead", "q", "objective_0", "{\"k\":1}", 50.0, pt(50.0, 0.3, 0.01, 0, 1.0));
+        r.record("g", "t-live", "p", "objective_0", "{\"k\":1}", 50.0, pt(50.0, 0.4, 0.01, 0, 1.0));
+
+        let moved = r.reparent("g", "t-new", "p", &["t-live".to_string(), "t-new".to_string()]);
+        assert_eq!(moved, 1);
+        // the dead ground on the worked dial now serves the successor
+        assert_eq!(r.patches("g", "t-new", "p", "objective_0").len(), 1);
+        // the dead tender's other dial stays orphaned until worked
+        assert_eq!(r.patches("g", "t-dead", "q", "objective_0").len(), 1);
+        assert_eq!(r.patches("g", "t-dead", "p", "objective_0").len(), 0);
+        // a live tender's ground never moves
+        assert_eq!(r.patches("g", "t-live", "p", "objective_0").len(), 1);
+    }
+
+    #[test]
+    fn reparent_merges_into_the_successors_own_baseline() {
+        let r = AmbienceRegistry::new();
+        r.record("g", "t-new", "p", "objective_0", "{\"k\":1}", 50.0, pt(50.0, 0.1, 0.01, 0, 1.0));
+        r.record("g", "t-dead", "p", "objective_0", "{\"k\":1}", 50.0, pt(60.0, 0.2, 0.01, 0, 2.0));
+        let moved = r.reparent("g", "t-new", "p", &[]);
+        assert_eq!(moved, 1);
+        let patches = r.patches("g", "t-new", "p", "objective_0");
+        assert_eq!(patches.len(), 1);
+        let (_, patch) = patches.into_iter().next().unwrap();
+        assert_eq!(
+            patch.points.len(),
+            2,
+            "inherited points merge into the successor's own baseline"
+        );
+    }
+
+    #[test]
+    fn reparent_with_no_orphans_is_a_noop() {
+        let r = AmbienceRegistry::new();
+        r.record("g", "t-live", "p", "objective_0", "{\"k\":1}", 50.0, pt(50.0, 0.1, 0.01, 0, 1.0));
+        assert_eq!(r.reparent("g", "t-new", "p", &["t-live".to_string()]), 0);
+        assert!(r.patches("g", "t-new", "p", "objective_0").is_empty());
     }
 }
