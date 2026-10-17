@@ -1,0 +1,14 @@
+# CI fixture for declared sandbox scripts: the spec names the script and
+# the image, the seeder composes the one-line content at sync time.
+name: sandbox-spec-test
+target: sandbox-spec
+workspace: sandbox-spec-test
+
+scripts:
+  - script: "probe"
+    sandbox: "ghcr.io/godon-dev/test-sandbox-image"
+    tag_env: "SANDBOX_TEST_VERSION"
+    settings:
+      summary: "Declared sandbox script probe"
+      description: "CI probe - content is composed by the seeder from the image ref and the tag env"
+      tag: "test"

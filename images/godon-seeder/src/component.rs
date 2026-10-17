@@ -38,6 +38,12 @@ pub struct ScriptSpec {
     pub pattern: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag_env: Option<String>,
     #[serde(default)]
     pub settings: ScriptSettings,
 }
@@ -493,6 +499,11 @@ impl WindmillDeployer {
         }
 
         for script_spec in &component.scripts {
+            if script_spec.script.is_some() || script_spec.sandbox.is_some() || script_spec.tag_env.is_some() {
+                failures += self.deploy_sandbox_script(workspace, component, script_spec);
+                continue;
+            }
+
             let mut script_files = Vec::new();
 
             if !script_spec.pattern.is_empty() {
@@ -556,6 +567,99 @@ impl WindmillDeployer {
         }
 
         failures
+    }
+
+    fn deploy_sandbox_script(
+        &self,
+        workspace: &str,
+        component: &ComponentConfig,
+        spec: &ScriptSpec,
+    ) -> u32 {
+        let stem = match spec.script.as_deref() {
+            Some(s) if !s.is_empty() => s,
+            _ => {
+                log::error!(
+                    "sandbox spec without a script name (target {}): every declared script needs its name",
+                    component.target
+                );
+                return 1;
+            }
+        };
+
+        if !spec.pattern.is_empty() {
+            log::error!(
+                "script spec '{}' carries both script and pattern - ambiguous, refusing",
+                stem
+            );
+            return 1;
+        }
+
+        let image = match spec.sandbox.as_deref() {
+            Some(i) if !i.is_empty() => i,
+            _ => {
+                log::error!(
+                    "script '{}' declares no sandbox image - a declared script has no file to pin one",
+                    stem
+                );
+                return 1;
+            }
+        };
+
+        let tag_env = match spec.tag_env.as_deref() {
+            Some(e) if !e.is_empty() => e,
+            _ => {
+                log::error!(
+                    "script '{}' declares no tag env - refusing an image ref that could drift to :latest",
+                    stem
+                );
+                return 1;
+            }
+        };
+
+        let tag = match std::env::var(tag_env) {
+            Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+            _ => {
+                log::error!(
+                    "env {} for script '{}' is unset or empty - refusing to deploy an untagged sandbox image",
+                    tag_env,
+                    stem
+                );
+                return 1;
+            }
+        };
+
+        // A sha256:-prefixed value pins the digest; anything else is a tag.
+        let separator = if tag.starts_with("sha256:") { "@" } else { ":" };
+        let content = format!("# sandbox {}{}{}\n", image, separator, tag);
+
+        let windmill_path = format!("f/{}/{}", component.target, stem);
+        let language_hint = format!("{}.sh", stem);
+
+        log::info!(
+            "Deploying declared sandbox script {} (image {}{}{})",
+            windmill_path,
+            image,
+            separator,
+            tag
+        );
+
+        match self.deploy_script_with_retry(
+            workspace,
+            &windmill_path,
+            &content,
+            &spec.settings,
+            &language_hint,
+        ) {
+            Ok(()) => 0,
+            Err(e) => {
+                log::error!(
+                    "Failed to deploy declared sandbox script {}: {}",
+                    windmill_path,
+                    e
+                );
+                1
+            }
+        }
     }
 
     pub fn deploy_component_flows(
