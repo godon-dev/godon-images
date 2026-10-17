@@ -11,6 +11,8 @@ Container images built with Nix for reproducible, isolated builds.
 | `godon-observer` | Rust (Hyper) | 8089 | Optimization observability: Prometheus metrics, trial history from Optuna storage, visualization dashboard |
 | `godon-causal` | Rust (Axum) | 8091 | Coupling detection (CFAR) and uncertainty-aware response-curve characterization from probe trials; curve persistence and the causal graph artifact |
 | `godon-seeder` | Rust | - | Deploys controller/systemtender scripts to Windmill |
+| `godon-controller` | Rust | - | Lifecycle controller for scripts on Windmill; binary-only image, reads its job arguments through the platform API |
+| `godon-robots` | Rust | - | Robot runtime — systemtender workers, reconnaissance, effectuation, strain preflights; on the platform the binary picks its component from the job path and reads its own job arguments, command-line calls also work; binary-only image |
 | `godon-mcp` | Rust (Axum) | 3001 | MCP server exposing godon-api as tool interface for LLM agents |
 | `godon-bench-greenhouse` | Rust (Axum) | 8090 | Multi-zone greenhouse simulation bench for engine verification |
 | `godon-bench-generic` | Rust (Axum) | 8090 | Configurable synthetic coupling bench (topology, base functions, stacked noise) with ground truth |
@@ -29,6 +31,8 @@ godon-images/
 │   ├── godon-observer/
 │   ├── godon-causal/
 │   ├── godon-seeder/
+│   ├── godon-controller/
+│   ├── godon-robots/
 │   ├── godon-mcp/
 │   ├── godon-bench-greenhouse/
 │   ├── godon-bench-generic/
