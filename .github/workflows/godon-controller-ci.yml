@@ -11,7 +11,7 @@ on:
       VERSION:
         description: 'Controller version to test against (X.Y.Z)'
         required: false
-        default: '0.60.0'
+        default: '0.60.1'
 
 env:
   IMAGE_NAME: godon-controller
@@ -32,11 +32,10 @@ jobs:
           echo "Using provided VERSION: $VERSION"
         else
           # PINNED, not resolved: the latest-release resolver would find python-era
-          # tags. The rust line opens at 0.60.0 (the holder's era marker: minors
-          # are organ epochs in this estate). Restore the resolver (latest release
-          # of godon-dev/godon-controller, as godon-cli-ci.yml does) once further
-          # rust releases exist.
-          VERSION="0.60.0"
+          # tags mixed with rust ones. Pinned to 0.60.1 (the shell-bearing image).
+          # Restore the resolver (latest release of godon-dev/godon-controller,
+          # as godon-cli-ci.yml does) once the rust line is the only line.
+          VERSION="0.60.1"
           echo "Using pinned VERSION: $VERSION (the rust line)"
         fi
         echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
