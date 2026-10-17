@@ -18,9 +18,12 @@ let
     cp ${godon-engine}/bin/godon-engine $out/bin/
   '';
 
-  # Binary-only image: no curl, no busybox, no cacert - nothing ever
-  # shells out and the body speaks plain http inside the cluster
-  # (the controller image's holder-ruled shape)
+  # Binary + busybox: the windmill sandbox rail's wrapper contract
+  # runs a script BODY via the image's /bin/sh -c (the payload
+  # wrapper that passes job args to the binary) — so the shell
+  # returns to the binary-only image (the holder's word, the
+  # controller organ's same shape). Nothing else changes: no
+  # cacert, no curl, nothing shells out beyond the wrapper itself.
   containerImage = pkgs.dockerTools.buildLayeredImage {
     name = "${imageName}";
     tag = "${version}";
@@ -29,6 +32,7 @@ let
 
     contents = [
       godon-engine-runtime # Just the engine binary, runtime libs ride the closure
+      pkgs.busybox # /bin/sh for the sandbox rail's wrapper body
     ];
 
     config = {
