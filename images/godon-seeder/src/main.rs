@@ -39,6 +39,11 @@ fn main() {
         std::process::exit(1);
     }
 
+    if let Err(e) = auth::set_lane_tags() {
+        log::error!("Failed to plant the estate's lane tags: {}", e);
+        std::process::exit(1);
+    }
+
     let source_dirs = if args.directories.is_empty() {
         let godon_dir = env::var("GODON_DIR").unwrap_or_else(|_| "/godon".to_string());
         log::info!("No source directories specified, using GODON_DIR: {}", godon_dir);
