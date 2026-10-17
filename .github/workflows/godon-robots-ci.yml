@@ -11,7 +11,7 @@ on:
       VERSION:
         description: 'Robots version to test against (X.Y.Z)'
         required: false
-        default: '0.180.0'
+        default: '0.180.1'
 
 env:
   IMAGE_NAME: godon-robots
@@ -35,10 +35,11 @@ jobs:
           # tags (the 0.170.x line carries no flake). The rust line opened at
           # 0.180.0 by the holder's word - a ten-minor leap from 0.170.x, the
           # era marker (minors are organ epochs in this estate; the gap is the
-          # leap he asked for). Restore the resolver (latest release of
-          # godon-dev/godon-robots, as godon-cli-ci.yml does) once further
-          # rust releases exist.
-          VERSION="0.180.0"
+          # leap he asked for); 0.180.1 carries the door enablers (preflight +
+          # result.json) the wrapper headers pin. Restore the resolver (latest
+          # release of godon-dev/godon-robots, as godon-cli-ci.yml does) once
+          # further rust releases exist.
+          VERSION="0.180.1"
           echo "Using pinned VERSION: $VERSION (the rust line)"
         fi
         echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
