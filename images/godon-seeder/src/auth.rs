@@ -57,6 +57,33 @@ pub fn login_to_windmill(base_url: &str, email: &str, password: &str, max_retrie
     anyhow::bail!("Failed to authenticate with Windmill after {} attempts", max_retries + 1)
 }
 
+/// The estate's worker lanes must be dispatchable by job tokens (a
+/// verb spawning its executor, the engine spawning components). The
+/// platform gates tagged dispatch on the global custom_tags setting,
+/// and a clean-slate boot resets that setting to its default - so
+/// every seed re-plants it. The value is the ARRAY form: the
+/// platform's loader parses a plain list of tag names.
+pub fn set_lane_tags() -> Result<()> {
+    let base_url = env::var("WINDMILL_BASE_URL")
+        .unwrap_or_else(|_| "http://localhost:8000".to_string());
+    let base_url = base_url.trim_end_matches("/api").to_string();
+    let token = env::var("WM_TOKEN").context("WM_TOKEN must be set (login ran first)")?;
+
+    let resp = Client::new()
+        .post(format!("{}/api/settings/global/custom_tags", base_url))
+        .bearer_auth(token)
+        .json(&json!({
+            "value": ["chromium", "controller-fast", "controller-slow", "robot"]
+        }))
+        .send()
+        .context("send the custom_tags setting")?;
+    if !resp.status().is_success() {
+        anyhow::bail!("HTTP {} planting the lane tags", resp.status());
+    }
+    log::info!("Lane tags planted: chromium, controller-fast, controller-slow, robot");
+    Ok(())
+}
+
 pub fn setup_windmill_env(max_retries: u32, retry_delay: u64) -> Result<()> {
     let base_url = env::var("WINDMILL_BASE_URL")
         .unwrap_or_else(|_| "http://localhost:8000".to_string());
