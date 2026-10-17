@@ -18,8 +18,10 @@ let
     cp ${godon-controller}/bin/godon-controller $out/bin/
   '';
 
-  # Binary-only image: no curl, no busybox, no cacert - the TLS roots
-  # compile into the binary and nothing ever shells out
+  # Binary-only image, no shell needed: empty-body sandbox scripts run the
+  # binary as the entrypoint, and the binary serves its own arguments through
+  # the platform API (WM_JOB_PATH routes, jobs_u/get_args carries the payload
+  # - the robots lane's receipts, adopted). No curl, no cacert, no busybox.
   containerImage = pkgs.dockerTools.buildLayeredImage {
     name = "${imageName}";
     tag = "${version}";
