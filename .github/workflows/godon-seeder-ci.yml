@@ -131,6 +131,38 @@ jobs:
           exit 1
         fi
 
+    - name: Verify declared sandbox scripts
+      run: |
+        echo "🧪 Verifying declared sandbox scripts (content composed by the seeder)..."
+
+        cd "$(git rev-parse --show-toplevel)"
+
+        # Run the binary directly against the fixture: the spec names the
+        # script and the image, the tag comes from the env, the seeder
+        # composes the one-line content. No script files exist anywhere.
+        docker run --rm --network godon-seeder-test_default \
+          -v "$(pwd)/shared/tests/sandbox-spec:/fixture:ro" \
+          -e WINDMILL_BASE_URL=http://windmill_server:8000/api \
+          -e WINDMILL_WORKSPACE=sandbox-spec-test \
+          -e WINDMILL_EMAIL=admin@windmill.dev \
+          -e WINDMILL_PASSWORD=changeme \
+          -e SANDBOX_TEST_VERSION=9.9.9 \
+          --entrypoint godon-seeder \
+          godon-seeder-test:test-${{ github.run_number }} \
+          /fixture
+
+        TOKEN=$(curl -s -X POST http://localhost:9101/api/auth/login \
+          -H "Content-Type: application/json" \
+          -d '{"email":"admin@windmill.dev","password":"changeme"}' | tr -d '"')
+
+        PROBE=$(curl -s "http://localhost:9101/api/w/sandbox-spec-test/scripts/get/p/f/sandbox-spec/probe" \
+          -H "Authorization: Bearer $TOKEN")
+
+        echo "Probe script: $PROBE"
+        echo "$PROBE" | grep -F '"content":"# sandbox ghcr.io/godon-dev/test-sandbox-image:9.9.9'
+        echo "$PROBE" | grep -F '"language":"bash"'
+        echo "✅ Declared sandbox script verified - content composed from the image ref and the tag env"
+
     - name: Test retry mechanism with delayed Windmill start
       run: |
         echo "🧪 Testing retry mechanism..."
