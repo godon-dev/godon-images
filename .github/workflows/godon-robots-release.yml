@@ -1,0 +1,52 @@
+name: "release godon-robots image"
+
+on:
+  push:
+    tags:
+      - 'godon-robots-*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-and-release-image:
+    uses: ./.github/workflows/release-image.yml
+    secrets: inherit
+
+  # The size budget rides the release notes (rung 10 plan). The shared
+  # release flow is untouched - this organ-owned job measures the
+  # published image and appends the size section to its notes.
+  size-budget-note:
+    needs: build-and-release-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - name: Append the size budget to the release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG##*-}"
+          FULL="ghcr.io/godon-dev/godon-robots:${VERSION}"
+
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull "$FULL"
+
+          BYTES=$(docker image inspect "$FULL" --format '{{.Size}}')
+          MB=$(awk -v b="$BYTES" 'BEGIN { printf "%.1f", b / 1000 / 1000 }')
+          echo "measured image size: ${MB} MB (${BYTES} bytes)"
+
+          NOTES=$(gh release view "$TAG" --json body --jq .body)
+          {
+            echo "$NOTES"
+            echo ""
+            echo "## Image size"
+            echo ""
+            echo "${MB} MB - one whole engine binary (godon-engine, every component compiled in) plus its C runtime closure."
+            echo "Size budget: the binary alone - no shell, no CA bundle, no tools (the holder-ruled binary-only shape)."
+          } > /tmp/release-notes.md
+          gh release edit "$TAG" --notes-file /tmp/release-notes.md
