@@ -90,7 +90,9 @@ pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), E
             &[],
         )
         .await
-        .map(|row| row.get::<_, i64>(0) == 1)
+        // the expression yields a boolean column - read it as one
+        // (an i64 read panics on deserialization, every startup)
+        .map(|row| row.get::<_, bool>(0))
         .unwrap_or(false);
     if legacy {
         client
