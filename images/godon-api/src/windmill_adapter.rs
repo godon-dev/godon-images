@@ -81,21 +81,40 @@ impl WindmillClient {
         format!("f/{}/{}", self.folder, name)
     }
 
-    fn run_script(&self, script_name: &str, args: serde_json::Value) -> Result<serde_json::Value> {
-        self.run_script_with_timeout(script_name, args, Some(60))
+    /// The generic entries carry the verb in the arguments: the binary
+    /// is the entrypoint and dispatches on the fetched arguments'
+    /// "verb" field; the rest of the object is the request. A
+    /// non-object request rides under the request_data key.
+    fn with_verb(verb: &str, args: serde_json::Value) -> serde_json::Value {
+        let mut obj = match args {
+            serde_json::Value::Object(o) => o,
+            other => {
+                let mut o = serde_json::Map::new();
+                o.insert("request_data".to_string(), other);
+                o
+            }
+        };
+        obj.insert("verb".to_string(), json!(verb));
+        serde_json::Value::Object(obj)
+    }
+
+    fn run_script(&self, verb: &str, args: serde_json::Value) -> Result<serde_json::Value> {
+        self.run_entry("call_fast", verb, args, Some(60))
     }
 
     /// Same synchronous run, with the caller's timeout policy. Some(secs)
     /// makes the wmill SDK cancel the job when it expires; None defers to
     /// the script's own configured timeout (component.yaml `timeout`, the
     /// single source of truth).
-    fn run_script_with_timeout(
+    fn run_entry(
         &self,
-        script_name: &str,
+        entry: &str,
+        verb: &str,
         args: serde_json::Value,
         timeout_secs: Option<u64>,
     ) -> Result<serde_json::Value> {
-        let script_path = self.script_path(script_name);
+        let script_path = self.script_path(entry);
+        let args = Self::with_verb(verb, args);
         let result = self.client
             .run_script_sync(
                 &script_path,
@@ -186,8 +205,8 @@ impl WindmillClient {
             request_data["force"] = json!(force);
         }
 
-        let args = json!({ "request_data": request_data });
-        let script_path = self.script_path("systemtender_delete");
+        let args = Self::with_verb("systemtender_delete", json!({ "request_data": request_data }));
+        let script_path = self.script_path("call_slow");
         self.client
             .run_script_async(&script_path, false, args, None)
             .context(format!("Failed to enqueue Windmill script: {}", script_path))
@@ -398,8 +417,8 @@ impl WindmillClient {
     /// close first (idempotent on already-closed), causal trouble
     /// flags deletion-failed, registry rows removed last.
     pub fn enqueue_wish_delete(&self, wish_id: &str) -> Result<uuid::Uuid> {
-        let args = json!({ "request_data": { "wish_id": wish_id } });
-        let script_path = self.script_path("steerwish_delete");
+        let args = Self::with_verb("steerwish_delete", json!({ "request_data": { "wish_id": wish_id } }));
+        let script_path = self.script_path("call_slow");
         self.client
             .run_script_async(&script_path, false, args, None)
             .context(format!("Failed to enqueue Windmill script: {}", script_path))
