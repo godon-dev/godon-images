@@ -1,0 +1,74 @@
+name: Build and Test godon-controller
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'images/godon-controller/**'
+      - 'build/**'
+  workflow_dispatch:
+    inputs:
+      VERSION:
+        description: 'Controller version to test against (X.Y.Z)'
+        required: false
+        default: '0.60.0'
+
+env:
+  IMAGE_NAME: godon-controller
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Get controller version
+      id: version
+      run: |
+        if [ -n "${{ github.event.inputs.VERSION }}" ]; then
+          VERSION="${{ github.event.inputs.VERSION }}"
+          echo "Using provided VERSION: $VERSION"
+        else
+          # PINNED, not resolved: the latest-release resolver would find python-era
+          # tags. The rust line opens at 0.60.0 (the holder's era marker: minors
+          # are organ epochs in this estate). Restore the resolver (latest release
+          # of godon-dev/godon-controller, as godon-cli-ci.yml does) once further
+          # rust releases exist.
+          VERSION="0.60.0"
+          echo "Using pinned VERSION: $VERSION (the rust line)"
+        fi
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Build godon-controller container
+      env:
+        VERSION: ${{ steps.version.outputs.VERSION }}
+      run: |
+        export VERSION=${{ env.VERSION }}
+        export IMAGE_NAME=${{ env.IMAGE_NAME }}
+        export PROJECT_ROOT="$(git rev-parse --show-toplevel)"
+        cd images/godon-controller
+        bash ../../build/build-container-nix.sh --builder-file ../../build/Dockerfile.nix-builder
+
+    - name: Test container invocation
+      run: |
+        echo "Testing godon-controller container (unknown verb, expect the loud FAILURE envelope)..."
+        VERSION="${{ steps.version.outputs.VERSION }}"
+
+        OUTPUT=$(echo '{}' | docker run --rm -i ${{ env.IMAGE_NAME }}:$VERSION smoke_unknown_verb)
+        echo "$OUTPUT"
+
+        echo "$OUTPUT" | grep -F '"result":"FAILURE"'
+        echo "$OUTPUT" | grep -F 'unknown verb: smoke_unknown_verb'
+
+        echo "✅ Container tests passed"
+
+    - name: Show container info
+      run: |
+        echo "=== Container Information ==="
+        VERSION="${{ steps.version.outputs.VERSION }}"
+        docker images ${{ env.IMAGE_NAME }}:$VERSION
+        echo ""
+        echo "=== Container layers (top 10) ==="
+        docker history ${{ env.IMAGE_NAME }}:$VERSION --human | head -10
