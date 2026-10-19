@@ -58,6 +58,17 @@ pub struct FlowSpec {
     pub settings: FlowSettings,
 }
 
+/// A declared schedule: one repeating trigger on a declared script's
+/// path. Schedules are estate state like scripts - declared here,
+/// planted here, never hand-set (designs/2026-10-18-worker-death-door).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScheduleSpec {
+    #[serde(default)]
+    pub script: String,
+    #[serde(default)]
+    pub every_seconds: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ComponentConfig {
     #[serde(default)]
@@ -70,6 +81,8 @@ pub struct ComponentConfig {
     pub scripts: Vec<ScriptSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flows: Option<Vec<FlowSpec>>,
+    #[serde(default)]
+    pub schedules: Vec<ScheduleSpec>,
 }
 
 #[derive(Debug, Clone)]
@@ -482,6 +495,212 @@ impl WindmillDeployer {
         unreachable!()
     }
 
+    /// A schedule's cadence as windmill's six-field cron (seconds
+    /// first: "0 * * * * *" is once a minute at :00). Whole seconds up
+    /// to 59 step the seconds field; whole minutes step the minute
+    /// field. Anything else refuses - a mis-sized cadence is a config
+    /// fault, not a guess to round.
+    pub fn every_to_cron(every_seconds: i64) -> Result<String> {
+        if every_seconds <= 0 {
+            anyhow::bail!("every_seconds must be positive, got {}", every_seconds);
+        }
+        if every_seconds < 60 {
+            return Ok(format!("*/{} * * * * *", every_seconds));
+        }
+        if every_seconds % 60 == 0 {
+            let minutes = every_seconds / 60;
+            if minutes == 1 {
+                return Ok("0 * * * * *".to_string());
+            }
+            if minutes < 60 {
+                return Ok(format!("0 */{} * * * *", minutes));
+            }
+        }
+        anyhow::bail!(
+            "unsupported cadence {}s - whole seconds under a minute or whole minutes under an hour",
+            every_seconds
+        );
+    }
+
+    pub fn schedule_exists(&self, workspace: &str, schedule_path: &str) -> Result<bool> {
+        let url = format!(
+            "{}/api/w/{}/schedules/exists/{}",
+            self.base_url, workspace, schedule_path
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .headers(self.auth_headers())
+            .send()
+            .context("Failed to check schedule existence")?;
+
+        if response.status().is_success() {
+            let body = response.json::<bool>().context("Failed to parse schedule exists response")?;
+            Ok(body)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn deploy_schedule(
+        &self,
+        workspace: &str,
+        schedule_path: &str,
+        cron: &str,
+        script_path: &str,
+        summary: &str,
+    ) -> Result<()> {
+        let url = format!("{}/api/w/{}/schedules/create", self.base_url, workspace);
+
+        let payload = json!({
+            "path": schedule_path,
+            "schedule": cron,
+            "timezone": "UTC",
+            "script_path": script_path,
+            "is_flow": false,
+            "enabled": true,
+            "summary": summary,
+        });
+
+        let response = self
+            .client
+            .post(&url)
+            .headers(self.auth_headers())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&payload)
+            .send()
+            .context("Failed to create schedule")?;
+
+        let status = response.status().as_u16();
+        if status == 200 || status == 201 {
+            log::info!(
+                "Successfully deployed schedule {} on {} ({})",
+                schedule_path,
+                script_path,
+                cron
+            );
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "Failed to deploy schedule {}: {} - body: {:?}",
+                schedule_path,
+                response.status(),
+                response.text().unwrap_or_default()
+            )
+        }
+    }
+
+    pub fn deploy_schedule_with_retry(
+        &self,
+        workspace: &str,
+        schedule_path: &str,
+        cron: &str,
+        script_path: &str,
+        summary: &str,
+    ) -> Result<()> {
+        if self.schedule_exists(workspace, schedule_path)? {
+            log::info!("Schedule already exists, skipping: {}", schedule_path);
+            return Ok(());
+        }
+
+        for attempt in 0..=self.max_retries {
+            match self.deploy_schedule(workspace, schedule_path, cron, script_path, summary) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    if attempt == self.max_retries {
+                        log::error!(
+                            "Failed to deploy schedule {} after {} attempts: {}",
+                            schedule_path,
+                            attempt + 1,
+                            e
+                        );
+                        return Err(e);
+                    }
+                    log::warn!("Attempt {} failed for schedule {}: {}", attempt + 1, schedule_path, e);
+                    log::info!("Retrying in {} seconds...", self.retry_delay);
+                    thread::sleep(Duration::from_secs(self.retry_delay));
+                }
+            }
+        }
+
+        unreachable!()
+    }
+
+    /// Plant a component's declared schedules. Refuses loud on a
+    /// missing name or cadence, and on a schedule whose script the
+    /// same run did not plant - a trigger on a missing script is a
+    /// wedge, not a warning.
+    pub fn deploy_component_schedules(&self, workspace: &str, component: &ComponentConfig) -> u32 {
+        let mut failures = 0u32;
+
+        for spec in &component.schedules {
+            if spec.script.trim().is_empty() {
+                log::error!(
+                    "schedule spec without a script name (target {}): every declared schedule needs its script",
+                    component.target
+                );
+                failures += 1;
+                continue;
+            }
+            if component.target.trim().is_empty() {
+                log::error!(
+                    "schedule '{}' carries no target - a schedule path derives from it",
+                    spec.script
+                );
+                failures += 1;
+                continue;
+            }
+
+            let script_path = format!("f/{}/{}", component.target, spec.script);
+            let script_planted = match self.script_exists(workspace, &script_path) {
+                Ok(exists) => exists,
+                Err(e) => {
+                    log::error!(
+                        "schedule '{}': script existence check failed for {}: {}",
+                        spec.script,
+                        script_path,
+                        e
+                    );
+                    failures += 1;
+                    continue;
+                }
+            };
+            if !script_planted {
+                log::error!(
+                    "schedule '{}' targets script {} which this run did not plant - refusing",
+                    spec.script,
+                    script_path
+                );
+                failures += 1;
+                continue;
+            }
+
+            let cron = match Self::every_to_cron(spec.every_seconds) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("schedule '{}': {}", spec.script, e);
+                    failures += 1;
+                    continue;
+                }
+            };
+
+            let schedule_path = format!("{}_schedule", script_path);
+            if let Err(e) = self.deploy_schedule_with_retry(
+                workspace,
+                &schedule_path,
+                &cron,
+                &script_path,
+                &format!("{} - declared repeating trigger", component.name),
+            ) {
+                log::error!("Failed to deploy schedule {} after retries: {}", schedule_path, e);
+                failures += 1;
+            }
+        }
+
+        failures
+    }
+
     pub fn deploy_component_scripts(
         &self,
         workspace: &str,
@@ -786,6 +1005,11 @@ pub fn seed_workspace(
         if !component.scripts.is_empty() {
             let script_failures = deployer.deploy_component_scripts(&target_workspace, component, component_dir);
             total_failures += script_failures;
+        }
+
+        if !component.schedules.is_empty() {
+            let schedule_failures = deployer.deploy_component_schedules(&target_workspace, component);
+            total_failures += schedule_failures;
         }
 
         if let Some(ref flows) = component.flows {
