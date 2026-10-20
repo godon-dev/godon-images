@@ -23,6 +23,12 @@ jobs:
       with:
         fetch-depth: 1
 
+    - name: Seeder rust unit tests
+      run: |
+        cargo --version
+        cargo test
+      working-directory: images/godon-seeder
+
     - name: Setup Nix
       uses: cachix/install-nix-action@v22
       with:
@@ -139,7 +145,8 @@ jobs:
 
         # Run the binary directly against the fixture: the spec names the
         # script and the image, the tag comes from the env, the seeder
-        # composes the one-line content. No script files exist anywhere.
+        # composes the content - the bare header for foreign paths, the
+        # wrapper body for engine doors. No script files exist anywhere.
         docker run --rm --network godon-seeder-test_default \
           -v "$(pwd)/shared/tests/sandbox-spec:/fixture:ro" \
           -e WINDMILL_BASE_URL=http://windmill_server:8000/api \
@@ -162,6 +169,30 @@ jobs:
         echo "$PROBE" | grep -F '"content":"# sandbox ghcr.io/godon-dev/test-sandbox-image:9.9.9'
         echo "$PROBE" | grep -F '"language":"bash"'
         echo "✅ Declared sandbox script verified - content composed from the image ref and the tag env"
+
+        # The engine door (f/reconnaissance/http) must carry the wrapper
+        # body: the declared-input assignments and the exec line - the
+        # child takes its data as argv and makes no windmill call.
+        ENGINE_PROBE=$(curl -s "http://localhost:9101/api/w/sandbox-spec-test/scripts/get/p/f/reconnaissance/http" \
+          -H "Authorization: Bearer $TOKEN")
+
+        echo "Engine-door probe: $ENGINE_PROBE"
+        ENGINE_CONTENT=$(echo "$ENGINE_PROBE" | jq -r '.content')
+        EXPECTED=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+          '# sandbox ghcr.io/godon-dev/test-sandbox-image:9.9.9' \
+          'context="$1"' \
+          'targets="$2"' \
+          'settings="$3"' \
+          'exec godon-engine recon-http "{\"context\":$context,\"targets\":$targets,\"settings\":$settings}"')
+        if [ "$ENGINE_CONTENT" != "$EXPECTED" ]; then
+          echo "❌ Engine-door stub does not carry the wrapper body"
+          echo "--- got ---"
+          echo "$ENGINE_CONTENT"
+          echo "--- want ---"
+          echo "$EXPECTED"
+          exit 1
+        fi
+        echo "✅ Engine-door stub carries the wrapper body - declared inputs plus exec, no windmill call in the child"
 
     - name: Test retry mechanism with delayed Windmill start
       run: |

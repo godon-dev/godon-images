@@ -197,6 +197,54 @@ fn detect_language(file_path: &str) -> &'static str {
     }
 }
 
+/// The engine verb a declared sandbox script's windmill path routes
+/// to — the seeder-side mirror of the godon-engine router's
+/// component_for_path (same match arms, same order). `f/<target>/<stem>`
+/// IS the job path: the rail hands it to the child as WM_JOB_PATH, so
+/// both routing halves must never drift. None = not an engine door
+/// (the controller's lane, foreign fixtures) — those keep the bare
+/// sandbox header until their own treatment lands.
+fn engine_verb(job_path: &str) -> Option<&'static str> {
+    match job_path {
+        "f/systemtender/engine/systemtender_worker" => Some("worker"),
+        "f/reconnaissance/http" => Some("recon-http"),
+        "f/reconnaissance/prometheus" => Some("recon-prometheus"),
+        "f/effectuation/http" => Some("effectuation-http"),
+        "f/effectuation/ssh" => Some("effectuation-ssh"),
+        p if p.starts_with("f/systemtender/strains/") && p.ends_with("/preflight") => {
+            Some("preflight")
+        }
+        _ => None,
+    }
+}
+
+/// The stub content for a declared sandbox script. The `# sandbox`
+/// header pins the child image; for engine doors the body rides the
+/// header — the three `$1..` assignments BOTH declare the inputs
+/// (windmill's parse_bash_sig) AND form the body (/bin/sh -c; the
+/// robots image ships busybox for exactly this contract). Windmill
+/// renders object inputs as compact JSON text into `$1..$3`
+/// (raw_to_string, source-read at v1.835.0), so the splice rebuilds
+/// the keyed object the engine's argv door expects — the child makes
+/// NO windmill call, and the empty BASE_INTERNAL_URL the rail passes
+/// direct-dispatched children never matters.
+fn sandbox_stub_content(image: &str, separator: &str, tag: &str, job_path: &str) -> String {
+    let header = format!("# sandbox {}{}{}", image, separator, tag);
+    match engine_verb(job_path) {
+        Some(verb) => format!(
+            concat!(
+                "{}\n",
+                "context=\"$1\"\n",
+                "targets=\"$2\"\n",
+                "settings=\"$3\"\n",
+                "exec godon-engine {} \"{{\\\"context\\\":$context,\\\"targets\\\":$targets,\\\"settings\\\":$settings}}\"\n",
+            ),
+            header, verb
+        ),
+        None => format!("{}\n", header),
+    }
+}
+
 pub struct WindmillDeployer {
     client: Client,
     base_url: String,
@@ -849,9 +897,20 @@ impl WindmillDeployer {
 
         // A sha256:-prefixed value pins the digest; anything else is a tag.
         let separator = if tag.starts_with("sha256:") { "@" } else { ":" };
-        let content = format!("# sandbox {}{}{}\n", image, separator, tag);
 
         let windmill_path = format!("f/{}/{}", component.target, stem);
+        let content = sandbox_stub_content(&image, separator, &tag, &windmill_path);
+        match engine_verb(&windmill_path) {
+            Some(verb) => log::info!(
+                "Planted wrapper body for engine door {} (verb {})",
+                windmill_path,
+                verb
+            ),
+            None => log::info!(
+                "Sandbox script {} is not an engine door - planting the bare header",
+                windmill_path
+            ),
+        }
         let language_hint = format!("{}.sh", stem);
 
         log::info!(
@@ -1027,4 +1086,129 @@ pub fn seed_workspace(
     }
 
     Ok(total_failures)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_verb_map_mirrors_the_engine_router() {
+        // Same arms, same order as godon-robots router.rs
+        // component_for_path — the seeder's f/<target>/<stem> IS the
+        // job path the rail hands the child as WM_JOB_PATH.
+        assert_eq!(
+            engine_verb("f/systemtender/engine/systemtender_worker"),
+            Some("worker")
+        );
+        assert_eq!(engine_verb("f/reconnaissance/http"), Some("recon-http"));
+        assert_eq!(
+            engine_verb("f/reconnaissance/prometheus"),
+            Some("recon-prometheus")
+        );
+        assert_eq!(
+            engine_verb("f/effectuation/http"),
+            Some("effectuation-http")
+        );
+        assert_eq!(engine_verb("f/effectuation/ssh"), Some("effectuation-ssh"));
+        for family in [
+            "bench_generic",
+            "bench_greenhouse",
+            "bench_microgrid",
+            "linux_performance",
+        ] {
+            assert_eq!(
+                engine_verb(&format!("f/systemtender/strains/{family}/preflight")),
+                Some("preflight")
+            );
+        }
+    }
+
+    #[test]
+    fn non_engine_paths_take_no_verb() {
+        // The controller's lane dispatches fine today (flow-wrapped or
+        // cron-created) — it keeps the bare header until its own
+        // treatment lands. Foreign fixtures too.
+        assert_eq!(engine_verb("f/controller/systemtender_create"), None);
+        assert_eq!(engine_verb("f/sandbox-spec/probe"), None);
+        assert_eq!(engine_verb("f/reconnaissance/unknown_stem"), None);
+        assert_eq!(engine_verb("f/systemtender/strains/bench_generic/other"), None);
+    }
+
+    #[test]
+    fn engine_doors_get_the_wrapper_body() {
+        let content = sandbox_stub_content(
+            "ghcr.io/godon-dev/godon-robots",
+            ":",
+            "0.180.8",
+            "f/reconnaissance/http",
+        );
+        assert_eq!(
+            content,
+            concat!(
+                "# sandbox ghcr.io/godon-dev/godon-robots:0.180.8\n",
+                "context=\"$1\"\n",
+                "targets=\"$2\"\n",
+                "settings=\"$3\"\n",
+                "exec godon-engine recon-http \"{\\\"context\\\":$context,\\\"targets\\\":$targets,\\\"settings\\\":$settings}\"\n",
+            )
+        );
+
+        // The digest-pin shape rides the same body.
+        let digest = sandbox_stub_content(
+            "ghcr.io/godon-dev/godon-robots",
+            "@",
+            "sha256:abc123",
+            "f/systemtender/engine/systemtender_worker",
+        );
+        assert!(digest.starts_with("# sandbox ghcr.io/godon-dev/godon-robots@sha256:abc123\n"));
+        assert!(digest.contains("exec godon-engine worker "));
+    }
+
+    #[test]
+    fn the_body_declares_the_inputs_and_splices_the_keyed_object() {
+        // The three assignments are BOTH the declaration windmill's
+        // parse_bash_sig reads AND the body /bin/sh runs; the splice
+        // rebuilds the keyed object the engine's argv door expects.
+        let content = sandbox_stub_content("img", ":", "1", "f/effectuation/ssh");
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines[1], "context=\"$1\"");
+        assert_eq!(lines[2], "targets=\"$2\"");
+        assert_eq!(lines[3], "settings=\"$3\"");
+        assert_eq!(
+            lines[4],
+            "exec godon-engine effectuation-ssh \"{\\\"context\\\":$context,\\\"targets\\\":$targets,\\\"settings\\\":$settings}\""
+        );
+
+        // The spliced argv parses as the keyed object once the shell
+        // has done its part: $1..$3 carry compact-JSON text
+        // (raw_to_string's shape), the outer double quotes group the
+        // word, and the \" pairs become literal quotes.
+        let word = lines[4].splitn(4, ' ').nth(3).unwrap();
+        let substituted = word
+            .replace("$context", r#"{"a":1}"#)
+            .replace("$targets", r#"{"b":2}"#)
+            .replace("$settings", r#"{"c":3}"#);
+        let unquoted = substituted
+            .strip_prefix('"')
+            .unwrap()
+            .strip_suffix('"')
+            .unwrap()
+            .replace("\\\"", "\"");
+        let parsed: serde_json::Value = serde_json::from_str(&unquoted).unwrap();
+        assert_eq!(parsed["context"]["a"], 1);
+        assert_eq!(parsed["targets"]["b"], 2);
+        assert_eq!(parsed["settings"]["c"], 3);
+    }
+
+    #[test]
+    fn non_engine_paths_keep_the_bare_header() {
+        let content = sandbox_stub_content(
+            "ghcr.io/godon-dev/test-sandbox-image",
+            ":",
+            "9.9.9",
+            "f/sandbox-spec/probe",
+        );
+        assert_eq!(content, "# sandbox ghcr.io/godon-dev/test-sandbox-image:9.9.9\n");
+    }
 }

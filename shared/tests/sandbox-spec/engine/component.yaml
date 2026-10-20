@@ -1,0 +1,16 @@
+# CI fixture for the engine-door wrapper bodies: for paths the engine
+# router serves, the seeder plants the declared-input assignments and
+# the exec line after the sandbox header - the child takes its data as
+# argv and makes no windmill call.
+name: sandbox-spec-engine
+target: reconnaissance
+workspace: sandbox-spec-test
+
+scripts:
+  - script: "http"
+    sandbox: "ghcr.io/godon-dev/test-sandbox-image"
+    tag_env: "SANDBOX_TEST_VERSION"
+    settings:
+      summary: "Declared engine-door script probe"
+      description: "CI probe - the seeder composes the wrapper body for engine-router paths"
+      tag: "test"
