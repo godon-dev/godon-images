@@ -2797,6 +2797,19 @@ struct ProbeResultRequest {
     adopt_orphans: Option<bool>,
 }
 
+/// The answer's delta pair: the JSON value (a number when finite,
+/// null otherwise) and the state name. "No prior" covers both the
+/// first point on a curve (INFINITY from the grid-distance rule)
+/// and no curve at all (NAN from the callers) — anything a consumer
+/// cannot compare against, it is told by name instead of a number.
+fn delta_answer(d: f64) -> (serde_json::Value, &'static str) {
+    if d.is_finite() {
+        (serde_json::Value::from(d), "finite")
+    } else {
+        (serde_json::Value::Null, "no_prior")
+    }
+}
+
 async fn probe_result(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ProbeResultRequest>,
@@ -3061,7 +3074,7 @@ async fn probe_result(
             &primary_name,
         )
         .map(|c| c.last_delta())
-        .unwrap_or(f64::MAX / 2.0);
+        .unwrap_or(f64::NAN);
 
     // Regime stamp: the group's standing dials at measurement time —
     // the ambience this round was measured under. Assembled from
@@ -3304,13 +3317,15 @@ async fn probe_result(
         );
     }
 
-    // Replace INFINITY with a large finite value — serde_json serializes
-    // Infinity as null, which the coordinator interprets as failure.
-    let delta_json = if delta.is_infinite() {
-        serde_json::Value::from(f64::MAX / 2.0)
-    } else {
-        serde_json::Value::from(delta)
-    };
+    // The answer's delta: finite when the curve has a prior grid to
+    // compare against, null when it does not — with delta_state
+    // naming which. The old contract mapped "no prior" to
+    // f64::MAX/2.0 (chosen because serde_json emits Infinity as
+    // null), which printed as a 307-digit decimal in coordinator
+    // logs and read as garbage data. Current coordinators always
+    // receive z and treat a null delta as "no prior", never as
+    // failure; older coordinators' >1e10 catch keeps working.
+    let (delta_json, delta_state) = delta_answer(delta);
 
     // unresolved count over the union:
     let unresolved = gaps.iter().filter(|g| g.unresolved).count();
@@ -3349,12 +3364,8 @@ async fn probe_result(
             .await
             .get_curve(&req.sender_id, recv, &req.probe_param, &p.0)
             .map(|c| c.last_delta())
-            .unwrap_or(f64::MAX / 2.0);
-        let recv_delta_json = if recv_delta.is_infinite() {
-            serde_json::Value::from(f64::MAX / 2.0)
-        } else {
-            serde_json::Value::from(recv_delta)
-        };
+            .unwrap_or(f64::NAN);
+        let (recv_delta_json, recv_delta_state) = delta_answer(recv_delta);
         let mut recv_gaps: Vec<crate::probe_curves::GapInfo> = Vec::new();
         for (_, c) in rr.channels.iter() {
             recv_gaps.extend(c.gaps.iter().cloned());
@@ -3388,6 +3399,7 @@ async fn probe_result(
                 "z": p.1.z,
                 "drift": rr.channels.iter().any(|(_, c)| c.drift),
                 "delta": recv_delta_json,
+                "delta_state": recv_delta_state,
                 "converged": rr.all_converged(),
                 "gaps": recv_gaps,
                 "unresolved_gaps": recv_gaps.iter().filter(|g| g.unresolved).count(),
@@ -3405,7 +3417,7 @@ async fn probe_result(
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
         .map(|p| p.name.clone());
-    let self_delta_json = match &self_primary {
+    let (self_delta_json, self_delta_state) = match &self_primary {
         Some(name) => {
             let d = state
                 .curves
@@ -3413,18 +3425,14 @@ async fn probe_result(
                 .await
                 .get_curve(&req.sender_id, &req.sender_id, &req.probe_param, name)
                 .map(|c| c.last_delta())
-                .unwrap_or(f64::MAX / 2.0);
-            if d.is_infinite() {
-                serde_json::Value::from(f64::MAX / 2.0)
-            } else {
-                serde_json::Value::from(d)
-            }
+                .unwrap_or(f64::NAN);
+            delta_answer(d)
         }
-        None => serde_json::Value::from(f64::MAX / 2.0),
+        None => delta_answer(f64::NAN),
     };
     receivers_json.insert(
         "self".to_string(),
-        self_receiver_entry(&self_out, self_delta_json),
+        self_receiver_entry(&self_out, self_delta_json, self_delta_state),
     );
 
     let self_json: serde_json::Map<String, serde_json::Value> = self_channels
@@ -3448,6 +3456,7 @@ async fn probe_result(
         "z": z,
         "drift": drift,
         "delta": delta_json,
+        "delta_state": delta_state,
         "converged": converged,
         "gaps": gaps,
         "unresolved_gaps": unresolved,
@@ -3498,6 +3507,7 @@ pub(crate) fn fold_self_verdict(
 pub(crate) fn self_receiver_entry(
     self_out: &[SelfChannelOut],
     delta_json: serde_json::Value,
+    delta_state: &'static str,
 ) -> serde_json::Value {
     let primary = self_out.iter().max_by(|a, b| {
         a.shift
@@ -3533,6 +3543,7 @@ pub(crate) fn self_receiver_entry(
         "z": 0.0,
         "drift": false,
         "delta": delta_json,
+        "delta_state": delta_state,
         "converged": self_out.iter().all(|sc| sc.converged),
         "gaps": union,
         "unresolved_gaps": union.iter().filter(|g| g.unresolved).count(),
@@ -4269,41 +4280,42 @@ mod tests {
         assert!(result.is_err(), "float timestamps must be rejected");
     }
 
-    // ─── JSON response serialization (the INFINITY bug) ───────────
+    // ─── JSON response serialization (the named-null contract) ─────
 
     #[test]
-    fn test_delta_infinity_is_not_null_in_json() {
-        // The first point on a ResponseCurve returns f64::INFINITY.
-        // serde_json serializes Infinity as null. The coordinator reads
-        // null delta as failure. This test catches that regression.
-        let delta = f64::INFINITY;
+    fn test_delta_infinity_is_named_null_in_json() {
+        // The first point on a ResponseCurve returns f64::INFINITY —
+        // there is no prior grid to compare against, so there is no
+        // delta to state. The answer says so: delta null plus
+        // delta_state "no_prior". The old contract mapped it to
+        // f64::MAX/2.0 (a finite sentinel, chosen because serde_json
+        // emits Infinity as null), which printed as a 307-digit
+        // decimal in coordinator logs and read as garbage data.
+        let (dj, state) = delta_answer(f64::INFINITY);
+        let s = serde_json::to_string(
+            &serde_json::json!({"delta": dj, "delta_state": state}),
+        )
+        .unwrap();
+        assert!(s.contains("\"delta\":null"), "no prior → null: {s}");
+        assert!(s.contains("no_prior"), "state names it: {s}");
 
-        // Naive serialization (the old code):
-        let naive_json = serde_json::to_string(&serde_json::json!({"delta": delta})).unwrap();
-        assert!(
-            naive_json.contains("null"),
-            "INFINITY should serialize as null (this is the bug we're testing for)"
-        );
+        // No curve at all (NAN from the callers) — same named answer.
+        let (dj, state) = delta_answer(f64::NAN);
+        assert!(dj.is_null() && state == "no_prior");
 
-        // The fix: convert INFINITY to finite before serializing.
-        let fixed_value = if delta.is_infinite() {
-            f64::MAX / 2.0
-        } else {
-            delta
-        };
-        let fixed_json = serde_json::to_string(&serde_json::json!({"delta": fixed_value})).unwrap();
+        // Finite delta round-trips as a number, state "finite".
+        let (dj, state) = delta_answer(0.00348);
+        let s = serde_json::to_string(
+            &serde_json::json!({"delta": dj, "delta_state": state}),
+        )
+        .unwrap();
         assert!(
-            !fixed_json.contains("null"),
-            "fixed delta must not be null in JSON: {}",
-            fixed_json
-        );
-        assert!(
-            fixed_json.parse::<serde_json::Value>().unwrap()["delta"]
+            s.parse::<serde_json::Value>().unwrap()["delta"]
                 .as_f64()
                 .is_some(),
-            "fixed delta must deserialize back as f64: {}",
-            fixed_json
+            "finite delta must deserialize back as f64: {s}"
         );
+        assert!(s.contains("finite"));
     }
 
     #[test]
@@ -4398,7 +4410,7 @@ mod tests {
                 vec![gap(50.0, 100.0, 1.004, 0.041, true, 0.502)],
             ),
         ];
-        let entry = self_receiver_entry(&self_o, serde_json::json!(0.25));
+        let entry = self_receiver_entry(&self_o, serde_json::json!(0.25), "finite");
         assert_eq!(
             entry["primary_channel"], "objective_1",
             "primary = largest |shift|"
