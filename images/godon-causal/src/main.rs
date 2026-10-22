@@ -2242,6 +2242,60 @@ async fn steer_plan_get(
             .cloned()
             .unwrap_or(serde_json::Value::Null);
         if fingerprint == served_fp {
+            // The stall speaks: name the next level to re-measure on the
+            // plan's own curve — the aimed remeasure. The worker arms its
+            // probe override from this hint (one level per refresh), the
+            // walk pins its push blocks there, fresh points land on the
+            // plan's curve, the fingerprint moves, the re-serve fires.
+            // The grid is the curve's own measured levels, revisited
+            // round-robin: refresh what the plan rode, in order. Found
+            // live 2026-10-22: three walks, three remeasure instructions,
+            // zero aimed probes — the hint was never spoken for claims
+            // wishes (the chain grammar speaks; this branch did not).
+            let mut hint: Option<(String, f64)> = None;
+            if let Some(plan) = row.plan.as_ref() {
+                if let Some(mv) = plan.get("moves").and_then(|m| m.as_array()).and_then(|a| a.first())
+                {
+                    let param = mv.get("param").and_then(|p| p.as_str()).map(|s| s.to_string());
+                    let sender = mv.get("sender").and_then(|p| p.as_str()).map(|s| s.to_string());
+                    if let (Some(param), Some(sender), Some(claim)) =
+                        (param, sender, terms_req.claims.first())
+                    {
+                        if let Ok((receiver, channel)) =
+                            planner::resolve_outcome(&entries, &claim.outcome)
+                        {
+                            if let Some(entry) = entries.iter().find(|e| {
+                                e.sender_id == sender
+                                    && e.receiver_id == receiver
+                                    && e.channel == channel
+                                    && e.param == param
+                            }) {
+                                let mut levels: Vec<f64> =
+                                    entry.state.points.iter().map(|(l, _, _)| *l).collect();
+                                levels
+                                    .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                                levels.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+                                if !levels.is_empty() {
+                                    let walked = wish_book::list_wish_events(&client, &wish_id, 0.0)
+                                        .await
+                                        .unwrap_or_default()
+                                        .iter()
+                                        .filter(|e| e.event == "walk_probe")
+                                        .count();
+                                    let level = levels[walked % levels.len()];
+                                    hint = Some((param, level));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some((param, level)) = hint {
+                info!(
+                    "REWALK {wish_id}: remeasure hint — {param} at {level} (the plan's own grid, revisited)"
+                );
+                probe_hint = Some(serde_json::json!({ "param": param, "level": level }));
+            }
             walk_state = Some(serde_json::json!({
                 "outcome": "remeasuring",
                 "detail": "no fresh evidence on the plan's curves since the last serve",
