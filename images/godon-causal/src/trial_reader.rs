@@ -137,6 +137,61 @@ impl TrialReader {
         Ok(values)
     }
 
+    /// The judge's own read: rows of ONE receiver taken while it was
+    /// TENDING a wish — the parked receiver publishes under its hold
+    /// phase, while the walk's ambient stream publishes under the
+    /// sender's phase names. Counting only hold rows means no
+    /// assignment, no verdict: a wish nothing tends can never land on
+    /// measurements the walk happened to take anyway (found live
+    /// 2026-10-21: wish a6638bee, planned zero-move, nothing planted,
+    /// the judge stamped "landed" on the ambient stream - a spectator
+    /// got a trophy). Consults keep the settled read above: they
+    /// price the resting reading, which the world produces wish or
+    /// no wish.
+    pub async fn read_tended_observations_for(
+        &self,
+        receiver_id: &str,
+        start_epoch: f64,
+        end_epoch: f64,
+    ) -> Result<std::collections::HashMap<String, Vec<f64>>, Error> {
+        let client = self.connect("archive_db").await?;
+
+        let rows = client
+            .query(
+                "SELECT CAST(objective_values AS TEXT) FROM receiver_observations \
+                 WHERE receiver_id = $3::varchar \
+                 AND lease_phase = 'hold' \
+                 AND EXTRACT(EPOCH FROM written_at) >= $1::double precision \
+                 AND EXTRACT(EPOCH FROM written_at) <= $2::double precision \
+                 ORDER BY written_at",
+                &[&start_epoch, &end_epoch, &receiver_id],
+            )
+            .await?;
+
+        let mut values: std::collections::HashMap<String, Vec<f64>> =
+            std::collections::HashMap::new();
+        for row in &rows {
+            let json_str: String = row.get(0);
+            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                if let Some(map) = obj.as_object() {
+                    for (ch, vv) in map {
+                        if let Some(v) = vv.as_f64() {
+                            values.entry(ch.clone()).or_default().push(v);
+                        }
+                    }
+                }
+            }
+        }
+        debug!(
+            "read_tended_observations_for: receiver={} window=[{:.0}, {:.0}] -> {} channels",
+            receiver_id,
+            start_epoch,
+            end_epoch,
+            values.len()
+        );
+        Ok(values)
+    }
+
     /// Per-receiver, per-channel series: receiver_id -> channel -> ordered
     /// readings. The probe window holds rows from EVERY holding receiver;
     /// grouping by receiver keeps each listener's response its own — the

@@ -547,7 +547,10 @@ paths:
         found with its error bars and the trials spent; cover_now walks
         the region to extend map coverage first and carries no budget.
         When the map already answers the question, the wish is refused
-        with the reading in the refusal. The declaration is a durable,
+        with the reading in the refusal. A wish is also refused when no
+        live tender will take the tending assignment (reason
+        no_tender): the refusal names the tenders that cannot take it
+        and the tenders that are live and assignable. The declaration is a durable,
         withdrawable record - the safety device for everything that acts
         on it. Validation happens before any planning; a malformed wish
         is rejected with the reason.
