@@ -1979,9 +1979,14 @@ async fn steer_plan_get(
             else {
                 continue;
             };
+            // The judge's read: only readings the receiver published
+            // while TENDING (hold phase - it parks under its
+            // assignment). The ambient walk stream publishes under the
+            // sender's phase names and never counts: no assignment, no
+            // verdict (the acceptance spec, 2026-10-21).
             let Ok(by_ch) = state
                 .reader
-                .read_receiver_observations_for(&receiver, since, now)
+                .read_tended_observations_for(&receiver, since, now)
                 .await
             else {
                 continue;
