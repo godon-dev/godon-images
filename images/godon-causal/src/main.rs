@@ -832,9 +832,18 @@ async fn steer_plan(
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0);
         let mut hold_predictions: Vec<serde_json::Value> = Vec::new();
+        // The tending set the door needs: a zero-move plan carries no
+        // path (only chains do), so the resolved receiver of every
+        // claim rides the answer itself - found live 2026-10-22: the
+        // door refused a planned zero-move wish as "names no tender"
+        // while its receiver stood alive in the assignable list.
+        let mut hold_receivers: Vec<String> = Vec::new();
         for (name, band) in &hold_claims {
             let settled = match planner::resolve_outcome(&entries, name) {
                 Ok((receiver, channel)) => {
+                    if !hold_receivers.iter().any(|r| r == &receiver) {
+                        hold_receivers.push(receiver.clone());
+                    }
                     match state
                         .reader
                         .read_receiver_observations_for(
@@ -884,6 +893,7 @@ async fn steer_plan(
             let hold_plan = serde_json::json!({
                 "moves": [],
                 "hold": true,
+                "receivers": hold_receivers,
                 "predicted": { "value": hold_predictions[0]["value"] },
                 "claims": hold_predictions,
             });
@@ -913,6 +923,7 @@ async fn steer_plan(
                 "wish_id": req.wish_id,
                 "moves": [],
                 "hold": true,
+                "receivers": hold_receivers,
                 "predicted": { "value": hold_predictions[0]["value"] },
                 "claims": hold_predictions,
             })));
@@ -2246,9 +2257,14 @@ async fn steer_plan_get(
                 .map(|d| d.as_secs_f64())
                 .unwrap_or(0.0);
             let mut hold_predictions: Vec<serde_json::Value> = Vec::new();
+            let mut hold_receivers: Vec<String> = Vec::new();
             for c in &terms_req.claims {
                 let settled = match planner::resolve_outcome(&entries, &c.outcome) {
-                    Ok((receiver, channel)) => match state
+                    Ok((receiver, channel)) => {
+                        if !hold_receivers.iter().any(|r| r == &receiver) {
+                            hold_receivers.push(receiver.clone());
+                        }
+                        match state
                         .reader
                         .read_receiver_observations_for(
                             &receiver,
@@ -2265,7 +2281,8 @@ async fn steer_plan_get(
                             None => None,
                         },
                         Err(_) => None,
-                    },
+                    }
+                    }
                     Err(_) => None,
                 };
                 match settled {
@@ -2290,6 +2307,7 @@ async fn steer_plan_get(
                 let hold_plan = serde_json::json!({
                     "moves": [],
                     "hold": true,
+                    "receivers": hold_receivers,
                     "predicted": { "value": hold_predictions[0]["value"] },
                     "claims": hold_predictions,
                     "curve_fp": fingerprint,
