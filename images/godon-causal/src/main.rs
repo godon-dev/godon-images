@@ -1658,24 +1658,12 @@ async fn steer_plan_seek(
 
     let entries = state.curves.read().await.snapshot();
 
-    let Some(sender) = seek_plan::serving_sender(&entries, &body) else {
-        let detail = "no single tender holds every region dial";
-        info!("STEER /steer/plan (seek): refused - {detail}");
-        if let (Some(w), Ok(client)) = (&wish_id, state.connect_archive_ensured().await) {
-            let _ = wish_book::record_wish(&client, w, &raw, None, "refused").await;
-            let _ = wish_book::append_wish_event(
-                &client,
-                w,
-                "refused",
-                Some(&serde_json::json!({ "reason": "region_not_held" })),
-            )
-            .await;
-        }
-        return Ok(Json(serde_json::json!({
-            "status": "refused", "wish_id": wish_id,
-            "reason": "region_not_held", "detail": detail,
-        })));
-    };
+    // The wish names its walking tender (the collision cure,
+    // 2026-10-23): dial names repeat across tenders, so the old global
+    // holder-lookup could never answer for a shared name — the named
+    // dial-set IS the answer. The controller's acceptance door stands
+    // behind this: a named tender that is not alive refuses there.
+    let sender = body.tender.clone();
 
     // The map-read: find_best with a resolvable outcome only. An
     // unresolvable outcome admits the seek — the walk will learn what
@@ -4197,6 +4185,7 @@ mod tests {
             "wish_id": "sw-test-1",
             "type": "seek",
             "seek": {
+                "tender": "a",
                 "form": "find_best",
                 "region": {"p": [0.0, 100.0, false]},
                 "criterion": {"outcome": "R/objective_0", "direction": "maximize"},
@@ -4211,11 +4200,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_steer_plan_seek_refuses_region_not_held() {
+    async fn test_steer_plan_seek_plans_the_named_tender_on_virgin_ground() {
+        // The collision cure (2026-10-23): dial names repeat across
+        // tenders, so the wish NAMES its walker and the plan serves it
+        // outright — a dial no curve entry has ever measured is not a
+        // refusal, it is exactly the ground seeks exist to walk.
         let state = seeded_plan_state().await;
         let payload = serde_json::json!({
             "type": "seek",
             "seek": {
+                "tender": "a",
                 "form": "find_best",
                 "region": {"nobody_holds_this": [0.0, 10.0, false]},
                 "criterion": {"outcome": "R/objective_0", "direction": "maximize"},
@@ -4224,9 +4218,9 @@ mod tests {
         });
         let res = steer_plan(State(state), Json(payload))
             .await
-            .expect("refusal is Ok json");
-        assert_eq!(res.0["status"], "refused");
-        assert_eq!(res.0["reason"], "region_not_held");
+            .expect("the named tender plans");
+        assert_eq!(res.0["status"], "planned");
+        assert_eq!(res.0["sender"], "a");
     }
 
     #[tokio::test]
@@ -4235,6 +4229,7 @@ mod tests {
         let payload = serde_json::json!({
             "type": "seek",
             "seek": {
+                "tender": "a",
                 "form": "find_best",
                 "region": {"p": [0.0, 100.0, false]},
                 "criterion": {"outcome": "R/objective_0", "direction": "maximize"},
@@ -4255,6 +4250,7 @@ mod tests {
         let payload = serde_json::json!({
             "type": "seek",
             "seek": {
+                "tender": "a",
                 "form": "cover_now",
                 "region": {"p": [0.0, 100.0, false]},
             },
@@ -4264,6 +4260,26 @@ mod tests {
             .expect("cover_now plans");
         assert_eq!(res.0["status"], "planned");
         assert_eq!(res.0["sender"], "a");
+    }
+
+    #[tokio::test]
+    async fn test_steer_plan_seek_without_a_tender_refuses() {
+        let state = seeded_plan_state().await;
+        let payload = serde_json::json!({
+            "type": "seek",
+            "seek": {
+                "form": "find_best",
+                "region": {"p": [0.0, 100.0, false]},
+                "criterion": {"outcome": "R/objective_0", "direction": "maximize"},
+                "budget": 50, "candidates": 2,
+            },
+        });
+        let res = steer_plan(State(state), Json(payload))
+            .await
+            .expect("door refusal is Ok json");
+        assert_eq!(res.0["status"], "refused");
+        assert_eq!(res.0["reason"], "malformed_seek");
+        assert!(res.0["detail"].as_str().unwrap().contains("undeclared_tender"));
     }
 
     #[tokio::test]
