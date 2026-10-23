@@ -201,7 +201,7 @@ impl ToolRegistry {
                 description: "Declare a wish. The body states its type. Steer: claims (the outcomes to hold, each with its band) and optional terms (the price the wish pays); one verdict, kept = every claim in band AND every term honored; omitted budget means upkeep indefinitely. Seek: a commissioned walk with its form (find_best or cover_now), region, criterion, budget, candidates - find_best returns the best found with its error bars and the trials spent; when the map already reads the answer, the refusal carries it. A malformed wish is rejected with the reason. Two declaration options, both optional: answer (now = the consult answers in the same breath; later = the default, answers surface as events and in status) and standard (all = the default for holds, one kept state; best = the default for walks, candidates count).",
                 input_schema: serde_json::json!({
                     "type": "object",
-                    "description": "The wish body, verbatim. Two discriminators, both always stated: type picks the grammar (steer = the hold, seek = the commissioned walk); form is a field of the walk grammar only (find_best or cover_now). Steer speaks claims + terms; seek speaks form, region, criterion, budget, candidates.",
+                    "description": "The wish body, verbatim. Two discriminators, both always stated: type picks the grammar (steer = the hold, seek = the commissioned walk); form is a field of the walk grammar only (find_best or cover_now). Steer speaks claims + terms; seek speaks tender (the walking tender's uuid), form, region, criterion, budget, candidates.",
                     "required": ["type"],
                     "allOf": [
                         {
@@ -223,6 +223,10 @@ impl ToolRegistry {
                             "type": "string",
                             "description": "The walk's form (type seek, always stated): find_best searches under budget; cover_now walks a region first",
                             "enum": ["cover_now", "find_best"]
+                        },
+                        "tender": {
+                            "type": "string",
+                            "description": "The walking tender's uuid (always stated) - dial names repeat across tenders, so the region is read inside this one dial-set"
                         },
                         "region": {
                             "type": "object",

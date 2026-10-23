@@ -1,11 +1,13 @@
 //! The seek wish at causal's door — admission, the serving tender, and
 //! the map-read (design §XIV; wire pinned in the chime 2026-10-12).
 //!
-//! Three questions, in order, all pure over the curve snapshot:
+//! Three questions, in order:
 //! 1. VALIDATE — the body mirrors the two doors before it (controller
 //!    and tender); causal re-checks because the wire is never trusted.
-//! 2. WHO SERVES — the one tender whose params cover every region
-//!    dial. No single tender, no seek (the region is unheld).
+//! 2. WHO SERVES — the wish names its walking tender (the collision
+//!    cure, 2026-10-23: dial names repeat across tenders, so a global
+//!    holder-lookup could never answer — the named dial-set is the
+//!    answer). Causal plans for that sender outright.
 //! 3. CAN THE MAP READ IT — the sealed refusal rule: a FIND-BEST the
 //!    map can already answer refuses WITH the answer inside the
 //!    refusal. The honest conservative test: EXACTLY ONE region dial
@@ -24,6 +26,8 @@ pub const FIND_BEST: &str = "find_best";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SeekBody {
+    /// the walking tender, named by the declarer — the plan's sender
+    pub tender: String,
     pub form: String,
     /// dial -> (lo, hi, is_int)
     pub region: Vec<(String, f64, f64, bool)>,
@@ -59,6 +63,14 @@ pub fn validate(body: &Value) -> Result<SeekBody, String> {
     if form != COVER_NOW && form != FIND_BEST {
         return Err(format!("unknown_form: {form}"));
     }
+
+    let tender = obj
+        .get("tender")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| "undeclared_tender: the seek names its tender".to_string())?
+        .to_string();
 
     let region_obj = obj
         .get("region")
@@ -132,38 +144,13 @@ pub fn validate(body: &Value) -> Result<SeekBody, String> {
     }
 
     Ok(SeekBody {
+        tender,
         form,
         region,
         criterion,
         budget,
         candidates,
     })
-}
-
-/// The one tender whose params cover every region dial — the seek's
-/// serving sender. Its driver walks its own dials; a region spanning
-/// two tenders is unheld (v1: one seek, one tender).
-pub fn serving_sender(entries: &[CurveEntry], body: &SeekBody) -> Option<String> {
-    let mut sender: Option<String> = None;
-    for (dial, _, _, _) in &body.region {
-        let mut holders: Vec<&str> = entries
-            .iter()
-            .filter(|e| &e.param == dial)
-            .map(|e| e.sender_id.as_str())
-            .collect();
-        holders.sort();
-        holders.dedup();
-        if holders.len() != 1 {
-            return None; // zero holders (unknown dial) or split ownership
-        }
-        let holder = holders[0].to_string();
-        match &sender {
-            None => sender = Some(holder),
-            Some(s) if *s == holder => {}
-            _ => return None, // region spans tenders
-        }
-    }
-    sender
 }
 
 /// Can the map read the FIND-BEST answer already? The honest
@@ -248,6 +235,7 @@ mod tests {
         candidates: i64,
     ) -> Value {
         let mut o = serde_json::Map::new();
+        o.insert("tender".into(), json!("s1"));
         o.insert("form".into(), json!(FIND_BEST));
         o.insert("region".into(), region);
         o.insert(
@@ -281,7 +269,7 @@ mod tests {
         let err = validate(&body_json(json!({}), None, Some(50), 0)).unwrap_err();
         assert!(err.contains("region"));
         let err = validate(&serde_json::json!({
-            "form": "cover_now", "region": {"a": [0.0, 1.0, false]},
+            "tender": "s1", "form": "cover_now", "region": {"a": [0.0, 1.0, false]},
             "budget": 10,
         }))
         .unwrap_err();
@@ -293,7 +281,7 @@ mod tests {
     #[test]
     fn cover_now_admits_with_empty_search_fields() {
         let v = serde_json::json!({
-            "form": "cover_now", "region": {"a": [0.0, 1.0, false]},
+            "tender": "s1", "form": "cover_now", "region": {"a": [0.0, 1.0, false]},
         });
         let b = validate(&v).unwrap();
         assert_eq!(b.form, COVER_NOW);
@@ -316,29 +304,6 @@ mod tests {
             );
             assert_eq!(validate(&v).unwrap().criterion.unwrap().1, max, "{word}");
         }
-    }
-
-    #[test]
-    fn single_holder_serves_split_region_refuses() {
-        let b = validate(&body_json(
-            json!({"a": [0.0, 1.0, false], "b": [0.0, 1.0, false]}),
-            None,
-            Some(10),
-            0,
-        ))
-        .unwrap();
-        let entries = vec![
-            entry("s1", "r", "a", "objective_0", vec![], true),
-            entry("s1", "r", "b", "objective_0", vec![], true),
-        ];
-        assert_eq!(serving_sender(&entries, &b).as_deref(), Some("s1"));
-        let split = vec![
-            entry("s1", "r", "a", "objective_0", vec![], true),
-            entry("s2", "r", "b", "objective_0", vec![], true),
-        ];
-        assert_eq!(serving_sender(&split, &b), None);
-        let hole = vec![entry("s1", "r", "a", "objective_0", vec![], true)];
-        assert_eq!(serving_sender(&hole, &b), None);
     }
 
     #[test]
@@ -426,7 +391,7 @@ mod tests {
     #[test]
     fn cover_now_never_reads_the_map() {
         let v = serde_json::json!({
-            "form": "cover_now", "region": {"a": [0.0, 1.0, false]},
+            "tender": "s1", "form": "cover_now", "region": {"a": [0.0, 1.0, false]},
         });
         let b = validate(&v).unwrap();
         assert_eq!(

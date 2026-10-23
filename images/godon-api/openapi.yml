@@ -582,6 +582,7 @@ paths:
                 summary: Seek - find the best chain-end push under a budget
                 value:
                   type: "seek"
+                  tender: "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
                   form: "find_best"
                   region:
                     chainend.push: [-0.4, 0.4]
@@ -593,6 +594,7 @@ paths:
                 summary: Seek - walk a region now to extend map coverage
                 value:
                   type: "seek"
+                  tender: "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
                   form: "cover_now"
                   region:
                     chainend.push: [-0.4, 0.4]
@@ -1597,6 +1599,9 @@ components:
         form:
           type: string
           enum: [find_best, cover_now]
+        tender:
+          type: string
+          description: the walking tender's uuid (type seek, always stated) - dial names repeat across tenders, so the region is read inside this one dial-set
         region:
           type: object
         criterion:
@@ -1607,6 +1612,7 @@ components:
           type: integer
       example:
         type: "seek"
+        tender: "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d"
         form: "find_best"
         region:
           chainend.push: [-0.4, 0.4]
