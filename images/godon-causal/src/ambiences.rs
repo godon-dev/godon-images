@@ -63,7 +63,9 @@ impl Patch {
         for p in &self.points {
             let key = p.level.to_bits();
             match best.get(&key) {
-                Some(b) if b.epoch > p.epoch || (b.epoch == p.epoch && b.written_at >= p.written_at) => {}
+                Some(b)
+                    if b.epoch > p.epoch
+                        || (b.epoch == p.epoch && b.written_at >= p.written_at) => {}
                 _ => {
                     best.insert(key, *p);
                 }
@@ -75,7 +77,11 @@ impl Patch {
     }
 
     pub fn newest_written_at(&self) -> Option<f64> {
-        self.points.iter().map(|p| p.written_at).fold(f64::NEG_INFINITY, f64::max).into()
+        self.points
+            .iter()
+            .map(|p| p.written_at)
+            .fold(f64::NEG_INFINITY, f64::max)
+            .into()
     }
 
     pub fn max_epoch(&self) -> u64 {
@@ -116,7 +122,10 @@ impl AmbienceRegistry {
             ))
             .or_default()
             .entry(baseline.to_string())
-            .or_insert_with(|| Patch { anchor, points: Vec::new() })
+            .or_insert_with(|| Patch {
+                anchor,
+                points: Vec::new(),
+            })
             .points
             .push(point);
     }
@@ -182,12 +191,7 @@ impl AmbienceRegistry {
     }
 
     /// Every param carrying any patch for (group, tender, channel).
-    pub fn params_with_patches(
-        &self,
-        group: &str,
-        tender: &str,
-        channel: &str,
-    ) -> Vec<String> {
+    pub fn params_with_patches(&self, group: &str, tender: &str, channel: &str) -> Vec<String> {
         let guard = self.inner.read().expect("ambience registry lock");
         let mut out: Vec<String> = guard
             .keys()
@@ -215,8 +219,10 @@ fn canonical_value(v: &serde_json::Value) -> serde_json::Value {
         serde_json::Value::Object(o) => {
             // serde_json::Map is key-sorted without preserve_order —
             // the canonical form IS the sorted form.
-            let m: serde_json::Map<String, serde_json::Value> =
-                o.iter().map(|(k, v)| (k.clone(), canonical_value(v))).collect();
+            let m: serde_json::Map<String, serde_json::Value> = o
+                .iter()
+                .map(|(k, v)| (k.clone(), canonical_value(v)))
+                .collect();
             serde_json::Value::Object(m)
         }
         other => other.clone(),
@@ -289,8 +295,8 @@ pub struct DebtEntry {
 pub fn patch_gaps(points: &[AmbiencePoint]) -> Vec<GapInfo> {
     let mut pts: Vec<&AmbiencePoint> = points.iter().collect();
     pts.sort_by(|a, b| a.level.total_cmp(&b.level));
-    let raw = pts.last().map(|p| p.level).unwrap_or(0.0)
-        - pts.first().map(|p| p.level).unwrap_or(0.0);
+    let raw =
+        pts.last().map(|p| p.level).unwrap_or(0.0) - pts.first().map(|p| p.level).unwrap_or(0.0);
     let range = if raw.abs() > 1e-9 { raw.abs() } else { 1.0 };
     let mut out = Vec::new();
     for w in pts.windows(2) {
@@ -336,7 +342,10 @@ pub enum AmbienceConsult {
     NoEntries,
     /// Patches exist but none keyed at the current resting spot —
     /// the local ground drifted. Re-measure first.
-    Drift { current: String, banked: Vec<String> },
+    Drift {
+        current: String,
+        banked: Vec<String>,
+    },
     /// The patch at the current resting spot: local evidence for the
     /// own-effect dial, freshest points, in movement units from the
     /// banked neutral (the same units every curve speaks).
@@ -353,7 +362,13 @@ mod tests {
     use super::*;
 
     fn pt(level: f64, shift: f64, bar: f64, epoch: u64, at: f64) -> AmbiencePoint {
-        AmbiencePoint { level, shift, bar, epoch, written_at: at }
+        AmbiencePoint {
+            level,
+            shift,
+            bar,
+            epoch,
+            written_at: at,
+        }
     }
 
     #[test]
@@ -403,21 +418,69 @@ mod tests {
     #[test]
     fn registry_records_and_reads_baselines_apart() {
         let r = AmbienceRegistry::new();
-        r.record("g", "t", "p", "objective_0", "{\"k\":1}", 50.0, pt(50.0, 0.0, 0.01, 0, 1.0));
-        r.record("g", "t", "p", "objective_0", "{\"k\":2}", 51.0, pt(51.0, 0.5, 0.01, 0, 2.0));
+        r.record(
+            "g",
+            "t",
+            "p",
+            "objective_0",
+            "{\"k\":1}",
+            50.0,
+            pt(50.0, 0.0, 0.01, 0, 1.0),
+        );
+        r.record(
+            "g",
+            "t",
+            "p",
+            "objective_0",
+            "{\"k\":2}",
+            51.0,
+            pt(51.0, 0.5, 0.01, 0, 2.0),
+        );
         let patches = r.patches("g", "t", "p", "objective_0");
         assert_eq!(patches.len(), 2);
-        assert_eq!(r.params_with_patches("g", "t", "objective_0"), vec!["p".to_string()]);
+        assert_eq!(
+            r.params_with_patches("g", "t", "objective_0"),
+            vec!["p".to_string()]
+        );
     }
 
     #[test]
     fn reparent_moves_only_orphaned_ground_on_the_dial() {
         let r = AmbienceRegistry::new();
-        r.record("g", "t-dead", "p", "objective_0", "{\"k\":1}", 50.0, pt(50.0, 0.2, 0.01, 0, 1.0));
-        r.record("g", "t-dead", "q", "objective_0", "{\"k\":1}", 50.0, pt(50.0, 0.3, 0.01, 0, 1.0));
-        r.record("g", "t-live", "p", "objective_0", "{\"k\":1}", 50.0, pt(50.0, 0.4, 0.01, 0, 1.0));
+        r.record(
+            "g",
+            "t-dead",
+            "p",
+            "objective_0",
+            "{\"k\":1}",
+            50.0,
+            pt(50.0, 0.2, 0.01, 0, 1.0),
+        );
+        r.record(
+            "g",
+            "t-dead",
+            "q",
+            "objective_0",
+            "{\"k\":1}",
+            50.0,
+            pt(50.0, 0.3, 0.01, 0, 1.0),
+        );
+        r.record(
+            "g",
+            "t-live",
+            "p",
+            "objective_0",
+            "{\"k\":1}",
+            50.0,
+            pt(50.0, 0.4, 0.01, 0, 1.0),
+        );
 
-        let moved = r.reparent("g", "t-new", "p", &["t-live".to_string(), "t-new".to_string()]);
+        let moved = r.reparent(
+            "g",
+            "t-new",
+            "p",
+            &["t-live".to_string(), "t-new".to_string()],
+        );
         assert_eq!(moved, 1);
         // the dead ground on the worked dial now serves the successor
         assert_eq!(r.patches("g", "t-new", "p", "objective_0").len(), 1);
@@ -431,8 +494,24 @@ mod tests {
     #[test]
     fn reparent_merges_into_the_successors_own_baseline() {
         let r = AmbienceRegistry::new();
-        r.record("g", "t-new", "p", "objective_0", "{\"k\":1}", 50.0, pt(50.0, 0.1, 0.01, 0, 1.0));
-        r.record("g", "t-dead", "p", "objective_0", "{\"k\":1}", 50.0, pt(60.0, 0.2, 0.01, 0, 2.0));
+        r.record(
+            "g",
+            "t-new",
+            "p",
+            "objective_0",
+            "{\"k\":1}",
+            50.0,
+            pt(50.0, 0.1, 0.01, 0, 1.0),
+        );
+        r.record(
+            "g",
+            "t-dead",
+            "p",
+            "objective_0",
+            "{\"k\":1}",
+            50.0,
+            pt(60.0, 0.2, 0.01, 0, 2.0),
+        );
         let moved = r.reparent("g", "t-new", "p", &[]);
         assert_eq!(moved, 1);
         let patches = r.patches("g", "t-new", "p", "objective_0");
@@ -448,7 +527,15 @@ mod tests {
     #[test]
     fn reparent_with_no_orphans_is_a_noop() {
         let r = AmbienceRegistry::new();
-        r.record("g", "t-live", "p", "objective_0", "{\"k\":1}", 50.0, pt(50.0, 0.1, 0.01, 0, 1.0));
+        r.record(
+            "g",
+            "t-live",
+            "p",
+            "objective_0",
+            "{\"k\":1}",
+            50.0,
+            pt(50.0, 0.1, 0.01, 0, 1.0),
+        );
         assert_eq!(r.reparent("g", "t-new", "p", &["t-live".to_string()]), 0);
         assert!(r.patches("g", "t-new", "p", "objective_0").is_empty());
     }

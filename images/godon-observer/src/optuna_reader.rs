@@ -1,9 +1,11 @@
-use ledger_reader::{record_from_row, TrialRecord as LedgerRecord,
-                    COUNT_TRIALS_SQL, FETCH_STATE_SQL, FETCH_TRIALS_PAGED_SQL};
+use ledger_reader::{
+    record_from_row, TrialRecord as LedgerRecord, COUNT_TRIALS_SQL, FETCH_STATE_SQL,
+    FETCH_TRIALS_PAGED_SQL,
+};
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tokio_postgres::{Error, Row};
-use log::{debug, info};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StudyInfo {
@@ -63,8 +65,10 @@ impl OptunaReader {
         Self {
             config: DbConfig {
                 user: std::env::var("GODON_ARCHIVE_DB_USER").unwrap_or_else(|_| "yugabyte".into()),
-                password: std::env::var("GODON_ARCHIVE_DB_PASSWORD").unwrap_or_else(|_| "yugabyte".into()),
-                host: std::env::var("GODON_ARCHIVE_DB_SERVICE_HOST").unwrap_or_else(|_| "yb-tserver-0".into()),
+                password: std::env::var("GODON_ARCHIVE_DB_PASSWORD")
+                    .unwrap_or_else(|_| "yugabyte".into()),
+                host: std::env::var("GODON_ARCHIVE_DB_SERVICE_HOST")
+                    .unwrap_or_else(|_| "yb-tserver-0".into()),
                 port: std::env::var("GODON_ARCHIVE_DB_SERVICE_PORT")
                     .ok()
                     .and_then(|p| p.parse().ok())
@@ -126,11 +130,20 @@ impl OptunaReader {
             .map(|r| TrialRecord::from(record_from_row(r)))
             .collect();
 
-        info!("Loaded {} trials (offset={}, limit={})", trials.len(), offset, limit);
+        info!(
+            "Loaded {} trials (offset={}, limit={})",
+            trials.len(),
+            offset,
+            limit
+        );
         Ok(trials)
     }
 
-    pub async fn get_trial_count(&self, systemtender_id: &str, _study_name: &str) -> Result<i64, Error> {
+    pub async fn get_trial_count(
+        &self,
+        systemtender_id: &str,
+        _study_name: &str,
+    ) -> Result<i64, Error> {
         let db = Self::systemtender_db_name(systemtender_id);
         let client = self.connect(&db).await?;
         let row = client.query_one(COUNT_TRIALS_SQL, &[]).await?;
@@ -183,7 +196,9 @@ impl OptunaReader {
         let receiver_study = format!("{}_study", receiver_id);
 
         let sender_trials = self.get_trials(sender_id, &sender_study, 0, 10000).await?;
-        let receiver_trials = self.get_trials(receiver_id, &receiver_study, 0, 10000).await?;
+        let receiver_trials = self
+            .get_trials(receiver_id, &receiver_study, 0, 10000)
+            .await?;
 
         // ── Identify sender rounds ────────────────────────────────────
         // Each round is a contiguous block of push trials followed by pause trials.
@@ -196,17 +211,25 @@ impl OptunaReader {
             phase: String, // "push" or "pause"
         }
 
-        let sender_phased: Vec<SenderPhaseTrial> = sender_trials.iter()
+        let sender_phased: Vec<SenderPhaseTrial> = sender_trials
+            .iter()
             .filter_map(|t| {
-                let phase = t.user_attrs.get("impulse_phase")
+                let phase = t
+                    .user_attrs
+                    .get("impulse_phase")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if phase != "push" && phase != "pause" {
                     return None;
                 }
-                let ts = t.datetime_start.as_ref()
+                let ts = t
+                    .datetime_start
+                    .as_ref()
                     .and_then(|s| parse_timestamp_secs(s))?;
-                Some(SenderPhaseTrial { timestamp: ts, phase: phase.to_string() })
+                Some(SenderPhaseTrial {
+                    timestamp: ts,
+                    phase: phase.to_string(),
+                })
             })
             .collect();
 
@@ -221,7 +244,8 @@ impl OptunaReader {
         }
 
         // Group push trials into rounds by temporal gaps
-        let push_ts: Vec<f64> = sender_phased.iter()
+        let push_ts: Vec<f64> = sender_phased
+            .iter()
             .filter(|t| t.phase == "push")
             .map(|t| t.timestamp)
             .collect();
@@ -232,13 +256,13 @@ impl OptunaReader {
         if push_ts.len() > 2 {
             let mut intervals: Vec<f64> = Vec::new();
             for i in 1..push_ts.len() {
-                intervals.push(push_ts[i] - push_ts[i-1]);
+                intervals.push(push_ts[i] - push_ts[i - 1]);
             }
             intervals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             let median_interval = intervals[intervals.len() / 2];
 
             for i in 1..push_ts.len() {
-                let gap = push_ts[i] - push_ts[i-1];
+                let gap = push_ts[i] - push_ts[i - 1];
                 if gap > median_interval * 2.0 && median_interval > 0.0 {
                     round_starts.push(i);
                 }
@@ -273,7 +297,8 @@ impl OptunaReader {
             let push_end = round_push[round_push.len() - 1];
 
             // Find pause trials that follow this push block (within a reasonable window)
-            let pause_after: Vec<f64> = sender_phased.iter()
+            let pause_after: Vec<f64> = sender_phased
+                .iter()
                 .filter(|t| t.phase == "pause" && t.timestamp > push_end - 10.0)
                 .map(|t| t.timestamp)
                 .collect();
@@ -285,7 +310,8 @@ impl OptunaReader {
                 f64::MAX
             };
 
-            let round_pause: Vec<f64> = pause_after.iter()
+            let round_pause: Vec<f64> = pause_after
+                .iter()
                 .filter(|&&ts| ts < next_push_start)
                 .cloned()
                 .collect();
@@ -321,18 +347,23 @@ impl OptunaReader {
         struct ReceiverTrial {
             timestamp: f64,
             values: Vec<f64>,
-            phase: String,  // hold_calib, push, pause, etc.
+            phase: String, // hold_calib, push, pause, etc.
         }
 
-        let receiver_hold: Vec<ReceiverTrial> = receiver_trials.iter()
+        let receiver_hold: Vec<ReceiverTrial> = receiver_trials
+            .iter()
             .filter(|t| t.state == "COMPLETE")
             .filter(|t| {
                 // Only include RECEIVER hold trials — not the sender's own hold_calib.
                 // Receiver has coord_state=hold; sender has coord_state=hold_calib.
-                let dm = t.user_attrs.get("detection_mode")
+                let dm = t
+                    .user_attrs
+                    .get("detection_mode")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let cs = t.user_attrs.get("coord_state")
+                let cs = t
+                    .user_attrs
+                    .get("coord_state")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 (dm == "hold" || dm.is_empty()) && cs != "hold_calib"
@@ -348,9 +379,7 @@ impl OptunaReader {
                             let mut keys: Vec<&String> = obj.keys().collect();
                             keys.sort();
                             for key in keys {
-                                if let Some(v) = obj.get(key)
-                                    .and_then(|vv| vv.as_f64())
-                                {
+                                if let Some(v) = obj.get(key).and_then(|vv| vv.as_f64()) {
                                     vals.push(v);
                                 }
                             }
@@ -358,16 +387,26 @@ impl OptunaReader {
                     }
                 }
 
-                if vals.is_empty() { return None; }
-                let ts = t.datetime_start.as_ref()
+                if vals.is_empty() {
+                    return None;
+                }
+                let ts = t
+                    .datetime_start
+                    .as_ref()
                     .and_then(|s| parse_timestamp_secs(s))?;
                 // Extract phase: impulse_phase or lease_phase from user_attrs
-                let phase = t.user_attrs.get("impulse_phase")
+                let phase = t
+                    .user_attrs
+                    .get("impulse_phase")
                     .and_then(|v| v.as_str())
                     .or_else(|| t.user_attrs.get("lease_phase").and_then(|v| v.as_str()))
                     .unwrap_or("")
                     .to_string();
-                Some(ReceiverTrial { timestamp: ts, values: vals, phase })
+                Some(ReceiverTrial {
+                    timestamp: ts,
+                    values: vals,
+                    phase,
+                })
             })
             .collect();
 
@@ -382,13 +421,18 @@ impl OptunaReader {
         }
 
         // Count pure optuna objectives (before observation merge) for output labeling
-        let n_objectives = receiver_trials.iter()
+        let n_objectives = receiver_trials
+            .iter()
             .filter(|t| t.state == "COMPLETE")
             .map(|t| t.values.len())
             .max()
             .unwrap_or(0);
         // Total channels = max across all receiver_hold (includes observation channels)
-        let n_obj = receiver_hold.iter().map(|rt| rt.values.len()).max().unwrap_or(0);
+        let n_obj = receiver_hold
+            .iter()
+            .map(|rt| rt.values.len())
+            .max()
+            .unwrap_or(0);
         let propagation_lag = 20.0_f64; // seconds — thermal mass delay
 
         // CFAR parameters
@@ -401,8 +445,8 @@ impl OptunaReader {
         // Default 0.95 (5% false alarm rate).
         let confidence = self.config_detection_confidence.unwrap_or(0.95_f64);
         let pfa = 1.0 - confidence;
-        let min_ref_cells = 3usize;   // minimum hold_calib trials for reference
-        let min_test_cells = 3usize;  // minimum push/pause trials
+        let min_ref_cells = 3usize; // minimum hold_calib trials for reference
+        let min_test_cells = 3usize; // minimum push/pause trials
 
         // ── Per-round detection (CFAR) ───────────────────────────────
         let mut per_round_results: Vec<serde_json::Value> = Vec::new();
@@ -422,30 +466,49 @@ impl OptunaReader {
                 // sitting at neutral params — pure noise reference.
                 // NOT the sender's own hold_calib (state=hold_calib) which
                 // may include unstable early readings.
-                let baseline_vals: Vec<f64> = receiver_hold.iter()
+                let baseline_vals: Vec<f64> = receiver_hold
+                    .iter()
                     .filter(|rt| rt.phase == "hold_calib")
                     .filter(|rt| {
                         // Must be before this round's push started
                         rt.timestamp < round.push_start - 10.0
                     })
                     .filter_map(|rt| {
-                        if obj_idx < rt.values.len() { Some(rt.values[obj_idx]) } else { None }
+                        if obj_idx < rt.values.len() {
+                            Some(rt.values[obj_idx])
+                        } else {
+                            None
+                        }
                     })
                     .collect();
 
-                let push_vals: Vec<f64> = receiver_hold.iter()
-                    .filter(|rt| rt.timestamp >= round.push_start - 10.0
-                            && rt.timestamp <= round.push_end + propagation_lag)
+                let push_vals: Vec<f64> = receiver_hold
+                    .iter()
+                    .filter(|rt| {
+                        rt.timestamp >= round.push_start - 10.0
+                            && rt.timestamp <= round.push_end + propagation_lag
+                    })
                     .filter_map(|rt| {
-                        if obj_idx < rt.values.len() { Some(rt.values[obj_idx]) } else { None }
+                        if obj_idx < rt.values.len() {
+                            Some(rt.values[obj_idx])
+                        } else {
+                            None
+                        }
                     })
                     .collect();
 
-                let pause_vals: Vec<f64> = receiver_hold.iter()
-                    .filter(|rt| rt.timestamp >= round.pause_start - 10.0
-                            && rt.timestamp <= round.pause_end + propagation_lag + 30.0)
+                let pause_vals: Vec<f64> = receiver_hold
+                    .iter()
+                    .filter(|rt| {
+                        rt.timestamp >= round.pause_start - 10.0
+                            && rt.timestamp <= round.pause_end + propagation_lag + 30.0
+                    })
                     .filter_map(|rt| {
-                        if obj_idx < rt.values.len() { Some(rt.values[obj_idx]) } else { None }
+                        if obj_idx < rt.values.len() {
+                            Some(rt.values[obj_idx])
+                        } else {
+                            None
+                        }
                     })
                     .collect();
 
@@ -533,8 +596,8 @@ impl OptunaReader {
             }
 
             // Compute stacked edges (average across detected rounds)
-            let detected_edges: Vec<&(f64, f64, bool)> = round_edges.iter()
-                .filter(|e| e.2).collect();
+            let detected_edges: Vec<&(f64, f64, bool)> =
+                round_edges.iter().filter(|e| e.2).collect();
             let (avg_rising, avg_falling) = if !detected_edges.is_empty() {
                 let n = detected_edges.len() as f64;
                 let r: f64 = detected_edges.iter().map(|e| e.0).sum::<f64>() / n;
@@ -576,12 +639,16 @@ impl OptunaReader {
 
         info!(
             "Per-round detection: sender={} receiver={} rounds={} detected={} best_shift={:.4}",
-            sender_id, receiver_id, rounds.len(), any_detected, best_shift
+            sender_id,
+            receiver_id,
+            rounds.len(),
+            any_detected,
+            best_shift
         );
 
         Ok(result)
     }
-/// List all systemtender databases (for interference active systemtender detection).
+    /// List all systemtender databases (for interference active systemtender detection).
     pub async fn get_active_systemtenders(&self) -> Result<Vec<serde_json::Value>, Error> {
         let client = self.connect("yugabyte").await?;
         let rows = client
@@ -609,7 +676,9 @@ fn round4(v: f64) -> f64 {
 }
 
 fn median(v: &[f64]) -> f64 {
-    if v.is_empty() { return 0.0; }
+    if v.is_empty() {
+        return 0.0;
+    }
     let mut sorted = v.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = sorted.len() / 2;
@@ -621,7 +690,9 @@ fn median(v: &[f64]) -> f64 {
 }
 
 fn mad(v: &[f64]) -> f64 {
-    if v.is_empty() { return 0.0; }
+    if v.is_empty() {
+        return 0.0;
+    }
     let m = median(v);
     let deviations: Vec<f64> = v.iter().map(|x| (x - m).abs()).collect();
     median(&deviations) * 1.4826 // Scale factor for normal distribution consistency
@@ -677,10 +748,18 @@ pub fn parse_timestamp_secs(ts: &str) -> Option<f64> {
     // Days from year 2000 to given year
     let days_from_2000 = (year - 2000.0) * 365.25;
     // Month to day-of-year (approximate)
-    let month_days = [0.0, 31.0, 59.0, 90.0, 120.0, 151.0, 181.0, 212.0, 243.0, 273.0, 304.0, 334.0];
-    let day_of_year = month_days.get((month as usize).saturating_sub(1).min(11)).copied().unwrap_or(0.0) + day;
+    let month_days = [
+        0.0, 31.0, 59.0, 90.0, 120.0, 151.0, 181.0, 212.0, 243.0, 273.0, 304.0, 334.0,
+    ];
+    let day_of_year = month_days
+        .get((month as usize).saturating_sub(1).min(11))
+        .copied()
+        .unwrap_or(0.0)
+        + day;
     let epoch = (days_from_2000 + day_of_year) * 86400.0
-        + hour * 3600.0 + minute * 60.0 + second
+        + hour * 3600.0
+        + minute * 60.0
+        + second
         + tz_offset_secs.unwrap_or(0.0);
     Some(epoch)
 }
@@ -721,7 +800,8 @@ mod tests {
         // Simulated receiver values: baseline ~0.5, post-impulse ~0.8
         let mut receiver_vals: HashMap<usize, Vec<f64>> = HashMap::new();
         for i in 0..200 {
-            let is_post_impulse = impulses.iter()
+            let is_post_impulse = impulses
+                .iter()
                 .any(|imp| i >= *imp && i < *imp + window_size);
             let val = if is_post_impulse { 0.8 } else { 0.5 };
             receiver_vals.insert(i, vec![val]);
@@ -738,11 +818,14 @@ mod tests {
                     found = true;
                 }
             }
-            if found { window_count += 1; }
+            if found {
+                window_count += 1;
+            }
         }
 
         let mut baseline: Vec<f64> = Vec::new();
-        let window_set: HashSet<usize> = impulses.iter()
+        let window_set: HashSet<usize> = impulses
+            .iter()
             .flat_map(|imp| (*imp..*imp + window_size).collect::<Vec<usize>>())
             .collect();
         for i in 0..200 {
@@ -757,13 +840,30 @@ mod tests {
         let baseline_mean = baseline.iter().sum::<f64>() / baseline.len() as f64;
         let baseline_std = {
             let n = baseline.len() as f64;
-            (baseline.iter().map(|v| (v - baseline_mean).powi(2)).sum::<f64>() / n).sqrt()
+            (baseline
+                .iter()
+                .map(|v| (v - baseline_mean).powi(2))
+                .sum::<f64>()
+                / n)
+                .sqrt()
         };
 
         assert_eq!(window_count, 4, "Should find 4 impulse windows");
-        assert!((stacked_mean - 0.8).abs() < 0.01, "Stacked mean should be ~0.8, got {}", stacked_mean);
-        assert!((baseline_mean - 0.5).abs() < 0.01, "Baseline mean should be ~0.5, got {}", baseline_mean);
-        assert!(baseline_std < 0.01, "Baseline should have near-zero std, got {}", baseline_std);
+        assert!(
+            (stacked_mean - 0.8).abs() < 0.01,
+            "Stacked mean should be ~0.8, got {}",
+            stacked_mean
+        );
+        assert!(
+            (baseline_mean - 0.5).abs() < 0.01,
+            "Baseline mean should be ~0.5, got {}",
+            baseline_mean
+        );
+        assert!(
+            baseline_std < 0.01,
+            "Baseline should have near-zero std, got {}",
+            baseline_std
+        );
 
         let snr = (stacked_mean - baseline_mean).abs() / baseline_std.max(1e-12);
         assert!(snr > 100.0, "SNR should be very high, got {}", snr);
@@ -791,7 +891,8 @@ mod tests {
         }
 
         let mut baseline: Vec<f64> = Vec::new();
-        let window_set: HashSet<usize> = impulses.iter()
+        let window_set: HashSet<usize> = impulses
+            .iter()
             .flat_map(|imp| (*imp..*imp + window_size).collect::<Vec<usize>>())
             .collect();
         for i in 0..200 {
@@ -805,8 +906,10 @@ mod tests {
         let stacked_mean = post_impulse.iter().sum::<f64>() / post_impulse.len() as f64;
         let baseline_mean = baseline.iter().sum::<f64>() / baseline.len() as f64;
 
-        assert!((stacked_mean - baseline_mean).abs() < 0.01,
-            "No coupling: stacked and baseline should be equal");
+        assert!(
+            (stacked_mean - baseline_mean).abs() < 0.01,
+            "No coupling: stacked and baseline should be equal"
+        );
     }
 
     #[test]
@@ -823,7 +926,11 @@ mod tests {
         let ts3 = parse_timestamp_secs("2026-06-14 10:00:00+00").unwrap();
         let ts4 = parse_timestamp_secs("2026-06-14 11:00:00+00").unwrap();
         let diff = (ts4 - ts3).abs();
-        assert!((diff - 3600.0).abs() < 1.0, "Hour difference should be ~3600s, got {}", diff);
+        assert!(
+            (diff - 3600.0).abs() < 1.0,
+            "Hour difference should be ~3600s, got {}",
+            diff
+        );
     }
 
     #[test]

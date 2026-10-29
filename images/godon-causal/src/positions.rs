@@ -60,7 +60,8 @@ impl PositionClaim {
 
 /// The statuses the book treats as living. Terminal wishes (refused,
 /// released) hold nothing; `declared` rows carry no plan yet.
-const LIVE_STATUSES: &str = "('planned', 'serving', 'missed', 'remeasure', 'undecidable', 'declared')";
+const LIVE_STATUSES: &str =
+    "('planned', 'serving', 'missed', 'remeasure', 'undecidable', 'declared')";
 
 fn plan_dial(plan: &Value) -> Option<(String, String, f64)> {
     let mv = plan.get("moves")?.as_array()?.first()?;
@@ -74,7 +75,10 @@ fn plan_dial(plan: &Value) -> Option<(String, String, f64)> {
 /// own region on their own dial (trial-level movement: detect and
 /// surface, §XIX's spillover split), so only hold wishes contribute
 /// terms. Best-effort callers may treat an error as an empty set.
-pub async fn positions_terms(client: &Client, wish_id: &str) -> Result<Vec<PositionClaim>, tokio_postgres::Error> {
+pub async fn positions_terms(
+    client: &Client,
+    wish_id: &str,
+) -> Result<Vec<PositionClaim>, tokio_postgres::Error> {
     let rows = client
         .query(
             &format!(
@@ -123,10 +127,9 @@ pub async fn positions_terms(client: &Client, wish_id: &str) -> Result<Vec<Posit
             }
         }
         for c in claims {
-            let (Some(outcome), Some(band)) = (
-                c.get("outcome").and_then(|o| o.as_str()),
-                c.get("band"),
-            ) else {
+            let (Some(outcome), Some(band)) =
+                (c.get("outcome").and_then(|o| o.as_str()), c.get("band"))
+            else {
                 continue;
             };
             let (Some(lo), Some(hi)) = (
@@ -157,7 +160,8 @@ pub async fn positions_terms(client: &Client, wish_id: &str) -> Result<Vec<Posit
 /// when the named outcome belongs to another wish, the refusal is the
 /// position's, and the mover deserves the full repair instruction.
 pub fn owns_outcome<'a>(positions: &'a [PositionClaim], detail: &str) -> Option<&'a PositionClaim> {
-    positions.iter()
+    positions
+        .iter()
         .find(|rc| detail.contains(&format!("'{}'", rc.outcome)))
         .or_else(|| positions.iter().find(|rc| detail.contains(&rc.outcome)))
 }
@@ -172,8 +176,7 @@ pub fn repair_instruction(rc: &PositionClaim, detail: &str) -> (String, Value) {
          since t={:.0}; the compile says: {}. Coexistence is found by \
          re-declaring outside: retarget, widen a band, or release theirs — \
          the engine never chooses between wishes.",
-        rc.outcome, rc.wish_id, rc.lo, rc.hi, rc.sender, rc.param, rc.level,
-        rc.since, detail
+        rc.outcome, rc.wish_id, rc.lo, rc.hi, rc.sender, rc.param, rc.level, rc.since, detail
     );
     let payload = json!({
         "other_wish": rc.wish_id,
@@ -221,8 +224,7 @@ pub async fn positions_view(
         let Some((sender, param, level)) = plan_dial(&plan) else {
             continue;
         };
-        let is_seek =
-            terms.get("type").and_then(|t| t.as_str()) == Some("seek");
+        let is_seek = terms.get("type").and_then(|t| t.as_str()) == Some("seek");
         let live = live_senders.iter().any(|s| *s == sender);
         let kind = if !live {
             "orphaned"
@@ -273,12 +275,7 @@ pub async fn positions_view(
 /// once per distinct refusal — the standing record while a wish sits
 /// refused at the boundary, never a fresh event per poll. Deduped
 /// against the refusal already standing since the last serve.
-pub async fn standing_refusal(
-    client: &Client,
-    wish_id: &str,
-    reason: &str,
-    detail: &str,
-) {
+pub async fn standing_refusal(client: &Client, wish_id: &str, reason: &str, detail: &str) {
     let Ok(events) = crate::wish_book::list_wish_events(client, wish_id, 0.0).await else {
         return;
     };

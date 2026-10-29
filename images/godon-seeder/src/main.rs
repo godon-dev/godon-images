@@ -46,7 +46,10 @@ fn main() {
 
     let source_dirs = if args.directories.is_empty() {
         let godon_dir = env::var("GODON_DIR").unwrap_or_else(|_| "/godon".to_string());
-        log::info!("No source directories specified, using GODON_DIR: {}", godon_dir);
+        log::info!(
+            "No source directories specified, using GODON_DIR: {}",
+            godon_dir
+        );
         vec![godon_dir]
     } else {
         args.directories
@@ -64,14 +67,25 @@ fn main() {
 
     if args.verbose {
         log::debug!("Configuration:");
-        log::debug!("  Base URL: {}", env::var("WINDMILL_BASE_URL").unwrap_or_default());
+        log::debug!(
+            "  Base URL: {}",
+            env::var("WINDMILL_BASE_URL").unwrap_or_default()
+        );
         log::debug!("  Workspace: {}", windmill_workspace);
-        log::debug!("  Email: {}", env::var("WINDMILL_EMAIL").unwrap_or_default());
+        log::debug!(
+            "  Email: {}",
+            env::var("WINDMILL_EMAIL").unwrap_or_default()
+        );
         log::debug!("  Max Retries: {}", args.max_retries);
         log::debug!("  Retry Delay: {}", args.retry_delay);
     }
 
-    match component::seed_workspace(&source_dirs, &windmill_workspace, args.max_retries, args.retry_delay) {
+    match component::seed_workspace(
+        &source_dirs,
+        &windmill_workspace,
+        args.max_retries,
+        args.retry_delay,
+    ) {
         Ok(failures) => {
             if failures > 0 {
                 std::process::exit(1);

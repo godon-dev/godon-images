@@ -71,8 +71,8 @@
 
 use crate::types::*;
 use rand::Rng;
-use rand_chacha::ChaCha8Rng;
 use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use std::sync::{Arc, Mutex};
 
 /// State of a single greenhouse zone.
@@ -526,11 +526,7 @@ impl Greenhouse {
 
             // Net temperature change this timestep
             zone.temp += dt
-                * (solar_gain
-                    + wall_transfer
-                    - heat_loss_outside
-                    - vent_cooling
-                    + heating_power
+                * (solar_gain + wall_transfer - heat_loss_outside - vent_cooling + heating_power
                     - cooling_power);
 
             // --- Humidity dynamics ---
@@ -564,8 +560,7 @@ impl Greenhouse {
 
             // Shared water tank: effective irrigation scales with remaining water.
             // irrigation is the optimizer's requested rate; scarcity reduces it.
-            let effective_irrigation = irrigation
-                * (1.0 - self.coupling.last_delta_water);
+            let effective_irrigation = irrigation * (1.0 - self.coupling.last_delta_water);
 
             // --- Growth accumulation ---
 
@@ -614,7 +609,9 @@ impl Greenhouse {
         // Refill: slow well influx
         self.coupling.shared_water_tank += self.coupling.shared_water_influx * dt;
         // Clamp
-        self.coupling.shared_water_tank = self.coupling.shared_water_tank
+        self.coupling.shared_water_tank = self
+            .coupling
+            .shared_water_tank
             .clamp(0.0, self.coupling.shared_water_capacity);
 
         // --- Crop quality tracking ---
@@ -623,11 +620,17 @@ impl Greenhouse {
             / self.zones.len().max(1) as f64;
         let mut stress_count = 0;
         for zone in &self.zones {
-            if zone.temp > 35.0 || zone.temp < 8.0 { stress_count += 1; }
-            if zone.co2 < 200.0 || zone.co2 > 2500.0 { stress_count += 1; }
+            if zone.temp > 35.0 || zone.temp < 8.0 {
+                stress_count += 1;
+            }
+            if zone.co2 < 200.0 || zone.co2 > 2500.0 {
+                stress_count += 1;
+            }
         }
         let irrigation = params.irrigation;
-        if irrigation > 2.5 || irrigation < 0.1 { stress_count += 1; }
+        if irrigation > 2.5 || irrigation < 0.1 {
+            stress_count += 1;
+        }
 
         // Degradation from stress events
         self.crop_quality -= 0.001 * stress_count as f64 * dt;
@@ -747,12 +750,12 @@ impl Greenhouse {
             return;
         }
 
-        let my_avg_temp = self.zones.iter().map(|z| z.temp).sum::<f64>()
-            / self.zones.len().max(1) as f64;
-        let my_avg_co2 = self.zones.iter().map(|z| z.co2).sum::<f64>()
-            / self.zones.len().max(1) as f64;
-        let my_avg_humidity = self.zones.iter().map(|z| z.humidity).sum::<f64>()
-            / self.zones.len().max(1) as f64;
+        let my_avg_temp =
+            self.zones.iter().map(|z| z.temp).sum::<f64>() / self.zones.len().max(1) as f64;
+        let my_avg_co2 =
+            self.zones.iter().map(|z| z.co2).sum::<f64>() / self.zones.len().max(1) as f64;
+        let my_avg_humidity =
+            self.zones.iter().map(|z| z.humidity).sum::<f64>() / self.zones.len().max(1) as f64;
         let my_avg_vent = self.last_params.as_ref().map_or(0.0, |p| {
             p.vent_openings.iter().sum::<f64>() / p.vent_openings.len().max(1) as f64
         });
@@ -811,9 +814,8 @@ impl Greenhouse {
         self.coupling.neighbor_water_draw = total_neighbor_water;
 
         // Compute water scarcity factor: what fraction of irrigation is available
-        let tank_fraction = (self.coupling.shared_water_tank
-            / self.coupling.shared_water_capacity)
-            .clamp(0.0, 1.0);
+        let tank_fraction =
+            (self.coupling.shared_water_tank / self.coupling.shared_water_capacity).clamp(0.0, 1.0);
         let water_scarcity = 1.0 - tank_fraction; // 0 = full tank, 1 = empty
 
         self.coupling.last_delta_temp = delta_temp;
@@ -874,18 +876,22 @@ impl Greenhouse {
                     self.trial_water_liters,
                 ),
                 WeatherMode::Noisy | WeatherMode::Adversarial => {
-                    let nt: Vec<f64> = zone_temps.iter()
+                    let nt: Vec<f64> = zone_temps
+                        .iter()
                         .map(|t| t + self.rng.random_range(-0.3..0.3))
                         .collect();
-                    let nh: Vec<f64> = zone_humidities.iter()
+                    let nh: Vec<f64> = zone_humidities
+                        .iter()
                         .map(|h| (h + self.rng.random_range(-0.02..0.02)).clamp(0.0, 1.0))
                         .collect();
-                    let nc: Vec<f64> = zone_co2_levels.iter()
+                    let nc: Vec<f64> = zone_co2_levels
+                        .iter()
                         .map(|c| (c + self.rng.random_range(-15.0..15.0)).max(0.0))
                         .collect();
                     let ng = (avg_growth + self.rng.random_range(-0.02..0.02)).max(0.0);
                     let ne = self.trial_energy_kwh + self.rng.random_range(-0.01..0.01);
-                    let nw = (self.trial_water_liters + self.rng.random_range(-0.005..0.005)).max(0.0);
+                    let nw =
+                        (self.trial_water_liters + self.rng.random_range(-0.005..0.005)).max(0.0);
                     (nt, nh, nc, ng, ne, nw)
                 }
             };
@@ -901,9 +907,15 @@ impl Greenhouse {
             trial_water_liters: noisy_water,
             water_efficiency: noisy_growth / noisy_water.max(0.001),
             crop_quality: self.crop_quality,
-            max_temp: noisy_temps.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            max_temp: noisy_temps
+                .iter()
+                .cloned()
+                .fold(f64::NEG_INFINITY, f64::max),
             min_temp: noisy_temps.iter().cloned().fold(f64::INFINITY, f64::min),
-            max_humidity: noisy_humidities.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            max_humidity: noisy_humidities
+                .iter()
+                .cloned()
+                .fold(f64::NEG_INFINITY, f64::max),
             max_co2: noisy_co2.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
             outside_temp: self.outside_temp,
             outside_co2: self.outside_co2,

@@ -5,14 +5,14 @@ use serde_json::json;
 use std::env;
 use wmill::Windmill;
 
-use crate::types::{Systemtender, SystemtenderSummary, Credential, Target};
+use crate::types::{Credential, Systemtender, SystemtenderSummary, Target};
 
 fn login_to_windmill(base_url: &str, email: &str, password: &str) -> Result<String> {
     let client = Client::new();
     let url = format!("{}/api/auth/login", base_url);
-    
+
     info!("Logging into Windmill at: {}", url);
-    
+
     let response = client
         .post(&url)
         .json(&json!({
@@ -21,14 +21,14 @@ fn login_to_windmill(base_url: &str, email: &str, password: &str) -> Result<Stri
         }))
         .send()
         .context("Failed to send login request to Windmill")?;
-    
+
     let token = response.text().context("Failed to read login response")?;
     let token = token.trim_matches('"').to_string();
-    
+
     if token.is_empty() || token == "null" {
         anyhow::bail!("Windmill login returned empty token");
     }
-    
+
     info!("Successfully authenticated with Windmill");
     Ok(token)
 }
@@ -43,37 +43,36 @@ impl WindmillClient {
         let base_url = env::var("WINDMILL_BASE_URL")
             .unwrap_or_else(|_| "http://localhost:8000/api".to_string());
         let base_url = base_url.trim_end_matches("/api").to_string();
-        
+
         if env::var("WM_TOKEN").is_err() {
             let token = if let Ok(token) = env::var("WINDMILL_TOKEN") {
                 token
             } else {
-                let email = env::var("WINDMILL_EMAIL")
-                    .unwrap_or_else(|_| "admin@windmill.dev".to_string());
-                let password = env::var("WINDMILL_PASSWORD")
-                    .unwrap_or_else(|_| "changeme".to_string());
-                
+                let email =
+                    env::var("WINDMILL_EMAIL").unwrap_or_else(|_| "admin@windmill.dev".to_string());
+                let password =
+                    env::var("WINDMILL_PASSWORD").unwrap_or_else(|_| "changeme".to_string());
+
                 login_to_windmill(&base_url, &email, &password)?
             };
             env::set_var("WM_TOKEN", &token);
         }
-        
+
         if env::var("WM_WORKSPACE").is_err() {
             if let Ok(workspace) = env::var("WINDMILL_WORKSPACE") {
                 env::set_var("WM_WORKSPACE", &workspace);
             }
         }
-        
+
         if env::var("BASE_INTERNAL_URL").is_err() {
             env::set_var("BASE_INTERNAL_URL", &base_url);
         }
-        
-        let folder = env::var("WINDMILL_FOLDER")
-            .unwrap_or_else(|_| "controller".to_string());
-        
-        let client = Windmill::default()
-            .context("Failed to initialize Windmill client from environment")?;
-        
+
+        let folder = env::var("WINDMILL_FOLDER").unwrap_or_else(|_| "controller".to_string());
+
+        let client =
+            Windmill::default().context("Failed to initialize Windmill client from environment")?;
+
         Ok(Self { client, folder })
     }
 
@@ -96,21 +95,15 @@ impl WindmillClient {
         timeout_secs: Option<u64>,
     ) -> Result<serde_json::Value> {
         let script_path = self.script_path(script_name);
-        let result = self.client
-            .run_script_sync(
-                &script_path,
-                false,
-                args,
-                None,
-                timeout_secs,
-                true,
-                false,
-            )
+        let result = self
+            .client
+            .run_script_sync(&script_path, false, args, None, timeout_secs, true, false)
             .context(format!("Failed to run Windmill script: {}", script_path))?;
 
         if let Some(result_str) = result.get("result").and_then(|r| r.as_str()) {
             if result_str == "FAILURE" {
-                let error_msg = result.get("error")
+                let error_msg = result
+                    .get("error")
                     .and_then(|e| e.as_str())
                     .unwrap_or("Unknown error");
                 anyhow::bail!("Windmill script failed: {}", error_msg);
@@ -129,8 +122,8 @@ impl WindmillClient {
         let data = Self::unwrap_data(response);
 
         if data.is_array() {
-            let systemtenders: Vec<SystemtenderSummary> = serde_json::from_value(data)
-                .context("Failed to parse systemtenders list")?;
+            let systemtenders: Vec<SystemtenderSummary> =
+                serde_json::from_value(data).context("Failed to parse systemtenders list")?;
             Ok(systemtenders)
         } else {
             Ok(Vec::new())
@@ -142,16 +135,20 @@ impl WindmillClient {
     /// executor and returns at once — the seconds-long archive work
     /// never rides this connection. `duplicate: true` marks a name
     /// clash (the API answers 409 + the existing row).
-    pub fn create_systemtender(&self, systemtender_config: serde_json::Value) -> Result<(SystemtenderSummary, bool)> {
+    pub fn create_systemtender(
+        &self,
+        systemtender_config: serde_json::Value,
+    ) -> Result<(SystemtenderSummary, bool)> {
         let args = json!({ "request_data": systemtender_config });
         let response = self.run_script("systemtender_create", args)?;
-        let duplicate = response.get("duplicate")
+        let duplicate = response
+            .get("duplicate")
             .and_then(|d| d.as_bool())
             .unwrap_or(false);
         let data = Self::unwrap_data(response);
 
-        let summary: SystemtenderSummary = serde_json::from_value(data)
-            .context("Failed to parse created systemtender")?;
+        let summary: SystemtenderSummary =
+            serde_json::from_value(data).context("Failed to parse created systemtender")?;
         Ok((summary, duplicate))
     }
 
@@ -160,9 +157,9 @@ impl WindmillClient {
         let response = self.run_script("systemtender_get", args)?;
         let data = Self::unwrap_data(response);
 
-        let systemtender: Systemtender = serde_json::from_value(data)
-            .context("Failed to parse systemtender")?;
-        
+        let systemtender: Systemtender =
+            serde_json::from_value(data).context("Failed to parse systemtender")?;
+
         if systemtender.id.is_empty() {
             anyhow::bail!("Invalid systemtender response: missing id field");
         }
@@ -190,7 +187,10 @@ impl WindmillClient {
         let script_path = self.script_path("systemtender_delete");
         self.client
             .run_script_async(&script_path, false, args, None)
-            .context(format!("Failed to enqueue Windmill script: {}", script_path))
+            .context(format!(
+                "Failed to enqueue Windmill script: {}",
+                script_path
+            ))
     }
 
     pub fn stop_systemtender(&self, systemtender_id: &str) -> Result<serde_json::Value> {
@@ -199,7 +199,12 @@ impl WindmillClient {
         Ok(Self::unwrap_data(response))
     }
 
-    pub fn update_systemtender(&self, systemtender_id: &str, config: serde_json::Value, force: bool) -> Result<serde_json::Value> {
+    pub fn update_systemtender(
+        &self,
+        systemtender_id: &str,
+        config: serde_json::Value,
+        force: bool,
+    ) -> Result<serde_json::Value> {
         let mut request_data = json!({ "systemtender_id": systemtender_id, "config": config });
         if force {
             request_data["force"] = json!(force);
@@ -220,8 +225,8 @@ impl WindmillClient {
         let data = Self::unwrap_data(response);
 
         if data.is_array() {
-            let credentials: Vec<Credential> = serde_json::from_value(data)
-                .context("Failed to parse credentials list")?;
+            let credentials: Vec<Credential> =
+                serde_json::from_value(data).context("Failed to parse credentials list")?;
             Ok(credentials)
         } else {
             Ok(Vec::new())
@@ -229,11 +234,13 @@ impl WindmillClient {
     }
 
     pub fn create_credential(&self, credential_data: serde_json::Value) -> Result<Credential> {
-        let name = credential_data.get("name")
+        let name = credential_data
+            .get("name")
             .and_then(|n| n.as_str())
             .context("Missing name field")?;
-        
-        let content = credential_data.get("content")
+
+        let content = credential_data
+            .get("content")
             .and_then(|c| c.as_str())
             .context("Missing content field")?;
 
@@ -254,8 +261,7 @@ impl WindmillClient {
         let response = self.run_script("credential_create", args)?;
         let data = Self::unwrap_data(response);
 
-        serde_json::from_value(data)
-            .context("Failed to parse created credential")
+        serde_json::from_value(data).context("Failed to parse created credential")
     }
 
     pub fn get_credential(&self, credential_id: &str) -> Result<Credential> {
@@ -263,10 +269,11 @@ impl WindmillClient {
         let response = self.run_script("credential_get", args)?;
         let data = Self::unwrap_data(response);
 
-        let credential: Credential = serde_json::from_value(data)
-            .context("Failed to parse credential")?;
+        let credential: Credential =
+            serde_json::from_value(data).context("Failed to parse credential")?;
 
-        let content = self.client
+        let content = self
+            .client
             .get_variable_raw(&credential.windmill_variable)
             .context("Failed to get credential content from Windmill variable")?;
 
@@ -280,11 +287,13 @@ impl WindmillClient {
         let args_get = json!({ "request_data": { "credentialId": credential_id } });
         let response = self.run_script("credential_get", args_get)?;
         let data = Self::unwrap_data(response);
-        
-        let credential: Credential = serde_json::from_value(data)
-            .context("Failed to parse credential for deletion")?;
 
-        let _ = self.client.set_variable(String::new(), &credential.windmill_variable, false);
+        let credential: Credential =
+            serde_json::from_value(data).context("Failed to parse credential for deletion")?;
+
+        let _ = self
+            .client
+            .set_variable(String::new(), &credential.windmill_variable, false);
 
         let args = json!({ "request_data": { "credentialId": credential_id } });
         self.run_script("credential_delete", args)?;
@@ -296,8 +305,8 @@ impl WindmillClient {
         let data = Self::unwrap_data(response);
 
         if data.is_array() {
-            let targets: Vec<Target> = serde_json::from_value(data)
-                .context("Failed to parse targets list")?;
+            let targets: Vec<Target> =
+                serde_json::from_value(data).context("Failed to parse targets list")?;
             Ok(targets)
         } else {
             Ok(Vec::new())
@@ -309,8 +318,7 @@ impl WindmillClient {
         let response = self.run_script("target_create", args)?;
         let data = Self::unwrap_data(response);
 
-        serde_json::from_value(data)
-            .context("Failed to parse created target")
+        serde_json::from_value(data).context("Failed to parse created target")
     }
 
     pub fn get_target(&self, target_id: &str) -> Result<Target> {
@@ -318,8 +326,7 @@ impl WindmillClient {
         let response = self.run_script("target_get", args)?;
         let data = Self::unwrap_data(response);
 
-        serde_json::from_value(data)
-            .context("Failed to parse target")
+        serde_json::from_value(data).context("Failed to parse target")
     }
 
     pub fn delete_target(&self, target_id: &str) -> Result<()> {
@@ -339,8 +346,8 @@ impl WindmillClient {
         let data = Self::unwrap_data(response);
 
         if data.is_array() {
-            let wishes: Vec<crate::types::WishSummary> = serde_json::from_value(data)
-                .context("Failed to parse wishes list")?;
+            let wishes: Vec<crate::types::WishSummary> =
+                serde_json::from_value(data).context("Failed to parse wishes list")?;
             Ok(wishes)
         } else {
             Ok(Vec::new())
@@ -352,8 +359,7 @@ impl WindmillClient {
         let response = self.run_script("steerwish_create", args)?;
         let data = Self::unwrap_data(response);
 
-        serde_json::from_value(data)
-            .context("Failed to parse declared wish")
+        serde_json::from_value(data).context("Failed to parse declared wish")
     }
 
     pub fn get_wish(&self, wish_id: &str) -> Result<crate::types::Wish> {
@@ -361,8 +367,8 @@ impl WindmillClient {
         let response = self.run_script("steerwish_get", args)?;
         let data = Self::unwrap_data(response);
 
-        let wish: crate::types::Wish = serde_json::from_value(data)
-            .context("Failed to parse wish")?;
+        let wish: crate::types::Wish =
+            serde_json::from_value(data).context("Failed to parse wish")?;
 
         if wish.id.is_empty() {
             anyhow::bail!("Invalid wish response: missing id field");
@@ -376,11 +382,14 @@ impl WindmillClient {
         let response = self.run_script("steerwish_close", args)?;
         let data = Self::unwrap_data(response);
 
-        serde_json::from_value(data)
-            .context("Failed to parse closed wish")
+        serde_json::from_value(data).context("Failed to parse closed wish")
     }
 
-    pub fn update_wish(&self, wish_id: &str, body: serde_json::Value) -> Result<crate::types::Wish> {
+    pub fn update_wish(
+        &self,
+        wish_id: &str,
+        body: serde_json::Value,
+    ) -> Result<crate::types::Wish> {
         let mut args = body;
         if let Some(obj) = args.as_object_mut() {
             obj.insert("wish_id".to_string(), serde_json::json!(wish_id));
@@ -388,8 +397,7 @@ impl WindmillClient {
         let response = self.run_script("steerwish_update", json!({ "request_data": args }))?;
         let data = Self::unwrap_data(response);
 
-        serde_json::from_value(data)
-            .context("Failed to parse corrected wish")
+        serde_json::from_value(data).context("Failed to parse corrected wish")
     }
 
     /// DELETE is a marker, not a wait (designs/2026-10-03, lifted to
@@ -402,6 +410,9 @@ impl WindmillClient {
         let script_path = self.script_path("steerwish_delete");
         self.client
             .run_script_async(&script_path, false, args, None)
-            .context(format!("Failed to enqueue Windmill script: {}", script_path))
+            .context(format!(
+                "Failed to enqueue Windmill script: {}",
+                script_path
+            ))
     }
 }

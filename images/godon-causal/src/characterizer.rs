@@ -101,10 +101,7 @@ pub fn build_edges(
     sender: &ProbeTrials,
     detections: &[DetectionResult],
 ) -> Vec<CharacterizedEdge> {
-    detections
-        .iter()
-        .map(|d| characterize(d, sender))
-        .collect()
+    detections.iter().map(|d| characterize(d, sender)).collect()
 }
 
 #[cfg(test)]

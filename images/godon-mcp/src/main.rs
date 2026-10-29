@@ -63,7 +63,12 @@ async fn main() {
         .route("/sse", get(sse_handler))
         .route("/message", post(message_handler))
         .route("/mcp", post(mcp_handler).get(mcp_get_blocked))
-        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
         .with_state(state);
 
     info!(
@@ -95,8 +100,7 @@ async fn sse_handler(
     let combined = init_stream.chain(stream);
 
     Sse::new(combined).keep_alive(
-        axum::response::sse::KeepAlive::new()
-            .interval(std::time::Duration::from_secs(30)),
+        axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(30)),
     )
 }
 
@@ -111,10 +115,7 @@ async fn message_handler(
     (StatusCode::OK, Json(response))
 }
 
-async fn handle_request(
-    registry: &ToolRegistry,
-    request: JsonRpcRequest,
-) -> JsonRpcResponse {
+async fn handle_request(registry: &ToolRegistry, request: JsonRpcRequest) -> JsonRpcResponse {
     match request.method.as_str() {
         "initialize" => {
             // echo the client's requested protocol version when sane;
@@ -150,10 +151,7 @@ async fn handle_request(
         }
         "tools/call" => {
             let params = request.params.unwrap_or_default();
-            let tool_name = params
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
 
             let arguments = params
                 .get("arguments")

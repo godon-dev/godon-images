@@ -8,14 +8,13 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
+use log::info;
 use std::net::SocketAddr;
 use tower_http::cors::{Any, CorsLayer};
-use log::info;
 
 #[tokio::main]
 async fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let cfg = config::Config::from_env();
     let addr: SocketAddr = format!("0.0.0.0:{}", cfg.port).parse().unwrap();
@@ -28,8 +27,14 @@ async fn main() {
         .route("/systemtenders/{id}", get(handlers::get_systemtender))
         .route("/systemtenders/{id}", put(handlers::update_systemtender))
         .route("/systemtenders/{id}", delete(handlers::delete_systemtender))
-        .route("/systemtenders/{id}/stop", post(handlers::stop_systemtender))
-        .route("/systemtenders/{id}/start", post(handlers::start_systemtender))
+        .route(
+            "/systemtenders/{id}/stop",
+            post(handlers::stop_systemtender),
+        )
+        .route(
+            "/systemtenders/{id}/start",
+            post(handlers::start_systemtender),
+        )
         .route("/credentials", get(handlers::list_credentials))
         .route("/credentials", post(handlers::create_credential))
         .route("/credentials/{id}", get(handlers::get_credential))
@@ -45,14 +50,31 @@ async fn main() {
         .route("/wishes/{id}/update", post(handlers::update_wish))
         .route("/wishes/{id}", delete(handlers::delete_wish))
         .route("/connectome", get(handlers::get_connectome))
-        .route("/connectome/artifact", get(handlers::get_connectome_artifact))
+        .route(
+            "/connectome/artifact",
+            get(handlers::get_connectome_artifact),
+        )
         .route("/connectome/curves", get(handlers::get_connectome_curves))
         .route("/connectome/predict", post(handlers::connectome_predict))
-        .route("/connectome/predict/multihop", post(handlers::connectome_predict_multihop))
-        .route("/connectome/impact/{systemtender_id}", get(handlers::connectome_impact))
-        .route("/connectome/causes/{systemtender_id}", get(handlers::connectome_causes))
+        .route(
+            "/connectome/predict/multihop",
+            post(handlers::connectome_predict_multihop),
+        )
+        .route(
+            "/connectome/impact/{systemtender_id}",
+            get(handlers::connectome_impact),
+        )
+        .route(
+            "/connectome/causes/{systemtender_id}",
+            get(handlers::connectome_causes),
+        )
         .route("/positions", get(handlers::get_positions))
-        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
+        .layer(
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods(Any)
+                .allow_headers(Any),
+        )
         .with_state(cfg.clone());
 
     info!("Starting Godon API server on {}", addr);

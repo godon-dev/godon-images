@@ -57,14 +57,16 @@ struct ApplyRequest {
 /// objective_0, objective_1, etc. — built dynamically from config.
 /// The systemtender reads via `key: objective_N` (scalar, not array).
 
-fn build_metrics_response(
-    node_id: &str,
-    tick: u64,
-    objectives: &[f64],
-) -> serde_json::Value {
+fn build_metrics_response(node_id: &str, tick: u64, objectives: &[f64]) -> serde_json::Value {
     let mut map = serde_json::Map::new();
-    map.insert("node_id".to_string(), serde_json::Value::String(node_id.to_string()));
-    map.insert("tick".to_string(), serde_json::Value::Number(serde_json::Number::from(tick)));
+    map.insert(
+        "node_id".to_string(),
+        serde_json::Value::String(node_id.to_string()),
+    );
+    map.insert(
+        "tick".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(tick)),
+    );
     for (i, val) in objectives.iter().enumerate() {
         if let Some(n) = serde_json::Number::from_f64(*val) {
             map.insert(format!("objective_{}", i), serde_json::Value::Number(n));
@@ -108,7 +110,10 @@ async fn apply(
     Json(req): Json<ApplyRequest>,
 ) -> Json<serde_json::Value> {
     // Convert named params dict to array based on config
-    let node_config = state.config.nodes.iter()
+    let node_config = state
+        .config
+        .nodes
+        .iter()
         .find(|n| n.id == node_id)
         .unwrap_or_else(|| panic!("unknown node: {}", node_id));
 
@@ -127,7 +132,12 @@ async fn apply(
     let mut sim = state.sim.lock().unwrap();
     let objectives = sim.apply(&node_id, &param_array);
     let tick = sim.nodes.get(&node_id).map(|n| n.tick).unwrap_or(0);
-    info!("Node {} applied {} params -> objectives: {:?}", node_id, param_array.len(), objectives);
+    info!(
+        "Node {} applied {} params -> objectives: {:?}",
+        node_id,
+        param_array.len(),
+        objectives
+    );
     Json(build_metrics_response(&node_id, tick, &objectives))
 }
 
@@ -189,7 +199,8 @@ async fn reset(
 ) -> Json<serde_json::Value> {
     let mut sim = state.sim.lock().unwrap();
     if let Some(config) = sim.nodes.get(&node_id).map(|n| n.config.clone()) {
-        sim.nodes.insert(node_id.clone(), sim::NodeState::new(config));
+        sim.nodes
+            .insert(node_id.clone(), sim::NodeState::new(config));
         info!("Reset node {}", node_id);
         Json(serde_json::json!({"status": "ok", "node": node_id}))
     } else {
@@ -203,8 +214,7 @@ async fn reset(
 async fn main() {
     env_logger::init();
 
-    let config_path = std::env::var("CONFIG_PATH")
-        .unwrap_or_else(|_| "topology.yaml".to_string());
+    let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "topology.yaml".to_string());
 
     let config_str = match std::fs::read_to_string(&config_path) {
         Ok(s) => s,
@@ -232,7 +242,9 @@ async fn main() {
         config.noise.drift_rate
     );
 
-    let sim = Arc::new(std::sync::Mutex::new(Simulator::from_config(config.clone())));
+    let sim = Arc::new(std::sync::Mutex::new(Simulator::from_config(
+        config.clone(),
+    )));
 
     let state = Arc::new(AppState {
         sim,
@@ -313,4 +325,7 @@ fn default_config() -> BenchConfig {
     }
 }
 
-use sim::{EdgeConfig as SimEdgeConfig, InteractionConfig as SimInteractionConfig, NoiseConfig as SimNoiseConfig, NodeConfig};
+use sim::{
+    EdgeConfig as SimEdgeConfig, InteractionConfig as SimInteractionConfig, NodeConfig,
+    NoiseConfig as SimNoiseConfig,
+};

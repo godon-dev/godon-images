@@ -1,5 +1,5 @@
-use ledger_reader::{record_from_row, TrialRecord, FETCH_TRIALS_SQL};
 pub use ledger_reader::TrialRecord as LedgerTrialRecord;
+use ledger_reader::{record_from_row, TrialRecord, FETCH_TRIALS_SQL};
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -369,7 +369,6 @@ impl TrialReader {
     }
 }
 
-
 // ─── Classified Probe Trials ────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -678,7 +677,8 @@ mod kind_classification_tests {
         ] {
             let probe = ProbeTrials::from_trials("s", &[trial(kind, phase_attr)]);
             assert_eq!(
-                probe.push_trials.len(), 1,
+                probe.push_trials.len(),
+                1,
                 "kind={kind} with attr={phase_attr:?} must classify as push"
             );
         }
@@ -686,10 +686,7 @@ mod kind_classification_tests {
 
     #[test]
     fn receiver_hold_takes_phase_from_lease() {
-        let probe = ProbeTrials::from_trials(
-            "s",
-            &[trial("hold", Some("probe_hold"))],
-        );
+        let probe = ProbeTrials::from_trials("s", &[trial("hold", Some("probe_hold"))]);
         assert_eq!(probe.receiver_hold_trials.len(), 1);
         assert_eq!(probe.receiver_hold_trials[0].phase, "probe_hold");
     }
