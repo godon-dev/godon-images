@@ -68,9 +68,9 @@ pub async fn ensure_wish_tables(client: &tokio_postgres::Client) -> Result<(), E
             &[],
         )
         .await?;
-        client
-            .execute(
-                "CREATE TABLE IF NOT EXISTS outcome_anchors (\
+    client
+        .execute(
+            "CREATE TABLE IF NOT EXISTS outcome_anchors (\
                  group_id TEXT NOT NULL, \
                  receiver_id TEXT NOT NULL, \
                  channel TEXT NOT NULL, \
@@ -78,12 +78,12 @@ pub async fn ensure_wish_tables(client: &tokio_postgres::Client) -> Result<(), E
                  bar DOUBLE PRECISION NOT NULL, \
                  updated_tsz DOUBLE PRECISION NOT NULL, \
                  PRIMARY KEY (group_id, receiver_id, channel))",
-                &[],
-            )
-            .await?;
-        client
-            .execute(
-                "CREATE TABLE IF NOT EXISTS outcome_wander (\
+            &[],
+        )
+        .await?;
+    client
+        .execute(
+            "CREATE TABLE IF NOT EXISTS outcome_wander (\
                  group_id TEXT NOT NULL, \
                  receiver_id TEXT NOT NULL, \
                  channel TEXT NOT NULL, \
@@ -91,9 +91,9 @@ pub async fn ensure_wish_tables(client: &tokio_postgres::Client) -> Result<(), E
                  windows INTEGER NOT NULL, \
                  updated_tsz DOUBLE PRECISION NOT NULL, \
                  PRIMARY KEY (group_id, receiver_id, channel))",
-                &[],
-            )
-            .await?;
+            &[],
+        )
+        .await?;
     Ok(())
 }
 
@@ -211,7 +211,13 @@ pub async fn load_outcome_wander(
         .into_iter()
         .map(|r| {
             let windows: i32 = r.get(4);
-            (r.get(0), r.get(1), r.get(2), r.get(3), windows.max(0) as usize)
+            (
+                r.get(0),
+                r.get(1),
+                r.get(2),
+                r.get(3),
+                windows.max(0) as usize,
+            )
         })
         .collect())
 }
@@ -345,10 +351,7 @@ pub async fn wish_for(
         // every tender holding one of the plan's moves must discover
         // the wish as its own, not only the first move's sender.
         if let Some(moves) = plan["moves"].as_array() {
-            if moves
-                .iter()
-                .any(|m| m["sender"].as_str() == Some(uuid))
-            {
+            if moves.iter().any(|m| m["sender"].as_str() == Some(uuid)) {
                 return Ok(Some((row.get::<_, String>(0), "sender")));
             }
         }
@@ -572,6 +575,7 @@ pub struct WalkHint {
     pub phase: &'static str,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn next_hint(
     held: f64,
     miss_median: f64,
@@ -715,7 +719,7 @@ pub fn sign_flip(held: f64, miss_median: f64, journal: &[WalkPoint], slope: f64)
 pub fn budget_exhausted(budget: Option<u32>, walks_completed: usize) -> bool {
     match budget {
         None => false,
-        Some(b) => walks_completed >= 1 + b as usize,
+        Some(b) => walks_completed > b as usize,
     }
 }
 

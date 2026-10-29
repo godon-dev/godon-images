@@ -136,7 +136,11 @@ impl ErrorResponse {
         }
     }
 
-    pub fn with_details(message: impl Into<String>, code: impl Into<String>, details: serde_json::Value) -> Self {
+    pub fn with_details(
+        message: impl Into<String>,
+        code: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
         Self {
             message: message.into(),
             code: code.into(),

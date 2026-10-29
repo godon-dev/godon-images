@@ -113,46 +113,112 @@ impl AppMetrics {
         let registry = Registry::new();
 
         let zone_temp: Vec<Gauge> = (0..zone_count)
-            .map(|i| Gauge::new(format!("greenhouse_zone_{i}_temp_celsius"), format!("Zone {i} temperature")).unwrap())
+            .map(|i| {
+                Gauge::new(
+                    format!("greenhouse_zone_{i}_temp_celsius"),
+                    format!("Zone {i} temperature"),
+                )
+                .unwrap()
+            })
             .collect();
 
         let zone_humidity: Vec<Gauge> = (0..zone_count)
-            .map(|i| Gauge::new(format!("greenhouse_zone_{i}_humidity_ratio"), format!("Zone {i} humidity")).unwrap())
+            .map(|i| {
+                Gauge::new(
+                    format!("greenhouse_zone_{i}_humidity_ratio"),
+                    format!("Zone {i} humidity"),
+                )
+                .unwrap()
+            })
             .collect();
 
         let zone_co2: Vec<Gauge> = (0..zone_count)
-            .map(|i| Gauge::new(format!("greenhouse_zone_{i}_co2_ppm"), format!("Zone {i} CO2")).unwrap())
+            .map(|i| {
+                Gauge::new(
+                    format!("greenhouse_zone_{i}_co2_ppm"),
+                    format!("Zone {i} CO2"),
+                )
+                .unwrap()
+            })
             .collect();
 
         let zone_growth_rate: Vec<Gauge> = (0..zone_count)
-            .map(|i| Gauge::new(format!("greenhouse_zone_{i}_growth_rate"), format!("Zone {i} growth rate")).unwrap())
+            .map(|i| {
+                Gauge::new(
+                    format!("greenhouse_zone_{i}_growth_rate"),
+                    format!("Zone {i} growth rate"),
+                )
+                .unwrap()
+            })
             .collect();
 
         let zone_damage: Vec<Gauge> = (0..zone_count)
-            .map(|i| Gauge::new(format!("greenhouse_zone_{i}_damage_factor"), format!("Zone {i} damage/survival factor")).unwrap())
+            .map(|i| {
+                Gauge::new(
+                    format!("greenhouse_zone_{i}_damage_factor"),
+                    format!("Zone {i} damage/survival factor"),
+                )
+                .unwrap()
+            })
             .collect();
 
-        let growth_rate = Gauge::new("greenhouse_growth_rate", "Average growth rate across all zones").unwrap();
+        let growth_rate = Gauge::new(
+            "greenhouse_growth_rate",
+            "Average growth rate across all zones",
+        )
+        .unwrap();
         let energy_kwh = Gauge::new("greenhouse_energy_kwh", "Total energy consumed").unwrap();
         let water_liters = Gauge::new("greenhouse_water_liters", "Total water consumed").unwrap();
-        let max_temp = Gauge::new("greenhouse_max_temp_celsius", "Maximum zone temperature").unwrap();
-        let min_temp = Gauge::new("greenhouse_min_temp_celsius", "Minimum zone temperature").unwrap();
-        let max_humidity = Gauge::new("greenhouse_max_humidity_ratio", "Maximum zone humidity").unwrap();
+        let max_temp =
+            Gauge::new("greenhouse_max_temp_celsius", "Maximum zone temperature").unwrap();
+        let min_temp =
+            Gauge::new("greenhouse_min_temp_celsius", "Minimum zone temperature").unwrap();
+        let max_humidity =
+            Gauge::new("greenhouse_max_humidity_ratio", "Maximum zone humidity").unwrap();
         let max_co2 = Gauge::new("greenhouse_max_co2_ppm", "Maximum zone CO2").unwrap();
-        let outside_temp = Gauge::new("greenhouse_outside_temp_celsius", "Outside temperature").unwrap();
+        let outside_temp =
+            Gauge::new("greenhouse_outside_temp_celsius", "Outside temperature").unwrap();
         let outside_co2 = Gauge::new("greenhouse_outside_co2_ppm", "Outside CO2").unwrap();
-        let outside_humidity = Gauge::new("greenhouse_outside_humidity_ratio", "Outside humidity").unwrap();
-        let solar_radiation = Gauge::new("greenhouse_solar_radiation_wm2", "Solar radiation").unwrap();
-        let coupling_delta_temp = Gauge::new("greenhouse_coupling_delta_temp", "Coupling waste heat delta").unwrap();
-        let coupling_delta_co2 = Gauge::new("greenhouse_coupling_delta_co2", "Coupling CO2 exhaust delta").unwrap();
-        let coupling_delta_light = Gauge::new("greenhouse_coupling_delta_light", "Coupling power sag delta").unwrap();
-        let coupling_delta_humidity = Gauge::new("greenhouse_coupling_delta_humidity", "Coupling humidity drift delta").unwrap();
+        let outside_humidity =
+            Gauge::new("greenhouse_outside_humidity_ratio", "Outside humidity").unwrap();
+        let solar_radiation =
+            Gauge::new("greenhouse_solar_radiation_wm2", "Solar radiation").unwrap();
+        let coupling_delta_temp = Gauge::new(
+            "greenhouse_coupling_delta_temp",
+            "Coupling waste heat delta",
+        )
+        .unwrap();
+        let coupling_delta_co2 = Gauge::new(
+            "greenhouse_coupling_delta_co2",
+            "Coupling CO2 exhaust delta",
+        )
+        .unwrap();
+        let coupling_delta_light = Gauge::new(
+            "greenhouse_coupling_delta_light",
+            "Coupling power sag delta",
+        )
+        .unwrap();
+        let coupling_delta_humidity = Gauge::new(
+            "greenhouse_coupling_delta_humidity",
+            "Coupling humidity drift delta",
+        )
+        .unwrap();
 
-        for g in &zone_temp { registry.register(Box::new(g.clone())).unwrap(); }
-        for g in &zone_humidity { registry.register(Box::new(g.clone())).unwrap(); }
-        for g in &zone_co2 { registry.register(Box::new(g.clone())).unwrap(); }
-        for g in &zone_growth_rate { registry.register(Box::new(g.clone())).unwrap(); }
-        for g in &zone_damage { registry.register(Box::new(g.clone())).unwrap(); }
+        for g in &zone_temp {
+            registry.register(Box::new(g.clone())).unwrap();
+        }
+        for g in &zone_humidity {
+            registry.register(Box::new(g.clone())).unwrap();
+        }
+        for g in &zone_co2 {
+            registry.register(Box::new(g.clone())).unwrap();
+        }
+        for g in &zone_growth_rate {
+            registry.register(Box::new(g.clone())).unwrap();
+        }
+        for g in &zone_damage {
+            registry.register(Box::new(g.clone())).unwrap();
+        }
         registry.register(Box::new(growth_rate.clone())).unwrap();
         registry.register(Box::new(energy_kwh.clone())).unwrap();
         registry.register(Box::new(water_liters.clone())).unwrap();
@@ -162,12 +228,24 @@ impl AppMetrics {
         registry.register(Box::new(max_co2.clone())).unwrap();
         registry.register(Box::new(outside_temp.clone())).unwrap();
         registry.register(Box::new(outside_co2.clone())).unwrap();
-        registry.register(Box::new(outside_humidity.clone())).unwrap();
-        registry.register(Box::new(solar_radiation.clone())).unwrap();
-        registry.register(Box::new(coupling_delta_temp.clone())).unwrap();
-        registry.register(Box::new(coupling_delta_co2.clone())).unwrap();
-        registry.register(Box::new(coupling_delta_light.clone())).unwrap();
-        registry.register(Box::new(coupling_delta_humidity.clone())).unwrap();
+        registry
+            .register(Box::new(outside_humidity.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(solar_radiation.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(coupling_delta_temp.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(coupling_delta_co2.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(coupling_delta_light.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(coupling_delta_humidity.clone()))
+            .unwrap();
 
         Self {
             registry,
@@ -253,18 +331,16 @@ async fn fetch_neighbor_statuses(
             .send()
             .await
         {
-            Ok(resp) => {
-                match resp.json::<StatusResponse>().await {
-                    Ok(sr) => {
-                        statuses.push(NeighborStatus {
-                            zones: sr.zones,
-                            trial_energy_kwh: sr.trial_energy_kwh,
-                            trial_water_liters: sr.trial_water_liters,
-                        });
-                    }
-                    Err(e) => info!("Coupling: parse error from {}: {}", url, e),
+            Ok(resp) => match resp.json::<StatusResponse>().await {
+                Ok(sr) => {
+                    statuses.push(NeighborStatus {
+                        zones: sr.zones,
+                        trial_energy_kwh: sr.trial_energy_kwh,
+                        trial_water_liters: sr.trial_water_liters,
+                    });
                 }
-            }
+                Err(e) => info!("Coupling: parse error from {}: {}", url, e),
+            },
             Err(e) => info!("Coupling: fetch error from {}: {}", url, e),
         }
     }

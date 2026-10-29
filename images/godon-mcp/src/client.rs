@@ -106,6 +106,6 @@ impl GodonClient {
         if body.trim().is_empty() {
             return Ok(serde_json::json!({}));
         }
-        Ok(serde_json::from_str(&body).context("parse godon-api response")?)
+        serde_json::from_str(&body).context("parse godon-api response")
     }
 }

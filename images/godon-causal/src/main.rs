@@ -1,3 +1,9 @@
+// the characterizer port keeps the python organ surface in full; not every
+// member is wired yet (its rung pending) — dead_code stays allowed until then.
+#![allow(dead_code)]
+
+mod ambience_store;
+mod ambiences;
 mod artifact;
 mod characterizer;
 mod connectome_store;
@@ -6,12 +12,10 @@ mod detector;
 mod graph;
 mod otel;
 mod planner;
+mod positions;
 mod probe_curves;
 mod query;
-mod positions;
 mod seek_plan;
-mod ambience_store;
-mod ambiences;
 mod steer;
 mod trial_reader;
 mod wish_book;
@@ -31,7 +35,7 @@ use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 
 use detector::{CfarDetector, EdgeDetector};
-use graph::{BuildResult, CausalGraph, CausalNode};
+use graph::{CausalGraph, CausalNode};
 use serde_json::Value;
 use trial_reader::{mad, TrialReader};
 
@@ -77,8 +81,9 @@ struct AppState {
     walks_in_flight: tokio::sync::Mutex<std::collections::HashSet<String>>,
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, Default)]
 enum BuildStatus {
+    #[default]
     Idle,
     Building,
     Done {
@@ -90,12 +95,6 @@ enum BuildStatus {
         at: String,
         message: String,
     },
-}
-
-impl Default for BuildStatus {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 /// Boot-time archive connect with patience: Yugabyte takes minutes to
@@ -491,9 +490,7 @@ async fn store_connectome(
     })?;
     match state.reader.connect_archive().await {
         Ok(client) => {
-            if let Err(e) =
-                upsert_connectome_with_retry(&client, &group, &artifact_json).await
-            {
+            if let Err(e) = upsert_connectome_with_retry(&client, &group, &artifact_json).await {
                 log::error!("connectome persist failed for '{}': {}", group, e);
             }
         }
@@ -691,7 +688,10 @@ async fn build_ambience_consult(
             continue; // the ladder's unmeasured_outcome refusal speaks
         };
         let mut all: Vec<(String, ambiences::Patch)> = Vec::new(); // (param, patch)
-        for param in state.ambiences.params_with_patches(group, &receiver, &channel) {
+        for param in state
+            .ambiences
+            .params_with_patches(group, &receiver, &channel)
+        {
             for (key, patch) in state.ambiences.patches(group, &receiver, &param, &channel) {
                 let _ = key;
                 all.push((param.clone(), patch));
@@ -714,12 +714,8 @@ async fn build_ambience_consult(
             let Some(anchor) = held.get(param).and_then(|v| v.as_f64()) else {
                 continue;
             };
-            let current = ambiences::canonical_baseline(
-                standing.as_ref().unwrap(),
-                &receiver,
-                param,
-                anchor,
-            );
+            let current =
+                ambiences::canonical_baseline(standing.as_ref().unwrap(), &receiver, param, anchor);
             let hit = state
                 .ambiences
                 .patches(group, &receiver, param, &channel)
@@ -759,7 +755,11 @@ async fn build_ambience_consult(
                 points: patch
                     .freshest()
                     .into_iter()
-                    .map(|p| steer::CurvePoint { level: p.level, shift: p.shift, bar: p.bar })
+                    .map(|p| steer::CurvePoint {
+                        level: p.level,
+                        shift: p.shift,
+                        bar: p.bar,
+                    })
                     .collect(),
             }
         };
@@ -853,19 +853,11 @@ async fn steer_plan(
                         )
                         .await
                     {
-                        Ok(by_ch) => {
-                            match by_ch.get(channel.as_str()).cloned() {
-                                Some(series) => {
-                                    match wish_book::reading_bar(&series) {
-                                        Some(bar) => {
-                                            Some((trial_reader::median(&series), bar))
-                                        }
-                                        None => None,
-                                    }
-                                }
-                                None => None,
-                            }
-                        }
+                        Ok(by_ch) => match by_ch.get(channel.as_str()).cloned() {
+                            Some(series) => wish_book::reading_bar(&series)
+                                .map(|bar| (trial_reader::median(&series), bar)),
+                            None => None,
+                        },
                         Err(_) => None,
                     }
                 }
@@ -898,8 +890,7 @@ async fn steer_plan(
                 "claims": hold_predictions,
             });
             if let Ok(client) = state.connect_archive_ensured().await {
-                let terms =
-                    serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
+                let terms = serde_json::to_value(&req).unwrap_or(serde_json::Value::Null);
                 if let Some(wish_id) = &req.wish_id {
                     let _ = wish_book::record_wish(
                         &client,
@@ -909,13 +900,7 @@ async fn steer_plan(
                         "planned",
                     )
                     .await;
-                    let _ = wish_book::append_wish_event(
-                        &client,
-                        wish_id,
-                        "planned",
-                        None,
-                    )
-                    .await;
+                    let _ = wish_book::append_wish_event(&client, wish_id, "planned", None).await;
                 }
             }
             return Ok(Json(serde_json::json!({
@@ -947,13 +932,7 @@ async fn steer_plan(
     // The local-ground consult (rung 5): per own-reading outcome, the
     // patch at the CURRENT resting spot (or the drift refusal's
     // facts). Chain-map work — seeks, cover_now — never consults.
-    let ambiences = build_ambience_consult(
-        &state,
-        &group,
-        &entries,
-        &req,
-    )
-    .await;
+    let ambiences = build_ambience_consult(&state, &group, &entries, &req).await;
     // ── the positions consult (§XIX) ─────────────────────────────────────
     // The other live wishes' claims ride the compile as terms: a plan
     // is admitted only when it keeps every incumbent's band — joint
@@ -965,19 +944,18 @@ async fn steer_plan(
     // outside. Unmeasured coupling cannot refuse (honest silence);
     // the per-serve promise check and vigilance catch actual breakage.
     let positions = match state.connect_archive_ensured().await {
-        Ok(client) => positions::positions_terms(
-            &client,
-            req.wish_id.as_deref().unwrap_or(""),
-        )
-        .await
-        .unwrap_or_default(),
+        Ok(client) => positions::positions_terms(&client, req.wish_id.as_deref().unwrap_or(""))
+            .await
+            .unwrap_or_default(),
         Err(e) => {
             info!("STEER /steer/plan: positions consult skipped - book unreachable ({e})");
             Vec::new()
         }
     };
     let mut positions_req = req.clone();
-    positions_req.terms.extend(positions.iter().map(|rc| rc.as_term()));
+    positions_req
+        .terms
+        .extend(positions.iter().map(|rc| rc.as_term()));
     match planner::plan(
         &entries,
         graph.as_ref(),
@@ -1097,7 +1075,10 @@ async fn steer_plan(
                     // inside the band, the honest plan is zero moves - hold
                     // the dial as it is. A thin curve cannot reach the
                     // target, but nothing needs reaching.
-                    if matches!(reason.as_str(), "outside_measured_range" | "magnitude_bound") {
+                    if matches!(
+                        reason.as_str(),
+                        "outside_measured_range" | "magnitude_bound"
+                    ) {
                         let judged = match wish_book::latest_event_detail(
                             &client, wish_id, "landed",
                         )
@@ -1105,7 +1086,9 @@ async fn steer_plan(
                         {
                             Ok(Some(d)) => Some(d),
                             _ => match wish_book::latest_event_detail(
-                                &client, wish_id, "undecidable",
+                                &client,
+                                wish_id,
+                                "undecidable",
                             )
                             .await
                             {
@@ -1135,10 +1118,9 @@ async fn steer_plan(
                                     "planned",
                                 )
                                 .await;
-                                let _ = wish_book::append_wish_event(
-                                    &client, wish_id, "planned", None,
-                                )
-                                .await;
+                                let _ =
+                                    wish_book::append_wish_event(&client, wish_id, "planned", None)
+                                        .await;
                                 return Ok(Json(serde_json::json!({
                                     "status": "planned",
                                     "wish_id": req.wish_id,
@@ -1219,7 +1201,7 @@ async fn rewalk(
     terms: &Value,
     terms_req: &planner::SteerPlanRequest,
     outcome_pair: Option<&(String, String)>,
-    group: &str,
+    _group: &str,
     // The outcome's banked neutral reading: the one translation
     // between the wish's absolute band and the walk's movement units.
     anchor: Option<f64>,
@@ -1271,7 +1253,7 @@ async fn rewalk(
         range[0].as_f64().unwrap_or(held),
         range[1].as_f64().unwrap_or(held),
     );
-    if !(range_lo < range_hi) {
+    if range_lo.partial_cmp(&range_hi) != Some(std::cmp::Ordering::Less) {
         return keep_walking();
     }
     let aim = terms_req
@@ -1508,7 +1490,15 @@ async fn rewalk(
         // The re-walk replans with the tier-1 bar floor only: no state
         // here to consult the bank, and a wish the door refused for
         // wander never reached a hold to re-walk. Named in the PR.
-        match planner::plan(entries, graph, terms_req, Some(anchor), &HashMap::new(), &HashMap::new(), &HashMap::new()) {
+        match planner::plan(
+            entries,
+            graph,
+            terms_req,
+            Some(anchor),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        ) {
             Ok(planner::PlanDecision::Planned {
                 moves,
                 predicted_value,
@@ -1630,10 +1620,7 @@ async fn steer_plan_seek(
         .get("wish_id")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let body_raw = raw
-        .get("seek")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
+    let body_raw = raw.get("seek").cloned().unwrap_or(serde_json::Value::Null);
 
     let body = match seek_plan::validate(&body_raw) {
         Ok(b) => b,
@@ -1670,14 +1657,12 @@ async fn steer_plan_seek(
     // the map never measured.
     let map_read = if body.form == seek_plan::FIND_BEST {
         match &body.criterion {
-            Some((outcome, _)) => {
-                match planner::resolve_outcome(&entries, outcome) {
-                    Ok((receiver, channel)) => {
-                        seek_plan::read_off_map(&entries, &body, &receiver, &channel)
-                    }
-                    Err(_) => None,
+            Some((outcome, _)) => match planner::resolve_outcome(&entries, outcome) {
+                Ok((receiver, channel)) => {
+                    seek_plan::read_off_map(&entries, &body, &receiver, &channel)
                 }
-            }
+                Err(_) => None,
+            },
             None => None,
         }
     } else {
@@ -1776,9 +1761,7 @@ async fn build_seek_guards(
     let mut guards: Vec<serde_json::Value> = Vec::new();
     for (param, _spec) in region {
         for c in &standing {
-            let Ok((receiver, channel)) =
-                planner::resolve_outcome(&entries, &c.outcome)
-            else {
+            let Ok((receiver, channel)) = planner::resolve_outcome(&entries, &c.outcome) else {
                 continue;
             };
             let Some(curve) = entries.iter().find(|e| {
@@ -1838,7 +1821,6 @@ async fn build_seek_guards(
 }
 
 async fn steer_plan_get(
-
     State(state): State<Arc<AppState>>,
     Path(wish_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
@@ -1919,8 +1901,10 @@ async fn steer_plan_get(
     // gavel, the walk, and the re-plan would be unreachable from the
     // one state a successful hold lives in (found live Sep 20, flight
     // 7: 6x drift, 60 minutes, landed throughout).
-    if matches!(status.as_str(), "planned" | "serving" | "undecidable" | "landed")
-        && row.plan.is_some()
+    if matches!(
+        status.as_str(),
+        "planned" | "serving" | "undecidable" | "landed"
+    ) && row.plan.is_some()
     {
         // The wish's readings, in gavel order: claims (the aims), then
         // terms (the price - a term broken is a miss with the same
@@ -1974,8 +1958,7 @@ async fn steer_plan_get(
         let mut judged_lines: Vec<serde_json::Value> = Vec::new();
         let mut receipts: Vec<(String, String, String, f64, f64)> = Vec::new();
         for (name, band, is_term) in &judged {
-            let Some((receiver, channel)) = planner::resolve_outcome(&entries, name).ok()
-            else {
+            let Some((receiver, channel)) = planner::resolve_outcome(&entries, name).ok() else {
                 continue;
             };
             // The judge's read: only readings the receiver published
@@ -2044,9 +2027,7 @@ async fn steer_plan_get(
                     "n": judged_lines.len(),
                 });
                 let _ = wish_book::set_wish_status(&client, &wish_id, v).await;
-                let _ =
-                    wish_book::append_wish_event(&client, &wish_id, v, Some(&detail))
-                        .await;
+                let _ = wish_book::append_wish_event(&client, &wish_id, v, Some(&detail)).await;
                 status = v.to_string();
                 verdict_detail = Some(detail);
                 // ─── Hold-receipt: the serve's own evidence banks ─────
@@ -2061,11 +2042,8 @@ async fn steer_plan_get(
                 // plans only (multi-dial receipts are a later rung), and
                 // only curves that already exist — a receipt refines a
                 // measured path, it never invents one.
-                if (v == "missed" || v == "landed") && row.plan.is_some() {
-                    let moves = row.plan.as_ref().unwrap()["moves"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default();
+                if let (true, Some(plan)) = ((v == "missed" || v == "landed"), row.plan.as_ref()) {
+                    let moves = plan["moves"].as_array().cloned().unwrap_or_default();
                     if moves.len() == 1 {
                         let dial_sender = moves[0]["sender"].as_str().map(str::to_string);
                         let dial_param = moves[0]["param"].as_str().map(str::to_string);
@@ -2073,9 +2051,8 @@ async fn steer_plan_get(
                         if let (Some(dial_sender), Some(dial_param), Some(setting)) =
                             (dial_sender, dial_param, setting)
                         {
-                            let mut candidates: Vec<(String, String, f64, f64)> =
-                                Vec::new();
-                            for (name, receiver, channel, median, bar) in &receipts {
+                            let mut candidates: Vec<(String, String, f64, f64)> = Vec::new();
+                            for (_name, receiver, channel, median, bar) in &receipts {
                                 if let Some((neutral, _)) =
                                     state.anchor_for(receiver, channel).await
                                 {
@@ -2087,8 +2064,7 @@ async fn steer_plan_get(
                                     ));
                                 }
                             }
-                            let mut to_bank: Vec<(String, String, f64, f64, f64)> =
-                                Vec::new();
+                            let mut to_bank: Vec<(String, String, f64, f64, f64)> = Vec::new();
                             {
                                 let curves = state.curves.read().await;
                                 for (receiver, channel, shift, bar) in &candidates {
@@ -2111,9 +2087,7 @@ async fn steer_plan_get(
                             if !to_bank.is_empty() {
                                 {
                                     let mut curves = state.curves.write().await;
-                                    for (receiver, channel, shift, bar, thr) in
-                                        &to_bank
-                                    {
+                                    for (receiver, channel, shift, _bar, thr) in &to_bank {
                                         curves.add_point(
                                             &dial_sender,
                                             receiver,
@@ -2126,9 +2100,7 @@ async fn steer_plan_get(
                                     }
                                 }
                                 if let Ok(arch) = state.reader.connect_archive().await {
-                                    for (receiver, channel, shift, bar, thr) in
-                                        &to_bank
-                                    {
+                                    for (receiver, channel, shift, bar, thr) in &to_bank {
                                         curve_store::persist_point(
                                             &arch,
                                             &group,
@@ -2221,8 +2193,7 @@ async fn steer_plan_get(
         // nothing. (Found live Sep 28: the corridor wish 5233dff0
         // planned on the TRUE lever, missed on the pre-move stamp, and
         // spun in remeasure — this branch did not exist.)
-        let fingerprint =
-            planner::curve_fingerprint(&entries, &terms_req.claims, &terms_req.terms);
+        let fingerprint = planner::curve_fingerprint(&entries, &terms_req.claims, &terms_req.terms);
         let served_fp = row
             .plan
             .as_ref()
@@ -2242,10 +2213,19 @@ async fn steer_plan_get(
             // wishes (the chain grammar speaks; this branch did not).
             let mut hint: Option<(String, f64)> = None;
             if let Some(plan) = row.plan.as_ref() {
-                if let Some(mv) = plan.get("moves").and_then(|m| m.as_array()).and_then(|a| a.first())
+                if let Some(mv) = plan
+                    .get("moves")
+                    .and_then(|m| m.as_array())
+                    .and_then(|a| a.first())
                 {
-                    let param = mv.get("param").and_then(|p| p.as_str()).map(|s| s.to_string());
-                    let sender = mv.get("sender").and_then(|p| p.as_str()).map(|s| s.to_string());
+                    let param = mv
+                        .get("param")
+                        .and_then(|p| p.as_str())
+                        .map(|s| s.to_string());
+                    let sender = mv
+                        .get("sender")
+                        .and_then(|p| p.as_str())
+                        .map(|s| s.to_string());
                     if let (Some(param), Some(sender), Some(claim)) =
                         (param, sender, terms_req.claims.first())
                     {
@@ -2260,16 +2240,18 @@ async fn steer_plan_get(
                             }) {
                                 let mut levels: Vec<f64> =
                                     entry.state.points.iter().map(|(l, _, _)| *l).collect();
-                                levels
-                                    .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                                levels.sort_by(|a, b| {
+                                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                                });
                                 levels.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
                                 if !levels.is_empty() {
-                                    let walked = wish_book::list_wish_events(&client, &wish_id, 0.0)
-                                        .await
-                                        .unwrap_or_default()
-                                        .iter()
-                                        .filter(|e| e.event == "walk_probe")
-                                        .count();
+                                    let walked =
+                                        wish_book::list_wish_events(&client, &wish_id, 0.0)
+                                            .await
+                                            .unwrap_or_default()
+                                            .iter()
+                                            .filter(|e| e.event == "walk_probe")
+                                            .count();
                                     let level = levels[walked % levels.len()];
                                     hint = Some((param, level));
                                 }
@@ -2307,23 +2289,21 @@ async fn steer_plan_get(
                             hold_receivers.push(receiver.clone());
                         }
                         match state
-                        .reader
-                        .read_receiver_observations_for(
-                            &receiver,
-                            now - wish_book::JUDGE_LOOKBACK_SECS,
-                            now,
-                        )
-                        .await
-                    {
-                        Ok(by_ch) => match by_ch.get(channel.as_str()).cloned() {
-                            Some(series) => {
-                                wish_book::reading_bar(&series)
-                                    .map(|bar| (trial_reader::median(&series), bar))
-                            }
-                            None => None,
-                        },
-                        Err(_) => None,
-                    }
+                            .reader
+                            .read_receiver_observations_for(
+                                &receiver,
+                                now - wish_book::JUDGE_LOOKBACK_SECS,
+                                now,
+                            )
+                            .await
+                        {
+                            Ok(by_ch) => match by_ch.get(channel.as_str()).cloned() {
+                                Some(series) => wish_book::reading_bar(&series)
+                                    .map(|bar| (trial_reader::median(&series), bar)),
+                                None => None,
+                            },
+                            Err(_) => None,
+                        }
                     }
                     Err(_) => None,
                 };
@@ -2362,8 +2342,7 @@ async fn steer_plan_get(
                     "serving",
                 )
                 .await;
-                let _ =
-                    wish_book::append_wish_event(&client, &wish_id, "replanned", None).await;
+                let _ = wish_book::append_wish_event(&client, &wish_id, "replanned", None).await;
                 row.plan = Some(hold_plan);
                 status = "serving".to_string();
                 walk_state = Some(serde_json::json!({ "outcome": "replanned", "hold": true }));
@@ -2393,9 +2372,18 @@ async fn steer_plan_get(
                     .await
                     .unwrap_or_default();
                 let mut positions_req = terms_req.clone();
-                positions_req.terms.extend(positions.iter().map(|rc| rc.as_term()));
-                match planner::plan(&entries, graph.as_ref(), &positions_req, None, &claim_anchors, &wander, &HashMap::new())
-                {
+                positions_req
+                    .terms
+                    .extend(positions.iter().map(|rc| rc.as_term()));
+                match planner::plan(
+                    &entries,
+                    graph.as_ref(),
+                    &positions_req,
+                    None,
+                    &claim_anchors,
+                    &wander,
+                    &HashMap::new(),
+                ) {
                     Ok(planner::PlanDecision::Planned {
                         moves,
                         predicted_value,
@@ -2541,12 +2529,14 @@ async fn positions_view_handler(
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
-    let rows = positions::positions_view(&client, &live).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": format!("positions view failed: {e}") })),
-        )
-    })?;
+    let rows = positions::positions_view(&client, &live)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("positions view failed: {e}") })),
+            )
+        })?;
     Ok(Json(serde_json::json!({ "positions": rows })))
 }
 
@@ -2598,7 +2588,10 @@ async fn steer_plan_delete(
         .execute("DELETE FROM wishes WHERE wish_id = $1", &[&wish_id])
         .await
         .unwrap_or(0);
-    info!("STEER /steer/plan/{wish_id}: purged (card removed: {})", gone > 0);
+    info!(
+        "STEER /steer/plan/{wish_id}: purged (card removed: {})",
+        gone > 0
+    );
     Json(serde_json::json!({ "wish_id": wish_id, "purged": gone > 0 }))
 }
 
@@ -2645,7 +2638,9 @@ async fn steer_close(
                 )
             })?;
     }
-    Ok(Json(serde_json::json!({ "wish_id": wish_id, "status": "released" })))
+    Ok(Json(
+        serde_json::json!({ "wish_id": wish_id, "status": "released" }),
+    ))
 }
 
 // ─── Graph Building ─────────────────────────────────────────────────
@@ -3286,12 +3281,8 @@ async fn probe_result(
         // Baseline = the standing map with the walked dial pinned at
         // the declared anchor (stable across the window's levels).
         if let (Some(anchor), Some(standing)) = (req.ambience_anchor, ambience_value.as_ref()) {
-            let baseline = ambiences::canonical_baseline(
-                standing,
-                &req.sender_id,
-                &req.probe_param,
-                anchor,
-            );
+            let baseline =
+                ambiences::canonical_baseline(standing, &req.sender_id, &req.probe_param, anchor);
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs_f64())
@@ -3363,9 +3354,12 @@ async fn probe_result(
                 )
                 .await
                 .unwrap_or(0);
-                let mem_n = state
-                    .ambiences
-                    .reparent(&req.group_id, &req.sender_id, &req.probe_param, &live);
+                let mem_n = state.ambiences.reparent(
+                    &req.group_id,
+                    &req.sender_id,
+                    &req.probe_param,
+                    &live,
+                );
                 if db_n > 0 || mem_n > 0 {
                     info!(
                         "AMBIENCE ADOPT: {} orphaned row(s) on dial {} re-parented to tender {} (registry points moved: {})",
@@ -3689,7 +3683,10 @@ async fn ambience_duty(
     let Some(standing) = standing else {
         return Json(serde_json::json!({ "debt": [] }));
     };
-    let Some(held) = standing.get(&tender_id).and_then(|v| v.as_object().cloned()) else {
+    let Some(held) = standing
+        .get(&tender_id)
+        .and_then(|v| v.as_object().cloned())
+    else {
         return Json(serde_json::json!({ "debt": [] }));
     };
 
@@ -3811,7 +3808,6 @@ fn self_channels_for(
 }
 
 async fn walk_view(
-
     State(state): State<Arc<AppState>>,
     Path(sender_id): Path<String>,
     Query(params): Query<WalkViewParams>,
@@ -3886,7 +3882,7 @@ fn median_f64(v: &[f64]) -> f64 {
     let mut sorted = v.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
+    if sorted.len().is_multiple_of(2) {
         (sorted[mid - 1] + sorted[mid]) / 2.0
     } else {
         sorted[mid]
@@ -3944,109 +3940,109 @@ async fn main() {
             }
         };
         if let Err(e) = curve_store::ensure_curve_table(&client).await {
-                log::error!("curve_points table setup failed: {}", e);
-            }
-            if let Err(e) = wish_book::ensure_wish_tables(&client).await {
-                log::error!("wish book table setup failed: {}", e);
-            }
-            match curve_store::load_curve_points(&client).await {
-                Ok(rows) => {
-                    let n = rows.len();
-                    let mut curves = boot_state.curves.write().await;
-                    for r in rows {
-                        curves.probe(
-                            &r.sender_id,
-                            &r.receiver_id,
-                            &r.probe_param,
-                            &r.channel,
-                            r.probe_level,
-                            r.shift,
-                            r.bar,
-                            r.convergence_threshold,
-                            None,
-                        );
-                    }
-                    info!("loaded {} persisted curve points into registry", n);
+            log::error!("curve_points table setup failed: {}", e);
+        }
+        if let Err(e) = wish_book::ensure_wish_tables(&client).await {
+            log::error!("wish book table setup failed: {}", e);
+        }
+        match curve_store::load_curve_points(&client).await {
+            Ok(rows) => {
+                let n = rows.len();
+                let mut curves = boot_state.curves.write().await;
+                for r in rows {
+                    curves.probe(
+                        &r.sender_id,
+                        &r.receiver_id,
+                        &r.probe_param,
+                        &r.channel,
+                        r.probe_level,
+                        r.shift,
+                        r.bar,
+                        r.convergence_threshold,
+                        None,
+                    );
                 }
-                Err(e) => log::error!("curve point load failed: {}", e),
+                info!("loaded {} persisted curve points into registry", n);
             }
-            // Restart recovery for the local ground (rung 5): the
-            // duty page and the planner's consult read the in-memory
-            // registry; without this, a restart would forget every
-            // entry and name unmeasured debt for walked ground.
-            if let Err(e) = ambience_store::ensure_ambience_table(&client).await {
-                log::error!("ambience_points ensure failed: {} (duty starts empty)", e);
-            }
-            match ambience_store::load_ambience_points(&client).await {
-                Ok(rows) => {
-                    let n = rows.len();
-                    for r in &rows {
-                        boot_state.ambiences.record(
-                            &r.group_id,
-                            &r.tender_id,
-                            &r.ambience_param,
-                            &r.channel,
-                            &r.baseline,
-                            r.anchor,
-                            ambiences::AmbiencePoint {
-                                level: r.level,
-                                shift: r.shift,
-                                bar: r.bar,
-                                epoch: r.epoch,
-                                written_at: r.written_at,
-                            },
-                        );
-                    }
-                    info!("loaded {} persisted ambience points into registry", n);
+            Err(e) => log::error!("curve point load failed: {}", e),
+        }
+        // Restart recovery for the local ground (rung 5): the
+        // duty page and the planner's consult read the in-memory
+        // registry; without this, a restart would forget every
+        // entry and name unmeasured debt for walked ground.
+        if let Err(e) = ambience_store::ensure_ambience_table(&client).await {
+            log::error!("ambience_points ensure failed: {} (duty starts empty)", e);
+        }
+        match ambience_store::load_ambience_points(&client).await {
+            Ok(rows) => {
+                let n = rows.len();
+                for r in &rows {
+                    boot_state.ambiences.record(
+                        &r.group_id,
+                        &r.tender_id,
+                        &r.ambience_param,
+                        &r.channel,
+                        &r.baseline,
+                        r.anchor,
+                        ambiences::AmbiencePoint {
+                            level: r.level,
+                            shift: r.shift,
+                            bar: r.bar,
+                            epoch: r.epoch,
+                            written_at: r.written_at,
+                        },
+                    );
                 }
-                Err(e) => log::error!("ambience point load failed: {}", e),
+                info!("loaded {} persisted ambience points into registry", n);
             }
-            // Restart recovery for the anchors: the wish doors read the
-            // in-memory map; without this, a restart would forget every
-            // banked neutral and wishes would refuse until re-probed.
-            match wish_book::load_outcome_anchors(&client).await {
-                Ok(rows) => {
-                    let n = rows.len();
-                    let mut anchors = boot_state.anchors.write().await;
-                    for (_group, receiver, channel, neutral, bar) in rows {
-                        anchors.insert((receiver, channel), (neutral, bar));
-                    }
-                    info!("loaded {} banked outcome anchors", n);
+            Err(e) => log::error!("ambience point load failed: {}", e),
+        }
+        // Restart recovery for the anchors: the wish doors read the
+        // in-memory map; without this, a restart would forget every
+        // banked neutral and wishes would refuse until re-probed.
+        match wish_book::load_outcome_anchors(&client).await {
+            Ok(rows) => {
+                let n = rows.len();
+                let mut anchors = boot_state.anchors.write().await;
+                for (_group, receiver, channel, neutral, bar) in rows {
+                    anchors.insert((receiver, channel), (neutral, bar));
                 }
-                Err(e) => log::error!("outcome anchor load failed: {}", e),
+                info!("loaded {} banked outcome anchors", n);
             }
-            // Restart recovery for the derived wander floor (tier 2):
-            // seed each channel's deque with the persisted median price,
-            // repeated min(windows, cap) times - the bank re-sharpens as
-            // fresh judge windows arrive.
-            match wish_book::load_outcome_wander(&client).await {
-                Ok(rows) => {
-                    let n = rows.len();
-                    let mut wander = boot_state.wander.write().await;
-                    for (_group, receiver, channel, p95, windows) in rows {
-                        let mut deque = std::collections::VecDeque::new();
-                        for _ in 0..windows.min(wish_book::WANDER_WINDOWS) {
-                            deque.push_back(p95);
-                        }
-                        wander.insert((receiver, channel), deque);
+            Err(e) => log::error!("outcome anchor load failed: {}", e),
+        }
+        // Restart recovery for the derived wander floor (tier 2):
+        // seed each channel's deque with the persisted median price,
+        // repeated min(windows, cap) times - the bank re-sharpens as
+        // fresh judge windows arrive.
+        match wish_book::load_outcome_wander(&client).await {
+            Ok(rows) => {
+                let n = rows.len();
+                let mut wander = boot_state.wander.write().await;
+                for (_group, receiver, channel, p95, windows) in rows {
+                    let mut deque = std::collections::VecDeque::new();
+                    for _ in 0..windows.min(wish_book::WANDER_WINDOWS) {
+                        deque.push_back(p95);
                     }
-                    info!("loaded {} banked outcome wander prices", n);
+                    wander.insert((receiver, channel), deque);
                 }
-                Err(e) => log::error!("outcome wander load failed: {}", e),
+                info!("loaded {} banked outcome wander prices", n);
             }
+            Err(e) => log::error!("outcome wander load failed: {}", e),
+        }
         // Restart recovery: connectomes are durable per inference group.
         if let Err(e) = connectome_store::ensure_connectomes_table(&client).await {
-                log::error!("connectomes table setup failed: {}", e);
+            log::error!("connectomes table setup failed: {}", e);
+        }
+        match connectome_store::load_connectomes(&client).await {
+            Ok(pairs) => {
+                let count = pairs.len();
+                let map: HashMap<String, CausalGraph> = pairs.into_iter().collect();
+                *boot_state.connectomes.write().await = map;
+                info!("restored {} connectome(s) from the archive", count);
             }
-            match connectome_store::load_connectomes(&client).await {
-                Ok(pairs) => {
-                    let count = pairs.len();
-                    let map: HashMap<String, CausalGraph> = pairs.into_iter().collect();
-                    *boot_state.connectomes.write().await = map;
-                    info!("restored {} connectome(s) from the archive", count);
-                }
-                Err(e) => log::error!("connectome restore failed: {}", e),
-            }
+            Err(e) => log::error!("connectome restore failed: {}", e),
+        }
     });
 
     let app = Router::new()
@@ -4077,7 +4073,10 @@ async fn main() {
         .route("/predict/multihop", post(predict_multihop))
         .route("/steer/plan", post(steer_plan))
         .route("/steer/plan/{wish_id}", get(steer_plan_get))
-        .route("/steer/plan/{wish_id}", axum::routing::delete(steer_plan_delete))
+        .route(
+            "/steer/plan/{wish_id}",
+            axum::routing::delete(steer_plan_delete),
+        )
         .route("/steer/for/{uuid}", get(steer_for))
         .route("/steer/close/{wish_id}", post(steer_close))
         .route("/impact/{systemtender_id}", get(impact))
@@ -4146,9 +4145,12 @@ mod tests {
     #[tokio::test]
     async fn test_steer_plan_planned_shape() {
         let state = seeded_plan_state().await;
-        let res = steer_plan(State(state), Json(serde_json::to_value(plan_req("R", 25.0)).unwrap()))
-            .await
-            .expect("planned is Ok");
+        let res = steer_plan(
+            State(state),
+            Json(serde_json::to_value(plan_req("R", 25.0)).unwrap()),
+        )
+        .await
+        .expect("planned is Ok");
         assert_eq!(res.0["status"], "planned");
         let moves = res.0["moves"].as_array().expect("moves array");
         assert_eq!(moves.len(), 1);
@@ -4167,9 +4169,12 @@ mod tests {
     async fn test_steer_plan_refused_is_ok_json() {
         let state = seeded_plan_state().await;
         // target 75 lies outside the curve's shift range [0, 50]
-        let res = steer_plan(State(state), Json(serde_json::to_value(plan_req("R", 75.0)).unwrap()))
-            .await
-            .expect("a refusal is a legitimate answer, not an error");
+        let res = steer_plan(
+            State(state),
+            Json(serde_json::to_value(plan_req("R", 75.0)).unwrap()),
+        )
+        .await
+        .expect("a refusal is a legitimate answer, not an error");
         assert_eq!(res.0["status"], "refused");
         assert_eq!(res.0["reason"], "outside_measured_range");
         assert!(res.0["detail"].as_str().unwrap().contains("75"));
@@ -4241,7 +4246,10 @@ mod tests {
             .expect("door refusal is Ok json");
         assert_eq!(res.0["status"], "refused");
         assert_eq!(res.0["reason"], "malformed_seek");
-        assert!(res.0["detail"].as_str().unwrap().contains("candidates_exceed_budget"));
+        assert!(res.0["detail"]
+            .as_str()
+            .unwrap()
+            .contains("candidates_exceed_budget"));
     }
 
     #[tokio::test]
@@ -4279,7 +4287,10 @@ mod tests {
             .expect("door refusal is Ok json");
         assert_eq!(res.0["status"], "refused");
         assert_eq!(res.0["reason"], "malformed_seek");
-        assert!(res.0["detail"].as_str().unwrap().contains("undeclared_tender"));
+        assert!(res.0["detail"]
+            .as_str()
+            .unwrap()
+            .contains("undeclared_tender"));
     }
 
     #[tokio::test]
@@ -4288,9 +4299,12 @@ mod tests {
         // HTTP 400 booked plan_error. The map cannot speak for the
         // reading yet, and the refusal says what it CAN name.
         let state = seeded_plan_state().await;
-        let res = steer_plan(State(state), Json(serde_json::to_value(plan_req("nowhere", 25.0)).unwrap()))
-            .await
-            .expect("unknown outcome must answer, not error");
+        let res = steer_plan(
+            State(state),
+            Json(serde_json::to_value(plan_req("nowhere", 25.0)).unwrap()),
+        )
+        .await
+        .expect("unknown outcome must answer, not error");
         assert_eq!(res.0["status"], "refused");
         assert_eq!(res.0["reason"], "unmeasured_outcome");
         assert!(
@@ -4385,10 +4399,8 @@ mod tests {
         // emits Infinity as null), which printed as a 307-digit
         // decimal in coordinator logs and read as garbage data.
         let (dj, state) = delta_answer(f64::INFINITY);
-        let s = serde_json::to_string(
-            &serde_json::json!({"delta": dj, "delta_state": state}),
-        )
-        .unwrap();
+        let s =
+            serde_json::to_string(&serde_json::json!({"delta": dj, "delta_state": state})).unwrap();
         assert!(s.contains("\"delta\":null"), "no prior → null: {s}");
         assert!(s.contains("no_prior"), "state names it: {s}");
 
@@ -4398,10 +4410,8 @@ mod tests {
 
         // Finite delta round-trips as a number, state "finite".
         let (dj, state) = delta_answer(0.00348);
-        let s = serde_json::to_string(
-            &serde_json::json!({"delta": dj, "delta_state": state}),
-        )
-        .unwrap();
+        let s =
+            serde_json::to_string(&serde_json::json!({"delta": dj, "delta_state": state})).unwrap();
         assert!(
             s.parse::<serde_json::Value>().unwrap()["delta"]
                 .as_f64()

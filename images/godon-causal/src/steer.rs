@@ -241,7 +241,10 @@ pub fn invert<F: Fn(f64) -> f64>(
         return None; // outside evaluated range - the binding constraint
     }
     let rising = f_hi >= f_lo;
-    debug!("STEER invert: map on bracket is {}", if rising { "rising" } else { "falling" });
+    debug!(
+        "STEER invert: map on bracket is {}",
+        if rising { "rising" } else { "falling" }
+    );
     let mut lo = lo;
     let mut hi = hi;
     for i in 0..iters {
@@ -254,7 +257,12 @@ pub fn invert<F: Fn(f64) -> f64>(
         };
         trace!(
             "STEER invert step {}: bracket [{}, {}], map ({}, {}), target {}",
-            i, lo, hi, f_mid, mid, target
+            i,
+            lo,
+            hi,
+            f_mid,
+            mid,
+            target
         );
         if below {
             lo = mid;

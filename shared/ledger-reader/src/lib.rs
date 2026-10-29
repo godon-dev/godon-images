@@ -59,10 +59,9 @@ impl TrialRecord {
             None => return Vec::new(),
         };
         match serde_json::from_str::<serde_json::Value>(raw) {
-            Ok(serde_json::Value::Array(items)) => items
-                .into_iter()
-                .filter_map(|v| v.as_f64())
-                .collect(),
+            Ok(serde_json::Value::Array(items)) => {
+                items.into_iter().filter_map(|v| v.as_f64()).collect()
+            }
             _ => Vec::new(),
         }
     }
@@ -117,8 +116,7 @@ fn decode_map(v: serde_json::Value) -> HashMap<String, serde_json::Value> {
 
 /// The base query: everything the readers need, in number order. One
 /// SELECT replaces the study-era join across five tables.
-pub const FETCH_TRIALS_SQL: &str =
-    "SELECT number, kind, params, value, state, error, attrs, \
+pub const FETCH_TRIALS_SQL: &str = "SELECT number, kind, params, value, state, error, attrs, \
      CAST(created_ts AS TEXT) AS created_ts, \
      CAST(finished_ts AS TEXT) AS finished_ts \
      FROM trials ORDER BY number";
@@ -131,8 +129,7 @@ pub const FETCH_TRIALS_PAGED_SQL: &str =
 
 pub const COUNT_TRIALS_SQL: &str = "SELECT COUNT(*) FROM trials";
 
-pub const FETCH_STATE_SQL: &str =
-    "SELECT key, value_json FROM ledger_state ORDER BY key";
+pub const FETCH_STATE_SQL: &str = "SELECT key, value_json FROM ledger_state ORDER BY key";
 
 /// Seconds since the last trial landed — the stall signal. The
 /// study-era two-hour silent stall was invisible for exactly the lack
@@ -192,7 +189,7 @@ impl GoldenFixture {
         self.trials
             .iter()
             .map(|t| TrialRecord {
-                number: t.number as i64,
+                number: t.number,
                 kind: t.kind.clone(),
                 params: decode_map(t.params.clone()),
                 values: t.value.map(|v| vec![Some(v)]).unwrap_or_default(),
@@ -235,10 +232,7 @@ mod tests {
         let second = &records[1];
         assert_eq!(second.state, "FAIL");
         assert_eq!(second.kind, "hold");
-        assert_eq!(
-            second.error.as_deref(),
-            Some("park without neutral params")
-        );
+        assert_eq!(second.error.as_deref(), Some("park without neutral params"));
     }
 
     #[test]

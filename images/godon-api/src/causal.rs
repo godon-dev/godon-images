@@ -27,11 +27,7 @@ impl CausalClient {
 
     pub fn get(&self, path: &str) -> Result<(reqwest::StatusCode, Value)> {
         let url = format!("{}{}", self.base_url, path);
-        let resp = self
-            .inner
-            .get(&url)
-            .send()
-            .context("causal unreachable")?;
+        let resp = self.inner.get(&url).send().context("causal unreachable")?;
         let status = resp.status();
         let body: Value = resp.json().unwrap_or(Value::Null);
         Ok((status, body))

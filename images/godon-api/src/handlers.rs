@@ -11,10 +11,9 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::types::{
-    Wish, WishSummary, Systemtender, SystemtenderCreate,
-    SystemtenderSummary, SystemtenderUpdate, Credential, CredentialCreate, DeleteResponse,
-    DeletedResponse,
-    ErrorResponse, Target, TargetCreate,
+    Credential, CredentialCreate, DeleteResponse, DeletedResponse, ErrorResponse, Systemtender,
+    SystemtenderCreate, SystemtenderSummary, SystemtenderUpdate, Target, TargetCreate, Wish,
+    WishSummary,
 };
 use crate::windmill_adapter::WindmillClient;
 
@@ -27,9 +26,7 @@ static UUID_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$").unwrap()
 });
 
-static NAME_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^[a-zA-Z0-9_-]+$").unwrap()
-});
+static NAME_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-zA-Z0-9_-]+$").unwrap());
 
 fn get_client() -> Result<WindmillClient, (StatusCode, Json<ErrorResponse>)> {
     WindmillClient::new().map_err(|e| {
@@ -37,8 +34,8 @@ fn get_client() -> Result<WindmillClient, (StatusCode, Json<ErrorResponse>)> {
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse::new(
                 format!("Failed to initialize Windmill client: {}", e),
-                "INTERNAL_SERVER_ERROR"
-            ))
+                "INTERNAL_SERVER_ERROR",
+            )),
         )
     })
 }
@@ -55,21 +52,28 @@ pub async fn list_systemtenders(
     State(_config): State<Config>,
 ) -> Result<Json<Vec<SystemtenderSummary>>, (StatusCode, Json<ErrorResponse>)> {
     let client = get_client()?;
-    
+
     tokio::task::spawn_blocking(move || {
-        client.list_systemtenders()
-            .map(Json)
-            .map_err(|e| (
+        client.list_systemtenders().map(Json).map_err(|e| {
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
                     format!("Failed to retrieve systemtenders: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,7 +97,7 @@ fn still_creating(status: &str) -> bool {
 /// so the server bound always expires first — a timeout answers the
 /// row AS-IS, never an error.
 fn clamp_create_wait_timeout(timeout: Option<u64>) -> u64 {
-    timeout.unwrap_or(60).min(120).max(1)
+    timeout.unwrap_or(60).clamp(1, 120)
 }
 
 /// Poll cadence of the sync create wait.
@@ -115,27 +119,38 @@ pub async fn create_systemtender(
     // row in `creating`, dispatches the executor and answers at once —
     // the seconds-long archive work never rides this connection. A
     // name clash answers 409 + the existing row.
-    let (summary, duplicate) = tokio::task::spawn_blocking(move || {
-        client.create_systemtender(systemtender_config)
-    })
-    .await
-    .map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
-    .map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(
-            format!("Failed to create systemtender: {}", e),
-            "INTERNAL_SERVER_ERROR"
-        ))
-    ))?;
+    let (summary, duplicate) =
+        tokio::task::spawn_blocking(move || client.create_systemtender(systemtender_config))
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(
+                        format!("Task join error: {}", e),
+                        "INTERNAL_SERVER_ERROR",
+                    )),
+                )
+            })?
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(
+                        format!("Failed to create systemtender: {}", e),
+                        "INTERNAL_SERVER_ERROR",
+                    )),
+                )
+            })?;
 
     if duplicate {
-        let body = serde_json::to_value(&summary).map_err(|e| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new(format!("Serialization error: {}", e), "INTERNAL_SERVER_ERROR"))
-        ))?;
+        let body = serde_json::to_value(&summary).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(
+                    format!("Serialization error: {}", e),
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })?;
         return Ok((StatusCode::CONFLICT, Json(body)));
     }
 
@@ -155,14 +170,17 @@ pub async fn create_systemtender(
 
             let poll_client = get_client()?;
             let poll_id = id.clone();
-            let row = tokio::task::spawn_blocking(move || {
-                poll_client.get_systemtender(&poll_id)
-            })
-            .await
-            .map_err(|e| (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-            ))?;
+            let row = tokio::task::spawn_blocking(move || poll_client.get_systemtender(&poll_id))
+                .await
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse::new(
+                            format!("Task join error: {}", e),
+                            "INTERNAL_SERVER_ERROR",
+                        )),
+                    )
+                })?;
             // The wait is a view over the read path: a transient read
             // error mid-wait (YB DDL-visibility during the executor's
             // table-build, live receipt 10-10) is a blip, not a verdict
@@ -177,8 +195,8 @@ pub async fn create_systemtender(
                             StatusCode::NOT_FOUND,
                             Json(ErrorResponse::new(
                                 format!("Failed to retrieve systemtender: {}", e),
-                                "NOT_FOUND"
-                            ))
+                                "NOT_FOUND",
+                            )),
                         ));
                     }
                     continue;
@@ -186,10 +204,15 @@ pub async fn create_systemtender(
             };
 
             if !still_creating(&row.status) {
-                let body = serde_json::to_value(&row).map_err(|e| (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::new(format!("Serialization error: {}", e), "INTERNAL_SERVER_ERROR"))
-                ))?;
+                let body = serde_json::to_value(&row).map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ErrorResponse::new(
+                            format!("Serialization error: {}", e),
+                            "INTERNAL_SERVER_ERROR",
+                        )),
+                    )
+                })?;
                 return Ok((StatusCode::OK, Json(body)));
             }
         }
@@ -198,32 +221,47 @@ pub async fn create_systemtender(
         // owns nothing; the executor keeps running.
         let final_client = get_client()?;
         let final_id = id.clone();
-        let row = tokio::task::spawn_blocking(move || {
-            final_client.get_systemtender(&final_id)
-        })
-        .await
-        .map_err(|e| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-        ))?
-        .map_err(|e| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new(
-                format!("Failed to retrieve systemtender: {}", e),
-                "INTERNAL_SERVER_ERROR"
-            ))
-        ))?;
-        let body = serde_json::to_value(&row).map_err(|e| (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new(format!("Serialization error: {}", e), "INTERNAL_SERVER_ERROR"))
-        ))?;
+        let row = tokio::task::spawn_blocking(move || final_client.get_systemtender(&final_id))
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(
+                        format!("Task join error: {}", e),
+                        "INTERNAL_SERVER_ERROR",
+                    )),
+                )
+            })?
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(
+                        format!("Failed to retrieve systemtender: {}", e),
+                        "INTERNAL_SERVER_ERROR",
+                    )),
+                )
+            })?;
+        let body = serde_json::to_value(&row).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(
+                    format!("Serialization error: {}", e),
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })?;
         return Ok((StatusCode::OK, Json(body)));
     }
 
-    let body = serde_json::to_value(&summary).map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Serialization error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?;
+    let body = serde_json::to_value(&summary).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Serialization error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?;
     Ok((StatusCode::ACCEPTED, Json(body)))
 }
 
@@ -237,30 +275,43 @@ pub async fn get_systemtender(
             Json(ErrorResponse::with_details(
                 "Invalid UUID format",
                 "BAD_REQUEST",
-                json!({"uuid": id})
-            ))
+                json!({"uuid": id}),
+            )),
         ));
     }
-    
+
     let client = get_client()?;
-    
+
     tokio::task::spawn_blocking(move || {
-        client.get_systemtender(&id)
-            .map(Json)
-            .map_err(|e| {
-                let not_found = format!("{}", e).to_lowercase().contains("not found");
-                (
-                    if not_found { StatusCode::NOT_FOUND } else { StatusCode::INTERNAL_SERVER_ERROR },
-                    Json(ErrorResponse::new(
-                        format!("Failed to retrieve systemtender: {}", e),
-                        if not_found { "NOT_FOUND" } else { "INTERNAL_SERVER_ERROR" }
-                    ))
-                )
-            })
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+        client.get_systemtender(&id).map(Json).map_err(|e| {
+            let not_found = format!("{}", e).to_lowercase().contains("not found");
+            (
+                if not_found {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                },
+                Json(ErrorResponse::new(
+                    format!("Failed to retrieve systemtender: {}", e),
+                    if not_found {
+                        "NOT_FOUND"
+                    } else {
+                        "INTERNAL_SERVER_ERROR"
+                    },
+                )),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn update_systemtender(
@@ -274,18 +325,23 @@ pub async fn update_systemtender(
             Json(ErrorResponse::with_details(
                 "Invalid UUID format",
                 "BAD_REQUEST",
-                json!({"uuid": id})
-            ))
+                json!({"uuid": id}),
+            )),
         ));
     }
 
-    if payload.config.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+    if payload
+        .config
+        .as_object()
+        .map(|o| o.is_empty())
+        .unwrap_or(true)
+    {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
                 "Invalid config: config must be a non-empty object",
-                "BAD_REQUEST"
-            ))
+                "BAD_REQUEST",
+            )),
         ));
     }
 
@@ -293,19 +349,29 @@ pub async fn update_systemtender(
     let force = payload.force.unwrap_or(false);
 
     tokio::task::spawn_blocking(move || {
-        client.update_systemtender(&id, payload.config, force)
+        client
+            .update_systemtender(&id, payload.config, force)
             .map(Json)
-            .map_err(|e| (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(
-                    format!("Failed to update systemtender: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(
+                        format!("Failed to update systemtender: {}", e),
+                        "INTERNAL_SERVER_ERROR",
+                    )),
+                )
+            })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 #[derive(Debug, Deserialize)]
@@ -325,12 +391,13 @@ pub async fn delete_systemtender(
             Json(ErrorResponse::with_details(
                 "Invalid UUID format",
                 "BAD_REQUEST",
-                json!({"uuid": id})
-            ))
+                json!({"uuid": id}),
+            )),
         ));
     }
 
-    let force = params.force
+    let force = params
+        .force
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
 
@@ -342,24 +409,27 @@ pub async fn delete_systemtender(
     // connection through destruction. It polls GET until 404; the
     // tender stays visible in "deleting" (or "deletion-failed" with
     // its reason) until then.
-    let job_id = tokio::task::spawn_blocking(move || {
-        client.enqueue_systemtender_delete(&id_clone, force)
-    })
-    .await
-    .map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(
-            format!("Deletion enqueue task failed: {}", e),
-            "INTERNAL_SERVER_ERROR"
-        ))
-    ))?
-    .map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(
-            format!("Failed to enqueue systemtender deletion: {}", e),
-            "INTERNAL_SERVER_ERROR"
-        ))
-    ))?;
+    let job_id =
+        tokio::task::spawn_blocking(move || client.enqueue_systemtender_delete(&id_clone, force))
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(
+                        format!("Deletion enqueue task failed: {}", e),
+                        "INTERNAL_SERVER_ERROR",
+                    )),
+                )
+            })?
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(
+                        format!("Failed to enqueue systemtender deletion: {}", e),
+                        "INTERNAL_SERVER_ERROR",
+                    )),
+                )
+            })?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -382,27 +452,34 @@ pub async fn stop_systemtender(
             Json(ErrorResponse::with_details(
                 "Invalid UUID format",
                 "BAD_REQUEST",
-                json!({"uuid": id})
-            ))
+                json!({"uuid": id}),
+            )),
         ));
     }
 
     let client = get_client()?;
-    
+
     tokio::task::spawn_blocking(move || {
-        client.stop_systemtender(&id)
-            .map(Json)
-            .map_err(|e| (
+        client.stop_systemtender(&id).map(Json).map_err(|e| {
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
                     format!("Failed to stop systemtender: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn start_systemtender(
@@ -415,63 +492,86 @@ pub async fn start_systemtender(
             Json(ErrorResponse::with_details(
                 "Invalid UUID format",
                 "BAD_REQUEST",
-                json!({"uuid": id})
-            ))
+                json!({"uuid": id}),
+            )),
         ));
     }
 
     let client = get_client()?;
-    
+
     tokio::task::spawn_blocking(move || {
-        client.start_systemtender(&id)
-            .map(Json)
-            .map_err(|e| (
+        client.start_systemtender(&id).map(Json).map_err(|e| {
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
                     format!("Failed to start systemtender: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn list_credentials(
     State(_config): State<Config>,
 ) -> Result<Json<Vec<Credential>>, (StatusCode, Json<ErrorResponse>)> {
     let client = get_client()?;
-    
+
     tokio::task::spawn_blocking(move || {
-        client.list_credentials()
-            .map(Json)
-            .map_err(|e| (
+        client.list_credentials().map(Json).map_err(|e| {
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
                     format!("Failed to retrieve credentials: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn create_credential(
     State(_config): State<Config>,
     Json(payload): Json<CredentialCreate>,
 ) -> Result<(StatusCode, Json<Credential>), (StatusCode, Json<ErrorResponse>)> {
-    let valid_types = ["ssh_private_key", "api_token", "database_connection", "http_basic_auth"];
+    let valid_types = [
+        "ssh_private_key",
+        "api_token",
+        "database_connection",
+        "http_basic_auth",
+    ];
     if !valid_types.contains(&payload.credential_type.as_str()) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::with_details(
-                format!("Invalid credentialType: '{}'. Must be one of: {}", payload.credential_type, valid_types.join(", ")),
+                format!(
+                    "Invalid credentialType: '{}'. Must be one of: {}",
+                    payload.credential_type,
+                    valid_types.join(", ")
+                ),
                 "BAD_REQUEST",
-                json!({"credentialType": payload.credential_type})
-            ))
+                json!({"credentialType": payload.credential_type}),
+            )),
         ));
     }
 
@@ -491,8 +591,8 @@ pub async fn create_credential(
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
                 "Invalid content: content cannot be empty",
-                "BAD_REQUEST"
-            ))
+                "BAD_REQUEST",
+            )),
         ));
     }
 
@@ -504,9 +604,10 @@ pub async fn create_credential(
     });
 
     let client = get_client()?;
-    
+
     tokio::task::spawn_blocking(move || {
-        client.create_credential(credential_data)
+        client
+            .create_credential(credential_data)
             .map(|c| (StatusCode::CREATED, Json(c)))
             .map_err(|e| {
                 let error_msg = e.to_string().to_lowercase();
@@ -515,23 +616,30 @@ pub async fn create_credential(
                         StatusCode::BAD_REQUEST,
                         Json(ErrorResponse::new(
                             "Credential with this name already exists",
-                            "BAD_REQUEST"
-                        ))
+                            "BAD_REQUEST",
+                        )),
                     )
                 } else {
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse::new(
                             format!("Failed to create credential: {}", e),
-                            "INTERNAL_SERVER_ERROR"
-                        ))
+                            "INTERNAL_SERVER_ERROR",
+                        )),
                     )
                 }
             })
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn get_credential(
@@ -544,27 +652,34 @@ pub async fn get_credential(
             Json(ErrorResponse::with_details(
                 "Invalid UUID format",
                 "BAD_REQUEST",
-                json!({"credential_id": id})
-            ))
+                json!({"credential_id": id}),
+            )),
         ));
     }
 
     let client = get_client()?;
-    
+
     tokio::task::spawn_blocking(move || {
-        client.get_credential(&id)
-            .map(Json)
-            .map_err(|e| (
+        client.get_credential(&id).map(Json).map_err(|e| {
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
                     format!("Failed to retrieve credential: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn delete_credential(
@@ -577,31 +692,43 @@ pub async fn delete_credential(
             Json(ErrorResponse::with_details(
                 "Invalid UUID format",
                 "BAD_REQUEST",
-                json!({"credential_id": id})
-            ))
+                json!({"credential_id": id}),
+            )),
         ));
     }
 
     let client = get_client()?;
     let id_clone = id.clone();
-    
+
     tokio::task::spawn_blocking(move || {
-        client.delete_credential(&id_clone)
-            .map(|_| Json(DeletedResponse {
-                id: id_clone.clone(),
-                deleted: true,
-            }))
-            .map_err(|e| (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(
-                    format!("Failed to delete credential: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+        client
+            .delete_credential(&id_clone)
+            .map(|_| {
+                Json(DeletedResponse {
+                    id: id_clone.clone(),
+                    deleted: true,
+                })
+            })
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(
+                        format!("Failed to delete credential: {}", e),
+                        "INTERNAL_SERVER_ERROR",
+                    )),
+                )
+            })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn list_targets(
@@ -610,19 +737,26 @@ pub async fn list_targets(
     let client = get_client()?;
 
     tokio::task::spawn_blocking(move || {
-        client.list_targets()
-            .map(Json)
-            .map_err(|e| (
+        client.list_targets().map(Json).map_err(|e| {
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
                     format!("Failed to retrieve targets: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn create_target(
@@ -634,10 +768,14 @@ pub async fn create_target(
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::with_details(
-                format!("Invalid targetType: '{}'. Must be one of: {}", payload.target_type, valid_types.join(", ")),
+                format!(
+                    "Invalid targetType: '{}'. Must be one of: {}",
+                    payload.target_type,
+                    valid_types.join(", ")
+                ),
                 "BAD_REQUEST",
-                json!({"targetType": payload.target_type})
-            ))
+                json!({"targetType": payload.target_type}),
+            )),
         ));
     }
 
@@ -652,13 +790,18 @@ pub async fn create_target(
         ));
     }
 
-    if payload.spec.as_object().map(|o| o.is_empty()).unwrap_or(true) {
+    if payload
+        .spec
+        .as_object()
+        .map(|o| o.is_empty())
+        .unwrap_or(true)
+    {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
                 "Invalid spec: spec must be a non-empty object",
-                "BAD_REQUEST"
-            ))
+                "BAD_REQUEST",
+            )),
         ));
     }
 
@@ -672,7 +815,8 @@ pub async fn create_target(
     let client = get_client()?;
 
     tokio::task::spawn_blocking(move || {
-        client.create_target(target_data)
+        client
+            .create_target(target_data)
             .map(|t| (StatusCode::CREATED, Json(t)))
             .map_err(|e| {
                 let error_msg = e.to_string().to_lowercase();
@@ -681,23 +825,30 @@ pub async fn create_target(
                         StatusCode::BAD_REQUEST,
                         Json(ErrorResponse::new(
                             "Target with this name already exists",
-                            "BAD_REQUEST"
-                        ))
+                            "BAD_REQUEST",
+                        )),
                     )
                 } else {
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(ErrorResponse::new(
                             format!("Failed to create target: {}", e),
-                            "INTERNAL_SERVER_ERROR"
-                        ))
+                            "INTERNAL_SERVER_ERROR",
+                        )),
                     )
                 }
             })
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn get_target(
@@ -710,27 +861,34 @@ pub async fn get_target(
             Json(ErrorResponse::with_details(
                 "Invalid UUID format",
                 "BAD_REQUEST",
-                json!({"target_id": id})
-            ))
+                json!({"target_id": id}),
+            )),
         ));
     }
 
     let client = get_client()?;
 
     tokio::task::spawn_blocking(move || {
-        client.get_target(&id)
-            .map(Json)
-            .map_err(|e| (
+        client.get_target(&id).map(Json).map_err(|e| {
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
                     format!("Failed to retrieve target: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn delete_target(
@@ -743,8 +901,8 @@ pub async fn delete_target(
             Json(ErrorResponse::with_details(
                 "Invalid UUID format",
                 "BAD_REQUEST",
-                json!({"target_id": id})
-            ))
+                json!({"target_id": id}),
+            )),
         ));
     }
 
@@ -752,22 +910,34 @@ pub async fn delete_target(
     let id_clone = id.clone();
 
     tokio::task::spawn_blocking(move || {
-        client.delete_target(&id_clone)
-            .map(|_| Json(DeletedResponse {
-                id: id_clone.clone(),
-                deleted: true,
-            }))
-            .map_err(|e| (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(
-                    format!("Failed to delete target: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+        client
+            .delete_target(&id_clone)
+            .map(|_| {
+                Json(DeletedResponse {
+                    id: id_clone.clone(),
+                    deleted: true,
+                })
+            })
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(
+                        format!("Failed to delete target: {}", e),
+                        "INTERNAL_SERVER_ERROR",
+                    )),
+                )
+            })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 // ─── Wishes ────────────────────────────────────────────────────
@@ -781,19 +951,26 @@ pub async fn list_wishes(
     let client = get_client()?;
 
     tokio::task::spawn_blocking(move || {
-        client.list_wishes()
-            .map(Json)
-            .map_err(|e| (
+        client.list_wishes().map(Json).map_err(|e| {
+            (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(
                     format!("Failed to retrieve wishes: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn declare_wish(
@@ -808,27 +985,37 @@ pub async fn declare_wish(
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
                 "The wish body must be a JSON object; its grammar is validated at the door",
-                "BAD_REQUEST"
-            ))
+                "BAD_REQUEST",
+            )),
         ));
     }
 
     let client = get_client()?;
 
     tokio::task::spawn_blocking(move || {
-        client.create_wish(payload)
+        client
+            .create_wish(payload)
             .map(|w| (StatusCode::CREATED, Json(w)))
-            .map_err(|e| (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(
-                    format!("Failed to declare wish: {}", e),
-                    "INTERNAL_SERVER_ERROR"
-                ))
-            ))
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(
+                        format!("Failed to declare wish: {}", e),
+                        "INTERNAL_SERVER_ERROR",
+                    )),
+                )
+            })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn get_wish(
@@ -841,30 +1028,43 @@ pub async fn get_wish(
             Json(ErrorResponse::with_details(
                 "Invalid UUID format",
                 "BAD_REQUEST",
-                json!({"wish_id": id})
-            ))
+                json!({"wish_id": id}),
+            )),
         ));
     }
 
     let client = get_client()?;
 
     tokio::task::spawn_blocking(move || {
-        client.get_wish(&id)
-            .map(Json)
-            .map_err(|e| {
-                let not_found = format!("{}", e).to_lowercase().contains("not found");
-                (
-                    if not_found { StatusCode::NOT_FOUND } else { StatusCode::INTERNAL_SERVER_ERROR },
-                    Json(ErrorResponse::new(
-                        format!("Failed to retrieve wish: {}", e),
-                        if not_found { "NOT_FOUND" } else { "INTERNAL_SERVER_ERROR" }
-                    ))
-                )
-            })
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+        client.get_wish(&id).map(Json).map_err(|e| {
+            let not_found = format!("{}", e).to_lowercase().contains("not found");
+            (
+                if not_found {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                },
+                Json(ErrorResponse::new(
+                    format!("Failed to retrieve wish: {}", e),
+                    if not_found {
+                        "NOT_FOUND"
+                    } else {
+                        "INTERNAL_SERVER_ERROR"
+                    },
+                )),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn update_wish(
@@ -878,30 +1078,43 @@ pub async fn update_wish(
             Json(ErrorResponse::with_details(
                 "Invalid UUID format",
                 "BAD_REQUEST",
-                json!({"wish_id": id})
-            ))
+                json!({"wish_id": id}),
+            )),
         ));
     }
 
     let client = get_client()?;
 
     tokio::task::spawn_blocking(move || {
-        client.update_wish(&id, body)
-            .map(Json)
-            .map_err(|e| {
-                let not_found = format!("{}", e).to_lowercase().contains("not found");
-                (
-                    if not_found { StatusCode::NOT_FOUND } else { StatusCode::INTERNAL_SERVER_ERROR },
-                    Json(ErrorResponse::new(
-                        format!("Failed to update wish: {}", e),
-                        if not_found { "NOT_FOUND" } else { "INTERNAL_SERVER_ERROR" }
-                    ))
-                )
-            })
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+        client.update_wish(&id, body).map(Json).map_err(|e| {
+            let not_found = format!("{}", e).to_lowercase().contains("not found");
+            (
+                if not_found {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                },
+                Json(ErrorResponse::new(
+                    format!("Failed to update wish: {}", e),
+                    if not_found {
+                        "NOT_FOUND"
+                    } else {
+                        "INTERNAL_SERVER_ERROR"
+                    },
+                )),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 pub async fn delete_wish(
@@ -914,8 +1127,8 @@ pub async fn delete_wish(
             Json(ErrorResponse::with_details(
                 "Invalid UUID format",
                 "BAD_REQUEST",
-                json!({"wish_id": id})
-            ))
+                json!({"wish_id": id}),
+            )),
         ));
     }
 
@@ -927,24 +1140,26 @@ pub async fn delete_wish(
     // never holds a connection through destruction. It polls GET
     // until 404; the wish stays visible in "deleting" (or
     // "deletion-failed" with its reason) until then.
-    let job_id = tokio::task::spawn_blocking(move || {
-        client.enqueue_wish_delete(&id_clone)
-    })
-    .await
-    .map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(
-            format!("Purge enqueue task failed: {}", e),
-            "INTERNAL_SERVER_ERROR"
-        ))
-    ))?
-    .map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(
-            format!("Failed to enqueue wish purge: {}", e),
-            "INTERNAL_SERVER_ERROR"
-        ))
-    ))?;
+    let job_id = tokio::task::spawn_blocking(move || client.enqueue_wish_delete(&id_clone))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(
+                    format!("Purge enqueue task failed: {}", e),
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(
+                    format!("Failed to enqueue wish purge: {}", e),
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })?;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -967,42 +1182,57 @@ pub async fn close_wish(
             Json(ErrorResponse::with_details(
                 "Invalid UUID format",
                 "BAD_REQUEST",
-                json!({"wish_id": id})
-            ))
+                json!({"wish_id": id}),
+            )),
         ));
     }
 
     let client = get_client()?;
 
     tokio::task::spawn_blocking(move || {
-        client.close_wish(&id)
-            .map(Json)
-            .map_err(|e| {
-                let not_found = format!("{}", e).to_lowercase().contains("not found");
-                (
-                    if not_found { StatusCode::NOT_FOUND } else { StatusCode::INTERNAL_SERVER_ERROR },
-                    Json(ErrorResponse::new(
-                        format!("Failed to close wish: {}", e),
-                        if not_found { "NOT_FOUND" } else { "INTERNAL_SERVER_ERROR" }
-                    ))
-                )
-            })
-    }).await.map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(format!("Task join error: {}", e), "INTERNAL_SERVER_ERROR"))
-    ))?
+        client.close_wish(&id).map(Json).map_err(|e| {
+            let not_found = format!("{}", e).to_lowercase().contains("not found");
+            (
+                if not_found {
+                    StatusCode::NOT_FOUND
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                },
+                Json(ErrorResponse::new(
+                    format!("Failed to close wish: {}", e),
+                    if not_found {
+                        "NOT_FOUND"
+                    } else {
+                        "INTERNAL_SERVER_ERROR"
+                    },
+                )),
+            )
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Task join error: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })?
 }
 
 // ─── The map (relays to causal
 
 fn get_causal_client() -> Result<crate::causal::CausalClient, (StatusCode, Json<ErrorResponse>)> {
-    crate::causal::CausalClient::new().map_err(|e| (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse::new(
-            format!("Failed to initialize causal client: {}", e),
-            "INTERNAL_SERVER_ERROR"
-        ))
-    ))
+    crate::causal::CausalClient::new().map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(
+                format!("Failed to initialize causal client: {}", e),
+                "INTERNAL_SERVER_ERROR",
+            )),
+        )
+    })
 }
 
 use axum::response::{IntoResponse, Response};
@@ -1011,13 +1241,15 @@ async fn causal_relay<F>(relay: F) -> Result<Response, (StatusCode, Json<ErrorRe
 where
     F: FnOnce() -> Result<(reqwest::StatusCode, Value), anyhow::Error> + Send + 'static,
 {
-    let (status, body) = relay().map_err(|e| (
-        StatusCode::BAD_GATEWAY,
-        Json(ErrorResponse::new(
-            format!("causal relay error: {}", e),
-            "BAD_GATEWAY"
-        ))
-    ))?;
+    let (status, body) = relay().map_err(|e| {
+        (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse::new(
+                format!("causal relay error: {}", e),
+                "BAD_GATEWAY",
+            )),
+        )
+    })?;
 
     if status.is_success() {
         Ok(Json(body).into_response())
@@ -1025,8 +1257,10 @@ where
         Err((
             StatusCode::NOT_FOUND,
             Json(ErrorResponse::new(
-                body.get("message").and_then(|m| m.as_str()).unwrap_or("not found in the map"),
-                "NOT_FOUND"
+                body.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("not found in the map"),
+                "NOT_FOUND",
             )),
         ))
     } else {
@@ -1034,28 +1268,36 @@ where
             StatusCode::BAD_GATEWAY,
             Json(ErrorResponse::new(
                 format!("causal relay error ({}): {}", status, body),
-                "BAD_GATEWAY"
+                "BAD_GATEWAY",
             )),
         ))
     }
 }
 
-pub async fn get_connectome(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+pub async fn get_connectome(
+    State(_config): State<Config>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let client = get_causal_client()?;
     causal_relay(move || client.get("/graph")).await
 }
 
-pub async fn get_connectome_curves(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+pub async fn get_connectome_curves(
+    State(_config): State<Config>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let client = get_causal_client()?;
     causal_relay(move || client.get("/curves")).await
 }
 
-pub async fn get_connectome_artifact(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+pub async fn get_connectome_artifact(
+    State(_config): State<Config>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let client = get_causal_client()?;
     causal_relay(move || client.get("/artifact")).await
 }
 
-pub async fn get_positions(State(_config): State<Config>) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+pub async fn get_positions(
+    State(_config): State<Config>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let client = get_causal_client()?;
     causal_relay(move || client.get("/positions")).await
 }
@@ -1065,10 +1307,13 @@ pub async fn connectome_predict(
     Json(body): Json<Value>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     if body.get("sender_id").and_then(|v| v.as_str()).is_none() {
-        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new(
-            "sender_id required: the node the push lands on",
-            "BAD_REQUEST"
-        ))));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "sender_id required: the node the push lands on",
+                "BAD_REQUEST",
+            )),
+        ));
     }
     let client = get_causal_client()?;
     causal_relay(move || client.post("/predict", &body)).await
@@ -1079,10 +1324,13 @@ pub async fn connectome_predict_multihop(
     Json(body): Json<Value>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     if body.get("sender_id").and_then(|v| v.as_str()).is_none() {
-        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new(
-            "sender_id required: the node the push lands on",
-            "BAD_REQUEST"
-        ))));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(
+                "sender_id required: the node the push lands on",
+                "BAD_REQUEST",
+            )),
+        ));
     }
     let client = get_causal_client()?;
     causal_relay(move || client.post("/predict/multihop", &body)).await
@@ -1093,9 +1341,10 @@ pub async fn connectome_impact(
     Path(systemtender_id): Path<String>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     if !UUID_REGEX.is_match(&systemtender_id) {
-        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new(
-            "Invalid UUID format", "BAD_REQUEST"
-        ))));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new("Invalid UUID format", "BAD_REQUEST")),
+        ));
     }
     let client = get_causal_client()?;
     causal_relay(move || client.get(&format!("/impact/{}", systemtender_id))).await
@@ -1106,9 +1355,10 @@ pub async fn connectome_causes(
     Path(systemtender_id): Path<String>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     if !UUID_REGEX.is_match(&systemtender_id) {
-        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse::new(
-            "Invalid UUID format", "BAD_REQUEST"
-        ))));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new("Invalid UUID format", "BAD_REQUEST")),
+        ));
     }
     let client = get_causal_client()?;
     causal_relay(move || client.get(&format!("/causes/{}", systemtender_id))).await
@@ -1116,7 +1366,7 @@ pub async fn connectome_causes(
 
 #[cfg(test)]
 mod create_wait_tests {
-    use super::{still_creating, clamp_create_wait_timeout};
+    use super::{clamp_create_wait_timeout, still_creating};
 
     #[test]
     fn polls_only_while_creating() {
@@ -1124,7 +1374,13 @@ mod create_wait_tests {
         // post-create window before the first heartbeat), and the
         // failure verdict, which the state carries
         assert!(still_creating("creating"));
-        for done in ["active", "running", "finished", "presumed_dead", "create-failed"] {
+        for done in [
+            "active",
+            "running",
+            "finished",
+            "presumed_dead",
+            "create-failed",
+        ] {
             assert!(!still_creating(done), "{} is terminal-for-create", done);
         }
     }

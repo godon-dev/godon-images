@@ -96,15 +96,12 @@ fn sender_median(sender: &ProbeTrials, phase: &str, channel: usize) -> f64 {
 
 /// Build a complete graph from all detection results for all pairs.
 pub fn build_edges(
-    sender_id: &str,
-    receiver_id: &str,
+    _sender_id: &str,
+    _receiver_id: &str,
     sender: &ProbeTrials,
     detections: &[DetectionResult],
 ) -> Vec<CharacterizedEdge> {
-    detections
-        .iter()
-        .map(|d| characterize(d, sender))
-        .collect()
+    detections.iter().map(|d| characterize(d, sender)).collect()
 }
 
 #[cfg(test)]

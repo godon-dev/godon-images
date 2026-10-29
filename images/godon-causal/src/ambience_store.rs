@@ -133,7 +133,12 @@ pub async fn reparent_orphaned(
              WHERE group_id = $2 AND ambience_param = $3 \
              AND tender_id <> $1 \
              AND NOT (tender_id = ANY($4))",
-            &[&successor.to_string(), &group_id.to_string(), &ambience_param.to_string(), &live_vec],
+            &[
+                &successor.to_string(),
+                &group_id.to_string(),
+                &ambience_param.to_string(),
+                &live_vec,
+            ],
         )
         .await?;
     Ok(n)

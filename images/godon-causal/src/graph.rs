@@ -213,7 +213,9 @@ impl CausalGraph {
     pub fn edges_between(&self, a: &str, b: &str) -> Vec<&CharacterizedEdge> {
         self.edges
             .iter()
-            .filter(|e| (e.sender_id == a && e.receiver_id == b) || (e.sender_id == b && e.receiver_id == a))
+            .filter(|e| {
+                (e.sender_id == a && e.receiver_id == b) || (e.sender_id == b && e.receiver_id == a)
+            })
             .collect()
     }
 
@@ -353,25 +355,27 @@ impl CausalGraph {
         }
 
         best.into_iter()
-            .map(|((receiver_id, channel), (composed_sens, confidence, path))| {
-                let shift = composed_sens * impulse_scale;
-                let noise_floor = detected
-                    .iter()
-                    .find(|e| e.receiver_id == receiver_id && e.channel == channel)
-                    .map(|e| e.noise_floor)
-                    .unwrap_or(1e-12);
-                Prediction {
-                    sender_id: sender_id.to_string(),
-                    receiver_id,
-                    channel,
-                    impulse_scale,
-                    predicted_shift: shift,
-                    confidence,
-                    noise_floor,
-                    snr_estimate: shift.abs() / noise_floor.max(1e-12),
-                    path,
-                }
-            })
+            .map(
+                |((receiver_id, channel), (composed_sens, confidence, path))| {
+                    let shift = composed_sens * impulse_scale;
+                    let noise_floor = detected
+                        .iter()
+                        .find(|e| e.receiver_id == receiver_id && e.channel == channel)
+                        .map(|e| e.noise_floor)
+                        .unwrap_or(1e-12);
+                    Prediction {
+                        sender_id: sender_id.to_string(),
+                        receiver_id,
+                        channel,
+                        impulse_scale,
+                        predicted_shift: shift,
+                        confidence,
+                        noise_floor,
+                        snr_estimate: shift.abs() / noise_floor.max(1e-12),
+                        path,
+                    }
+                },
+            )
             .collect()
     }
 }
@@ -522,10 +526,7 @@ mod tests {
         // node-4: three-hop, sensitivity 0.7 × 0.5 × 0.3 = 0.105
         let p4 = &sorted[2];
         assert_eq!(p4.receiver_id, "node-4");
-        assert_eq!(
-            p4.path,
-            vec!["node-1", "node-2", "node-3", "node-4"]
-        );
+        assert_eq!(p4.path, vec!["node-1", "node-2", "node-3", "node-4"]);
         assert!(
             (p4.predicted_shift - 0.105).abs() < 0.001,
             "node-4 shift should be ~0.105, got {}",
@@ -608,10 +609,19 @@ mod tests {
             points: vec![(0.0, 0.0), (20.0, 1.0), (40.0, 1.0)],
             converged: true,
         };
-        assert!((rf.eval_level(10.0) - 0.5).abs() < 1e-9, "midpoint interpolation");
+        assert!(
+            (rf.eval_level(10.0) - 0.5).abs() < 1e-9,
+            "midpoint interpolation"
+        );
         assert!((rf.eval_level(30.0) - 1.0).abs() < 1e-9, "flat region");
-        assert!((rf.eval_level(50.0) - 1.0).abs() < 1e-9, "clamped above range (saturation)");
-        assert!((rf.eval_level(-5.0) - 0.0).abs() < 1e-9, "clamped below range");
+        assert!(
+            (rf.eval_level(50.0) - 1.0).abs() < 1e-9,
+            "clamped above range (saturation)"
+        );
+        assert!(
+            (rf.eval_level(-5.0) - 0.0).abs() < 1e-9,
+            "clamped below range"
+        );
     }
 
     #[test]
@@ -649,7 +659,7 @@ mod tests {
         assert_eq!(back.curves.len(), 1);
         assert_eq!(back.curves[0].sender_id, "A");
         assert_eq!(back.curves[0].state.points, graph.curves[0].state.points);
-        assert_eq!(back.curves[0].state.converged, true);
+        assert!(back.curves[0].state.converged);
         match &back.edges[0].response {
             ResponseFunction::CurveResponse { points, converged } => {
                 assert_eq!(points.len(), 3);

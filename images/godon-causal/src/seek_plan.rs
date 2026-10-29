@@ -56,9 +56,7 @@ pub fn validate(body: &Value) -> Result<SeekBody, String> {
     let form = obj
         .get("form")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            "form is required: find_best or cover_now (no omission)".to_string()
-        })?
+        .ok_or_else(|| "form is required: find_best or cover_now (no omission)".to_string())?
         .to_string();
     if form != COVER_NOW && form != FIND_BEST {
         return Err(format!("unknown_form: {form}"));
@@ -183,7 +181,11 @@ pub fn read_off_map(
     }
     let mut best = &curve.state.points[0];
     for p in curve.state.points.iter().skip(1) {
-        let better = if *maximize { p.1 > best.1 } else { p.1 < best.1 };
+        let better = if *maximize {
+            p.1 > best.1
+        } else {
+            p.1 < best.1
+        };
         if better {
             best = p;
         }

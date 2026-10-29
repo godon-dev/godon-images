@@ -1,5 +1,5 @@
 use crate::graph::ChannelId;
-use crate::trial_reader::{mad, median, ProbeTrials, ProbeTrial, ReceiverTrial};
+use crate::trial_reader::{mad, median, ProbeTrials, ReceiverTrial};
 use serde::Serialize;
 
 // ─── Detection Result ───────────────────────────────────────────────
@@ -92,13 +92,15 @@ impl CfarDetector {
     /// Returns 0.0 if the signal can't be isolated (instant coupling or
     /// insufficient data) — which is the correct default for systems that
     /// respond within the same trial.
-    fn auto_derive_lag(sender: &ProbeTrials, receiver: &ProbeTrials, rounds: &[Round]) -> f64 {
+    fn auto_derive_lag(_sender: &ProbeTrials, receiver: &ProbeTrials, rounds: &[Round]) -> f64 {
         if rounds.is_empty() || receiver.receiver_hold_trials.is_empty() {
             return 0.0;
         }
 
         // Collect all receiver hold objective values for baseline estimation
-        let all_vals: Vec<f64> = receiver.receiver_hold_trials.iter()
+        let all_vals: Vec<f64> = receiver
+            .receiver_hold_trials
+            .iter()
             .filter_map(|rt| rt.values.first().copied())
             .collect();
         if all_vals.len() < 5 {
@@ -110,7 +112,9 @@ impl CfarDetector {
         // For each round, find when the receiver first responds to push
         let mut lags: Vec<f64> = Vec::new();
         for round in rounds {
-            let responder = receiver.receiver_hold_trials.iter()
+            let responder = receiver
+                .receiver_hold_trials
+                .iter()
                 .filter(|rt| rt.timestamp >= round.push_start - 5.0)
                 .filter(|rt| {
                     if let Some(v) = rt.values.first() {
@@ -119,11 +123,15 @@ impl CfarDetector {
                         false
                     }
                 })
-                .min_by(|a, b| a.timestamp.partial_cmp(&b.timestamp).unwrap_or(std::cmp::Ordering::Equal));
+                .min_by(|a, b| {
+                    a.timestamp
+                        .partial_cmp(&b.timestamp)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
 
             if let Some(rt) = responder {
                 let lag = rt.timestamp - round.push_start;
-                if lag >= 0.0 && lag < 120.0 {
+                if (0.0..120.0).contains(&lag) {
                     lags.push(lag);
                 }
             }
@@ -164,12 +172,16 @@ impl EdgeDetector for CfarDetector {
         }
 
         // 2. Determine number of channels
-        let n_obj = receiver.receiver_hold_trials.iter()
+        let n_obj = receiver
+            .receiver_hold_trials
+            .iter()
             .map(|rt| rt.values.len())
             .max()
             .unwrap_or(0);
 
-        let n_obs = receiver.receiver_hold_trials.iter()
+        let n_obs = receiver
+            .receiver_hold_trials
+            .iter()
             .map(|rt| rt.observations.len())
             .max()
             .unwrap_or(0);
@@ -184,18 +196,21 @@ impl EdgeDetector for CfarDetector {
         // 3. Per-channel detection
         for obj_idx in 0..n_obj {
             let result = self.detect_channel(
-                sender, receiver, &rounds, pfa,
-                ChannelId::Objective(obj_idx), obj_idx, true,
+                sender,
+                receiver,
+                &rounds,
+                pfa,
+                ChannelId::Objective(obj_idx),
+                obj_idx,
+                true,
             );
             results.push(result);
         }
 
         for obs_idx in 0..n_obs {
             let channel = ChannelId::Observation(format!("obs_{}", obs_idx));
-            let result = self.detect_channel(
-                sender, receiver, &rounds, pfa,
-                channel, obs_idx, false,
-            );
+            let result =
+                self.detect_channel(sender, receiver, &rounds, pfa, channel, obs_idx, false);
             results.push(result);
         }
 
@@ -204,6 +219,7 @@ impl EdgeDetector for CfarDetector {
 }
 
 impl CfarDetector {
+    #[allow(clippy::too_many_arguments)]
     fn detect_channel(
         &self,
         _sender: &ProbeTrials,
@@ -238,25 +254,36 @@ impl CfarDetector {
             // Don't filter by phase label — the timestamp window already
             // ensures we're in the right period. The lease_phase label
             // may not be updated yet when the receiver trial runs.
-            let baseline_vals: Vec<f64> = receiver.receiver_hold_trials.iter()
-                .filter(|rt| rt.timestamp >= round.pause_start - 5.0
-                        && rt.timestamp <= round.pause_end + lag + margin)
+            let baseline_vals: Vec<f64> = receiver
+                .receiver_hold_trials
+                .iter()
+                .filter(|rt| {
+                    rt.timestamp >= round.pause_start - 5.0
+                        && rt.timestamp <= round.pause_end + lag + margin
+                })
                 .filter_map(|rt| extract_channel(rt, idx, is_objective))
                 .collect();
 
             // Push window: receiver hold trials during sender's push.
             // End at push_end (not push_end + lag) to avoid overlap with
             // the pause/baseline window.
-            let push_vals: Vec<f64> = receiver.receiver_hold_trials.iter()
-                .filter(|rt| rt.timestamp >= round.push_start - 5.0
-                        && rt.timestamp < round.pause_start)
+            let push_vals: Vec<f64> = receiver
+                .receiver_hold_trials
+                .iter()
+                .filter(|rt| {
+                    rt.timestamp >= round.push_start - 5.0 && rt.timestamp < round.pause_start
+                })
                 .filter_map(|rt| extract_channel(rt, idx, is_objective))
                 .collect();
 
             // Pause window
-            let pause_vals: Vec<f64> = receiver.receiver_hold_trials.iter()
-                .filter(|rt| rt.timestamp >= round.pause_start - 5.0
-                        && rt.timestamp <= round.pause_end + lag + margin)
+            let pause_vals: Vec<f64> = receiver
+                .receiver_hold_trials
+                .iter()
+                .filter(|rt| {
+                    rt.timestamp >= round.pause_start - 5.0
+                        && rt.timestamp <= round.pause_end + lag + margin
+                })
                 .filter_map(|rt| extract_channel(rt, idx, is_objective))
                 .collect();
 
@@ -316,10 +343,14 @@ impl CfarDetector {
         let n_rounds = rounds.len();
         let detected = round_detected >= 1;
 
-        let avg_rising = if rising_edges.is_empty() { 0.0 } else {
+        let avg_rising = if rising_edges.is_empty() {
+            0.0
+        } else {
             rising_edges.iter().sum::<f64>() / rising_edges.len() as f64
         };
-        let avg_falling = if falling_edges.is_empty() { 0.0 } else {
+        let avg_falling = if falling_edges.is_empty() {
+            0.0
+        } else {
             falling_edges.iter().sum::<f64>() / falling_edges.len() as f64
         };
 
@@ -362,9 +393,7 @@ struct Round {
 }
 
 fn build_rounds(sender: &ProbeTrials) -> Vec<Round> {
-    let mut push_ts: Vec<f64> = sender.push_trials.iter()
-        .map(|t| t.timestamp)
-        .collect();
+    let mut push_ts: Vec<f64> = sender.push_trials.iter().map(|t| t.timestamp).collect();
 
     if push_ts.is_empty() {
         return Vec::new();
@@ -413,7 +442,9 @@ fn build_rounds(sender: &ProbeTrials) -> Vec<Round> {
             f64::MAX
         };
 
-        let mut pause_ts: Vec<f64> = sender.pause_trials.iter()
+        let mut pause_ts: Vec<f64> = sender
+            .pause_trials
+            .iter()
             .filter(|t| t.timestamp > push_end - 10.0 && t.timestamp < next_push_start)
             .map(|t| t.timestamp)
             .collect();

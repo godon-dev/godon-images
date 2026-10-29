@@ -32,28 +32,54 @@ impl AppMetrics {
     fn new() -> Self {
         let registry = Registry::new();
         let throughput = Gauge::new("microgrid_throughput", "Effective throughput").unwrap();
-        let equipment_health = Gauge::new("microgrid_equipment_health", "Equipment health factor").unwrap();
-        let voltage_stability = Gauge::new("microgrid_voltage_stability", "Voltage stability").unwrap();
-        let energy_consumption_kwh = Gauge::new("microgrid_energy_consumption_kwh", "Cumulative energy consumption").unwrap();
-        let grid_frequency_hz = Gauge::new("microgrid_grid_frequency_hz", "Grid frequency").unwrap();
+        let equipment_health =
+            Gauge::new("microgrid_equipment_health", "Equipment health factor").unwrap();
+        let voltage_stability =
+            Gauge::new("microgrid_voltage_stability", "Voltage stability").unwrap();
+        let energy_consumption_kwh = Gauge::new(
+            "microgrid_energy_consumption_kwh",
+            "Cumulative energy consumption",
+        )
+        .unwrap();
+        let grid_frequency_hz =
+            Gauge::new("microgrid_grid_frequency_hz", "Grid frequency").unwrap();
         let grid_voltage_kv = Gauge::new("microgrid_grid_voltage_kv", "Grid voltage").unwrap();
         let local_load_kw = Gauge::new("microgrid_local_load_kw", "Local power draw").unwrap();
         let local_gen_kw = Gauge::new("microgrid_local_gen_kw", "Local generation").unwrap();
         let storage_kw = Gauge::new("microgrid_storage_kw", "Storage dispatch").unwrap();
-        let coupling_delta_frequency = Gauge::new("microgrid_coupling_delta_frequency", "Coupling frequency delta").unwrap();
-        let coupling_delta_voltage = Gauge::new("microgrid_coupling_delta_voltage", "Coupling voltage delta").unwrap();
+        let coupling_delta_frequency = Gauge::new(
+            "microgrid_coupling_delta_frequency",
+            "Coupling frequency delta",
+        )
+        .unwrap();
+        let coupling_delta_voltage =
+            Gauge::new("microgrid_coupling_delta_voltage", "Coupling voltage delta").unwrap();
 
         registry.register(Box::new(throughput.clone())).unwrap();
-        registry.register(Box::new(equipment_health.clone())).unwrap();
-        registry.register(Box::new(voltage_stability.clone())).unwrap();
-        registry.register(Box::new(energy_consumption_kwh.clone())).unwrap();
-        registry.register(Box::new(grid_frequency_hz.clone())).unwrap();
-        registry.register(Box::new(grid_voltage_kv.clone())).unwrap();
+        registry
+            .register(Box::new(equipment_health.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(voltage_stability.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(energy_consumption_kwh.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(grid_frequency_hz.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(grid_voltage_kv.clone()))
+            .unwrap();
         registry.register(Box::new(local_load_kw.clone())).unwrap();
         registry.register(Box::new(local_gen_kw.clone())).unwrap();
         registry.register(Box::new(storage_kw.clone())).unwrap();
-        registry.register(Box::new(coupling_delta_frequency.clone())).unwrap();
-        registry.register(Box::new(coupling_delta_voltage.clone())).unwrap();
+        registry
+            .register(Box::new(coupling_delta_frequency.clone()))
+            .unwrap();
+        registry
+            .register(Box::new(coupling_delta_voltage.clone()))
+            .unwrap();
 
         Self {
             registry,
@@ -81,7 +107,8 @@ impl AppMetrics {
         self.local_load_kw.set(m.local_load_kw);
         self.local_gen_kw.set(m.local_gen_kw);
         self.storage_kw.set(m.storage_kw);
-        self.coupling_delta_frequency.set(m.coupling_delta_frequency);
+        self.coupling_delta_frequency
+            .set(m.coupling_delta_frequency);
         self.coupling_delta_voltage.set(m.coupling_delta_voltage);
     }
 }

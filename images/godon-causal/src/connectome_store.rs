@@ -29,7 +29,9 @@ pub async fn ensure_connectomes_table(client: &Client) -> Result<(), tokio_postg
         .unwrap_or_else(|_| "absent".to_string());
 
     if ty != "text" {
-        client.execute("DROP TABLE IF EXISTS connectomes", &[]).await?;
+        client
+            .execute("DROP TABLE IF EXISTS connectomes", &[])
+            .await?;
     }
 
     client

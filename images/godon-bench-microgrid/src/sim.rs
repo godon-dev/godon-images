@@ -1,6 +1,6 @@
 use crate::types::*;
-use rand_chacha::ChaCha8Rng;
 use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use std::sync::{Arc, Mutex};
 
 const NOMINAL_FREQUENCY: f64 = 50.0;
@@ -50,6 +50,7 @@ pub struct Microgrid {
     pub cumulative_energy_kwh: f64,
     pub last_params: Option<ApplyRequest>,
     pub seed: u64,
+    #[allow(dead_code)] // kept: the seeded generator rides the state shape
     rng: ChaCha8Rng,
     pub coupling: CouplingState,
 }
@@ -167,10 +168,8 @@ impl Microgrid {
         let self_freq_norm = 1.0 - (self_freq_dev / FREQ_NORMALIZATION_RANGE).min(1.0);
         let self_volt_norm = 1.0 - (self_volt_dev / VOLT_NORMALIZATION_RANGE).min(1.0);
 
-        let coupling_freq_norm =
-            self.coupling.last_delta_frequency / FREQ_NORMALIZATION_RANGE;
-        let coupling_volt_norm =
-            self.coupling.last_delta_voltage / VOLT_NORMALIZATION_RANGE;
+        let coupling_freq_norm = self.coupling.last_delta_frequency / FREQ_NORMALIZATION_RANGE;
+        let coupling_volt_norm = self.coupling.last_delta_voltage / VOLT_NORMALIZATION_RANGE;
 
         let freq_norm = self_freq_norm + coupling_freq_norm;
         let volt_norm = self_volt_norm + coupling_volt_norm;
@@ -185,8 +184,11 @@ impl Microgrid {
         let congestion = 1.0 - neighbor_usage * factor * COUPLING_CONGESTION_SCALE;
         let congestion = congestion.max(0.1);
 
-        let effective_draw = params.as_ref().map_or(0.0, |p| p.power_draw.clamp(0.0, 1000.0));
-        let base_throughput = effective_draw * 0.001 * efficiency * self.equipment_health * congestion;
+        let effective_draw = params
+            .as_ref()
+            .map_or(0.0, |p| p.power_draw.clamp(0.0, 1000.0));
+        let base_throughput =
+            effective_draw * 0.001 * efficiency * self.equipment_health * congestion;
         let throughput = base_throughput + direct_coupling;
 
         let voltage_stability = volt_norm + direct_coupling;
@@ -200,8 +202,12 @@ impl Microgrid {
             grid_frequency_hz: self.grid_frequency_hz,
             grid_voltage_kv: self.grid_voltage_kv,
             local_load_kw: effective_draw,
-            local_gen_kw: params.as_ref().map_or(0.0, |p| p.local_generation.clamp(0.0, 500.0)),
-            storage_kw: params.as_ref().map_or(0.0, |p| p.storage_dispatch.clamp(-500.0, 500.0)),
+            local_gen_kw: params
+                .as_ref()
+                .map_or(0.0, |p| p.local_generation.clamp(0.0, 500.0)),
+            storage_kw: params
+                .as_ref()
+                .map_or(0.0, |p| p.storage_dispatch.clamp(-500.0, 500.0)),
             tick: self.tick,
             coupling_delta_frequency: self.coupling.last_delta_frequency,
             coupling_delta_voltage: self.coupling.last_delta_voltage,

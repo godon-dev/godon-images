@@ -5,11 +5,11 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server, StatusCode};
 use log::{error, info};
 
+use optuna_reader::OptunaReader;
 use reqwest::blocking::Client;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
-use optuna_reader::OptunaReader;
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -20,13 +20,21 @@ struct Args {
     #[clap(short, long, env = "PORT", default_value_t = 8089)]
     port: u16,
 
-    #[clap(long, env = "PUSH_GATEWAY_URL", default_value = "http://pushgateway:9091")]
+    #[clap(
+        long,
+        env = "PUSH_GATEWAY_URL",
+        default_value = "http://pushgateway:9091"
+    )]
     push_gateway_url: String,
 
     #[clap(long, env = "GODON_API_URL", default_value = "http://godon-api:8080")]
     api_url: String,
 
-    #[clap(long, env = "GODON_CAUSAL_URL", default_value = "http://godon-causal:8091")]
+    #[clap(
+        long,
+        env = "GODON_CAUSAL_URL",
+        default_value = "http://godon-causal:8091"
+    )]
     causal_url: String,
 
     #[clap(long, default_value = "INFO")]
@@ -102,9 +110,14 @@ impl ObserverState {
         output.push_str("# TYPE godon_observer_up gauge\n");
         output.push_str("godon_observer_up{status=\"success\"} 1\n\n");
 
-        output.push_str("# HELP godon_observer_pushgateway_reachable Whether Push Gateway is reachable\n");
+        output.push_str(
+            "# HELP godon_observer_pushgateway_reachable Whether Push Gateway is reachable\n",
+        );
         output.push_str("# TYPE godon_observer_pushgateway_reachable gauge\n");
-        output.push_str(&format!("godon_observer_pushgateway_reachable {}\n\n", cache.pushgateway_reachable));
+        output.push_str(&format!(
+            "godon_observer_pushgateway_reachable {}\n\n",
+            cache.pushgateway_reachable
+        ));
 
         if cache.pushgateway_reachable == 1.0 && !cache.metrics_text.is_empty() {
             for line in cache.metrics_text.lines() {
@@ -150,7 +163,10 @@ fn parse_query(uri: &hyper::Uri) -> std::collections::HashMap<String, String> {
         .unwrap_or_default()
 }
 
-async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result<Response<Body>, hyper::Error> {
+async fn handle_request(
+    req: Request<Body>,
+    state: Arc<ObserverState>,
+) -> Result<Response<Body>, hyper::Error> {
     let path = req.uri().path().to_string();
     let path_parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
@@ -166,7 +182,11 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
 
     if path == "/health" {
         let db_ok = state.optuna.health_check().await;
-        let body = if db_ok { "OK" } else { "DEGRADED: db unreachable" };
+        let body = if db_ok {
+            "OK"
+        } else {
+            "DEGRADED: db unreachable"
+        };
         return Ok(Response::builder()
             .status(StatusCode::OK)
             .body(Body::from(body))
@@ -188,10 +208,16 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
     // /api/active-systemtenders — interference active systemtenders
     if path_parts.len() == 2 && path_parts[0] == "api" && path_parts[1] == "active-systemtenders" {
         return match state.optuna.get_active_systemtenders().await {
-            Ok(status) => Ok(json_response(StatusCode::OK, &serde_json::to_string(&status).unwrap_or_default())),
+            Ok(status) => Ok(json_response(
+                StatusCode::OK,
+                &serde_json::to_string(&status).unwrap_or_default(),
+            )),
             Err(e) => {
                 error!("Active systemtenders error: {}", e);
-                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{{\"error\": \"{}\"}}", e)))
+                Ok(json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("{{\"error\": \"{}\"}}", e),
+                ))
             }
         };
     }
@@ -204,12 +230,14 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
                 let body = response.text().unwrap_or_default();
                 Ok(json_response(StatusCode::OK, &body))
             }
-            Ok(response) => {
-                Ok(json_response(response.status(), &format!("{{\"error\": \"causal returned {}\"}}", response.status())))
-            }
-            Err(e) => {
-                Ok(json_response(StatusCode::SERVICE_UNAVAILABLE, &format!("{{\"error\": \"causal unreachable: {}\"}}", e)))
-            }
+            Ok(response) => Ok(json_response(
+                response.status(),
+                &format!("{{\"error\": \"causal returned {}\"}}", response.status()),
+            )),
+            Err(e) => Ok(json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &format!("{{\"error\": \"causal unreachable: {}\"}}", e),
+            )),
         };
     }
 
@@ -217,7 +245,10 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
     // Proxied to godon-causal's /detect endpoint. Falls back to local
     // detection if causal is unreachable (gradual migration).
     if (path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "coupling-detection")
-       || (path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "watermark-detection") {
+        || (path_parts.len() == 4
+            && path_parts[0] == "api"
+            && path_parts[1] == "watermark-detection")
+    {
         let sender_id = path_parts[2].to_string();
         let receiver_id = path_parts[3].to_string();
 
@@ -229,19 +260,35 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
                 return Ok(json_response(StatusCode::OK, &body));
             }
             Ok(response) => {
-                info!("causal returned HTTP {} for detection, falling back to local", response.status());
+                info!(
+                    "causal returned HTTP {} for detection, falling back to local",
+                    response.status()
+                );
             }
             Err(e) => {
-                info!("causal unreachable ({}), falling back to local detection", e);
+                info!(
+                    "causal unreachable ({}), falling back to local detection",
+                    e
+                );
             }
         }
 
         // Fallback: local detection
-        return match state.optuna.detect_watermark_coupling(&sender_id, &receiver_id).await {
-            Ok(result) => Ok(json_response(StatusCode::OK, &serde_json::to_string(&result).unwrap_or_default())),
+        return match state
+            .optuna
+            .detect_watermark_coupling(&sender_id, &receiver_id)
+            .await
+        {
+            Ok(result) => Ok(json_response(
+                StatusCode::OK,
+                &serde_json::to_string(&result).unwrap_or_default(),
+            )),
             Err(e) => {
                 error!("Watermark detection error: {:?}", e);
-                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{{\"error\": \"{}\"}}", e)))
+                Ok(json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("{{\"error\": \"{}\"}}", e),
+                ))
             }
         };
     }
@@ -256,14 +303,27 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
                     Ok(serde_json::Value::Array(systemtenders)) => {
                         let mut enriched = Vec::new();
                         for b in &systemtenders {
-                            let id = b.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let id = b
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             let study_name = format!("{}_study", id);
-                            let trial_count = state.optuna.get_trial_count(&id, &study_name).await.unwrap_or(0);
+                            let trial_count = state
+                                .optuna
+                                .get_trial_count(&id, &study_name)
+                                .await
+                                .unwrap_or(0);
                             let mut obj = b.clone();
-                            obj.as_object_mut().map(|m| m.insert("total_trials".into(), serde_json::json!(trial_count)));
+                            obj.as_object_mut().map(|m| {
+                                m.insert("total_trials".into(), serde_json::json!(trial_count))
+                            });
                             enriched.push(obj);
                         }
-                        Ok(json_response(StatusCode::OK, &serde_json::to_string(&enriched).unwrap()))
+                        Ok(json_response(
+                            StatusCode::OK,
+                            &serde_json::to_string(&enriched).unwrap(),
+                        ))
                     }
                     _ => Ok(json_response(StatusCode::OK, &body)),
                 }
@@ -271,11 +331,17 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
             Ok(response) => {
                 let status = response.status();
                 let body = response.text().unwrap_or_default();
-                Ok(json_response(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY), &body))
+                Ok(json_response(
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+                    &body,
+                ))
             }
             Err(e) => {
                 error!("API list systemtenders error: {}", e);
-                Ok(json_response(StatusCode::BAD_GATEWAY, &format!("{{\"error\": \"api unreachable: {}\"}}", e)))
+                Ok(json_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("{{\"error\": \"api unreachable: {}\"}}", e),
+                ))
             }
         };
     }
@@ -292,22 +358,40 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
             Ok(response) => {
                 let status = response.status();
                 let body = response.text().unwrap_or_default();
-                Ok(json_response(StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY), &body))
+                Ok(json_response(
+                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+                    &body,
+                ))
             }
             Err(e) => {
                 error!("API proxy error: {}", e);
-                Ok(json_response(StatusCode::BAD_GATEWAY, &format!("{{\"error\": \"api unreachable: {}\"}}", e)))
+                Ok(json_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("{{\"error\": \"api unreachable: {}\"}}", e),
+                ))
             }
         };
     }
 
     // /api/systemtenders/<uuid>/summary
-    if path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "systemtenders" && path_parts[3] == "summary" {
+    if path_parts.len() == 4
+        && path_parts[0] == "api"
+        && path_parts[1] == "systemtenders"
+        && path_parts[3] == "summary"
+    {
         let systemtender_id = path_parts[2].to_string();
         let study_name = format!("{}_study", systemtender_id);
 
-        let count = state.optuna.get_trial_count(&systemtender_id, &study_name).await.unwrap_or(0);
-        let attrs = state.optuna.get_study_user_attrs(&systemtender_id, &study_name).await.unwrap_or_default();
+        let count = state
+            .optuna
+            .get_trial_count(&systemtender_id, &study_name)
+            .await
+            .unwrap_or(0);
+        let attrs = state
+            .optuna
+            .get_study_user_attrs(&systemtender_id, &study_name)
+            .await
+            .unwrap_or_default();
 
         let json = serde_json::json!({
             "systemtender_id": systemtender_id,
@@ -315,33 +399,61 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
             "total_trials": count,
             "study_user_attributes": attrs,
         });
-        return Ok(json_response(StatusCode::OK, &serde_json::to_string(&json).unwrap()));
+        return Ok(json_response(
+            StatusCode::OK,
+            &serde_json::to_string(&json).unwrap(),
+        ));
     }
 
     // /api/systemtenders/<uuid>/studies
-    if path_parts.len() == 4 && path_parts[0] == "api" && path_parts[1] == "systemtenders" && path_parts[3] == "studies" {
+    if path_parts.len() == 4
+        && path_parts[0] == "api"
+        && path_parts[1] == "systemtenders"
+        && path_parts[3] == "studies"
+    {
         let systemtender_id = path_parts[2].to_string();
         return match state.optuna.list_studies(&systemtender_id).await {
             Ok(studies) => {
-                let json = serde_json::json!({"systemtender_id": systemtender_id, "studies": studies});
-                Ok(json_response(StatusCode::OK, &serde_json::to_string(&json).unwrap()))
+                let json =
+                    serde_json::json!({"systemtender_id": systemtender_id, "studies": studies});
+                Ok(json_response(
+                    StatusCode::OK,
+                    &serde_json::to_string(&json).unwrap(),
+                ))
             }
             Err(e) => {
                 error!("Failed to list studies: {}", e);
-                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{{\"error\": \"{}\"}}", e)))
+                Ok(json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("{{\"error\": \"{}\"}}", e),
+                ))
             }
         };
     }
 
     // /api/systemtenders/<uuid>/trials/<study_name>
-    if path_parts.len() >= 5 && path_parts[0] == "api" && path_parts[1] == "systemtenders" && path_parts[3] == "trials" {
+    if path_parts.len() >= 5
+        && path_parts[0] == "api"
+        && path_parts[1] == "systemtenders"
+        && path_parts[3] == "trials"
+    {
         let systemtender_id = path_parts[2].to_string();
         let study_name = path_parts[4].to_string();
         let query = parse_query(req.uri());
-        let offset: i64 = query.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
-        let limit: i64 = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
+        let offset: i64 = query
+            .get("offset")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let limit: i64 = query
+            .get("limit")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
 
-        return match state.optuna.get_trials(&systemtender_id, &study_name, offset, limit).await {
+        return match state
+            .optuna
+            .get_trials(&systemtender_id, &study_name, offset, limit)
+            .await
+        {
             Ok(trials) => {
                 let json = serde_json::json!({
                     "systemtender_id": systemtender_id,
@@ -350,24 +462,44 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
                     "limit": limit,
                     "trials": trials,
                 });
-                Ok(json_response(StatusCode::OK, &serde_json::to_string(&json).unwrap()))
+                Ok(json_response(
+                    StatusCode::OK,
+                    &serde_json::to_string(&json).unwrap(),
+                ))
             }
             Err(e) => {
                 error!("Failed to load trials: {}", e);
-                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{{\"error\": \"{}\"}}", e)))
+                Ok(json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("{{\"error\": \"{}\"}}", e),
+                ))
             }
         };
     }
 
     // /api/systemtenders/<uuid>/trials (auto-detect study name)
-    if path_parts.len() >= 4 && path_parts[0] == "api" && path_parts[1] == "systemtenders" && path_parts[3] == "trials" {
+    if path_parts.len() >= 4
+        && path_parts[0] == "api"
+        && path_parts[1] == "systemtenders"
+        && path_parts[3] == "trials"
+    {
         let systemtender_id = path_parts[2].to_string();
         let study_name = format!("{}_study", systemtender_id);
         let query = parse_query(req.uri());
-        let offset: i64 = query.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
-        let limit: i64 = query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
+        let offset: i64 = query
+            .get("offset")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let limit: i64 = query
+            .get("limit")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100);
 
-        return match state.optuna.get_trials(&systemtender_id, &study_name, offset, limit).await {
+        return match state
+            .optuna
+            .get_trials(&systemtender_id, &study_name, offset, limit)
+            .await
+        {
             Ok(trials) => {
                 let json = serde_json::json!({
                     "systemtender_id": systemtender_id,
@@ -376,18 +508,26 @@ async fn handle_request(req: Request<Body>, state: Arc<ObserverState>) -> Result
                     "limit": limit,
                     "trials": trials,
                 });
-                Ok(json_response(StatusCode::OK, &serde_json::to_string(&json).unwrap()))
+                Ok(json_response(
+                    StatusCode::OK,
+                    &serde_json::to_string(&json).unwrap(),
+                ))
             }
             Err(e) => {
                 error!("Failed to load trials: {}", e);
-                Ok(json_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("{{\"error\": \"{}\"}}", e)))
+                Ok(json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &format!("{{\"error\": \"{}\"}}", e),
+                ))
             }
         };
     }
 
     Ok(Response::builder()
         .status(StatusCode::NOT_FOUND)
-        .body(Body::from("godon observer: try /metrics, /dashboard, /api/systemtenders/<uuid>/trials"))
+        .body(Body::from(
+            "godon observer: try /metrics, /dashboard, /api/systemtenders/<uuid>/trials",
+        ))
         .unwrap())
 }
 
@@ -404,15 +544,17 @@ async fn main() {
     info!("Starting godon-observer v{}", env!("CARGO_PKG_VERSION"));
     info!("Push Gateway: {}", args.push_gateway_url);
 
-    let state = Arc::new(ObserverState::new(args.push_gateway_url.clone(), args.api_url.clone(), args.causal_url.clone()));
+    let state = Arc::new(ObserverState::new(
+        args.push_gateway_url.clone(),
+        args.api_url.clone(),
+        args.causal_url.clone(),
+    ));
     let addr = format!("{}:{}", args.host, args.port);
     let addr = addr.parse().unwrap();
 
     let make_svc = make_service_fn(move |_| {
         let state = state.clone();
-        async move {
-            Ok::<_, hyper::Error>(service_fn(move |req| handle_request(req, state.clone())))
-        }
+        async move { Ok::<_, hyper::Error>(service_fn(move |req| handle_request(req, state.clone()))) }
     });
 
     let server = Server::bind(&addr).serve(make_svc);
