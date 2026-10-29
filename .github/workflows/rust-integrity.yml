@@ -14,7 +14,7 @@ on:
     paths:
       - 'images/**'
       - 'shared/**'
-      - '.github/workflows/rust-lint.yml'
+      - '.github/workflows/rust-integrity.yml'
   workflow_dispatch:
   schedule:
     # weekly, Monday 04:30 UTC — after the cli run
@@ -72,6 +72,7 @@ jobs:
 
       - name: cargo mutants
         run: |
+          mkdir -p mutants.out
           for m in $CRATES; do
             n=$(basename "$m")
             echo "::group::mutants $m"
