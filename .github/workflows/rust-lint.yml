@@ -1,4 +1,4 @@
-name: Rust Lint
+name: Rust Integrity
 
 # The boring tier for the images' rust crates: cargo fmt and cargo clippy
 # across all nine (eight images plus the shared ledger reader) — cheap
