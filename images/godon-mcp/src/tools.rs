@@ -458,7 +458,11 @@ impl ToolRegistry {
             },
         ];
 
-        Self { client, causal_client, tools }
+        Self {
+            client,
+            causal_client,
+            tools,
+        }
     }
 
     pub fn list_tools(&self) -> Vec<Value> {
@@ -556,10 +560,7 @@ impl ToolRegistry {
             "wish_get" => {
                 require_id(id, "wish_id")?;
                 self.client
-                    .get(&format!(
-                        "/wishes/{}",
-                        urlencoding::encode(id)
-                    ))
+                    .get(&format!("/wishes/{}", urlencoding::encode(id)))
                     .await
             }
             "wish_declare" => {
@@ -570,10 +571,7 @@ impl ToolRegistry {
             "wish_close" => {
                 require_id(id, "wish_id")?;
                 self.client
-                    .post_empty(&format!(
-                        "/wishes/{}/close",
-                        urlencoding::encode(id)
-                    ))
+                    .post_empty(&format!("/wishes/{}/close", urlencoding::encode(id)))
                     .await
             }
 
@@ -583,10 +581,7 @@ impl ToolRegistry {
                 // the door validates; identity rides the URL.
                 self.client
                     .post(
-                        &format!(
-                            "/wishes/{}/update",
-                            urlencoding::encode(id)
-                        ),
+                        &format!("/wishes/{}/update", urlencoding::encode(id)),
                         args.clone(),
                     )
                     .await
@@ -594,10 +589,7 @@ impl ToolRegistry {
             "wish_delete" => {
                 require_id(id, "wish_id")?;
                 self.client
-                    .delete(&format!(
-                        "/wishes/{}",
-                        urlencoding::encode(id)
-                    ))
+                    .delete(&format!("/wishes/{}", urlencoding::encode(id)))
                     .await
             }
             "connectome_get" => self.causal_client.get("/graph").await,
@@ -630,19 +622,13 @@ impl ToolRegistry {
             "connectome_impact" => {
                 require_id(id, "systemtender_id")?;
                 self.causal_client
-                    .get(&format!(
-                        "/impact/{}",
-                        urlencoding::encode(id)
-                    ))
+                    .get(&format!("/impact/{}", urlencoding::encode(id)))
                     .await
             }
             "connectome_causes" => {
                 require_id(id, "systemtender_id")?;
                 self.causal_client
-                    .get(&format!(
-                        "/causes/{}",
-                        urlencoding::encode(id)
-                    ))
+                    .get(&format!("/causes/{}", urlencoding::encode(id)))
                     .await
             }
             "health" => self.client.get("/health").await,
