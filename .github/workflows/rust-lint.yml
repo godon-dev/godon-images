@@ -72,6 +72,7 @@ jobs:
 
       - name: cargo mutants
         run: |
+          mkdir -p mutants.out
           for m in $CRATES; do
             n=$(basename "$m")
             echo "::group::mutants $m"
