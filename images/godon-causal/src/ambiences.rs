@@ -92,9 +92,12 @@ impl Patch {
 /// In-memory registry, curves idiom: write-through on bank, restored
 /// at boot from ambience_points. Keyed (group, tender, param, channel)
 /// -> baseline key -> patch.
+/// the registry body — (group, tender, param, channel) → baseline → patch
+type AmbienceInner = HashMap<(String, String, String, String), HashMap<String, Patch>>;
+
 #[derive(Default)]
 pub struct AmbienceRegistry {
-    inner: std::sync::RwLock<HashMap<(String, String, String, String), HashMap<String, Patch>>>,
+    inner: std::sync::RwLock<AmbienceInner>,
 }
 
 impl AmbienceRegistry {
@@ -102,6 +105,7 @@ impl AmbienceRegistry {
         Self::default()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn record(
         &self,
         group: &str,
@@ -170,7 +174,7 @@ impl AmbienceRegistry {
         let mut moved = 0;
         for k in keys {
             let (g, t, p, c) = k.clone();
-            if g != group || p != param || t == successor || live.iter().any(|l| *l == t) {
+            if g != group || p != param || t == successor || live.contains(&t) {
                 continue;
             }
             let Some(baselines) = guard.remove(&k) else {

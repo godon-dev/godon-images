@@ -409,6 +409,7 @@ impl CurveRegistry {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_point(
         &mut self,
         sender_id: &str,
@@ -432,6 +433,7 @@ impl CurveRegistry {
         curve.add_point(level, shift)
     }
 
+    #[allow(clippy::too_many_arguments)]
     /// Uncertainty-aware probe (the /characterize path).
     pub fn probe(
         &mut self,
@@ -479,7 +481,7 @@ impl CurveRegistry {
             .unwrap_or(false)
     }
 
-    pub fn get_state(&self, sender_id: &str, param: &str) -> Option<&CurveState> {
+    pub fn get_state(&self, _sender_id: &str, _param: &str) -> Option<&CurveState> {
         // Can't return reference to temporary — caller should use is_converged + last_delta
         None
     }

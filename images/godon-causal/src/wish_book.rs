@@ -575,6 +575,7 @@ pub struct WalkHint {
     pub phase: &'static str,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn next_hint(
     held: f64,
     miss_median: f64,
@@ -718,7 +719,7 @@ pub fn sign_flip(held: f64, miss_median: f64, journal: &[WalkPoint], slope: f64)
 pub fn budget_exhausted(budget: Option<u32>, walks_completed: usize) -> bool {
     match budget {
         None => false,
-        Some(b) => walks_completed >= 1 + b as usize,
+        Some(b) => walks_completed > b as usize,
     }
 }
 

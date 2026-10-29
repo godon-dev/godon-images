@@ -1,0 +1,42 @@
+name: Rust Lint
+
+# The boring tier for the images' rust crates: cargo fmt and cargo clippy
+# across all nine (eight images plus the shared ledger reader) — cheap
+# signals ahead of the per-image container builds.
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'images/**'
+      - 'shared/**'
+      - '.github/workflows/rust-lint.yml'
+
+env:
+  CRATES: images/godon-api images/godon-bench-generic images/godon-bench-greenhouse images/godon-bench-microgrid images/godon-causal images/godon-mcp images/godon-observer images/godon-seeder shared/ledger-reader
+
+jobs:
+  fmt-and-clippy:
+    name: cargo fmt + cargo clippy (all crates)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cargo fmt
+        run: |
+          rustup component add rustfmt
+          for m in $CRATES; do
+            echo "::group::fmt $m"
+            (cd "$m" && cargo fmt --check)
+            echo "::endgroup::"
+          done
+
+      - name: cargo clippy
+        run: |
+          rustup component add clippy
+          for m in $CRATES; do
+            echo "::group::clippy $m"
+            (cd "$m" && cargo clippy --all-targets -- -D warnings)
+            echo "::endgroup::"
+          done

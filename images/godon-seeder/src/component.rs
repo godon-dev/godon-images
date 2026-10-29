@@ -809,7 +809,7 @@ impl WindmillDeployer {
                     if pattern_path.exists() && pattern_path.is_file() {
                         script_files.push(pattern_path.to_string_lossy().to_string());
                     } else if script_spec.path.is_none()
-                        || script_spec.path.as_ref().map_or(true, |p| p.is_empty())
+                        || script_spec.path.as_ref().is_none_or(|p| p.is_empty())
                     {
                         script_files = find_files_by_pattern(base_dir, &script_spec.pattern);
                     }

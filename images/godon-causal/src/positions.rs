@@ -225,7 +225,7 @@ pub async fn positions_view(
             continue;
         };
         let is_seek = terms.get("type").and_then(|t| t.as_str()) == Some("seek");
-        let live = live_senders.iter().any(|s| *s == sender);
+        let live = live_senders.contains(&sender);
         let kind = if !live {
             "orphaned"
         } else if is_seek {

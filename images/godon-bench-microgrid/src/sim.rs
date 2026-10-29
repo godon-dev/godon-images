@@ -50,6 +50,7 @@ pub struct Microgrid {
     pub cumulative_energy_kwh: f64,
     pub last_params: Option<ApplyRequest>,
     pub seed: u64,
+    #[allow(dead_code)] // kept: the seeded generator rides the state shape
     rng: ChaCha8Rng,
     pub coupling: CouplingState,
 }

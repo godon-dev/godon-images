@@ -1,7 +1,5 @@
-pub use ledger_reader::TrialRecord as LedgerTrialRecord;
 use ledger_reader::{record_from_row, TrialRecord, FETCH_TRIALS_SQL};
 use log::{debug, info};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio_postgres::Error;
 
@@ -535,7 +533,7 @@ pub fn parse_timestamp_secs(ts: &str) -> Option<f64> {
     let day: f64 = date_parts[2].parse().ok()?;
 
     let time_part = parts[1];
-    let (time_str, tz_offset_secs) = if let Some(pos) = time_part.find(|c| c == '+' || c == '-') {
+    let (time_str, tz_offset_secs) = if let Some(pos) = time_part.find(['+', '-']) {
         if pos >= 8 {
             (&time_part[..pos], parse_tz_offset(&time_part[pos..]))
         } else {
@@ -576,7 +574,7 @@ fn parse_tz_offset(s: &str) -> Option<f64> {
         return Some(0.0);
     }
     let sign = if s.starts_with('-') { -1.0 } else { 1.0 };
-    let cleaned = s.trim_start_matches(|c| c == '+' || c == '-');
+    let cleaned = s.trim_start_matches(['+', '-']);
     let parts: Vec<&str> = cleaned.split(':').collect();
     if parts.len() == 2 {
         let h: f64 = parts[0].parse().ok()?;
@@ -606,7 +604,7 @@ pub fn median(v: &[f64]) -> f64 {
     let mut sorted = v.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
+    if sorted.len().is_multiple_of(2) {
         (sorted[mid - 1] + sorted[mid]) / 2.0
     } else {
         sorted[mid]

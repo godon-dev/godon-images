@@ -56,7 +56,6 @@ struct ApplyRequest {
 /// GET /{node_id}/metrics/json — returns named scalar objectives.
 /// objective_0, objective_1, etc. — built dynamically from config.
 /// The systemtender reads via `key: objective_N` (scalar, not array).
-
 fn build_metrics_response(node_id: &str, tick: u64, objectives: &[f64]) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     map.insert(
@@ -325,7 +324,4 @@ fn default_config() -> BenchConfig {
     }
 }
 
-use sim::{
-    EdgeConfig as SimEdgeConfig, InteractionConfig as SimInteractionConfig, NodeConfig,
-    NoiseConfig as SimNoiseConfig,
-};
+use sim::{EdgeConfig as SimEdgeConfig, NodeConfig, NoiseConfig as SimNoiseConfig};

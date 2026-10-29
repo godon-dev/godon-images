@@ -1,3 +1,7 @@
+// the characterizer port keeps the python organ surface in full; not every
+// member is wired yet (its rung pending) — dead_code stays allowed until then.
+#![allow(dead_code)]
+
 mod ambience_store;
 mod ambiences;
 mod artifact;
@@ -31,7 +35,7 @@ use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 
 use detector::{CfarDetector, EdgeDetector};
-use graph::{BuildResult, CausalGraph, CausalNode};
+use graph::{CausalGraph, CausalNode};
 use serde_json::Value;
 use trial_reader::{mad, TrialReader};
 
@@ -77,8 +81,9 @@ struct AppState {
     walks_in_flight: tokio::sync::Mutex<std::collections::HashSet<String>>,
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, Default)]
 enum BuildStatus {
+    #[default]
     Idle,
     Building,
     Done {
@@ -90,12 +95,6 @@ enum BuildStatus {
         at: String,
         message: String,
     },
-}
-
-impl Default for BuildStatus {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 /// Boot-time archive connect with patience: Yugabyte takes minutes to
@@ -855,10 +854,8 @@ async fn steer_plan(
                         .await
                     {
                         Ok(by_ch) => match by_ch.get(channel.as_str()).cloned() {
-                            Some(series) => match wish_book::reading_bar(&series) {
-                                Some(bar) => Some((trial_reader::median(&series), bar)),
-                                None => None,
-                            },
+                            Some(series) => wish_book::reading_bar(&series)
+                                .map(|bar| (trial_reader::median(&series), bar)),
                             None => None,
                         },
                         Err(_) => None,
@@ -1204,7 +1201,7 @@ async fn rewalk(
     terms: &Value,
     terms_req: &planner::SteerPlanRequest,
     outcome_pair: Option<&(String, String)>,
-    group: &str,
+    _group: &str,
     // The outcome's banked neutral reading: the one translation
     // between the wish's absolute band and the walk's movement units.
     anchor: Option<f64>,
@@ -1256,7 +1253,7 @@ async fn rewalk(
         range[0].as_f64().unwrap_or(held),
         range[1].as_f64().unwrap_or(held),
     );
-    if !(range_lo < range_hi) {
+    if range_lo.partial_cmp(&range_hi) != Some(std::cmp::Ordering::Less) {
         return keep_walking();
     }
     let aim = terms_req
@@ -2045,11 +2042,8 @@ async fn steer_plan_get(
                 // plans only (multi-dial receipts are a later rung), and
                 // only curves that already exist — a receipt refines a
                 // measured path, it never invents one.
-                if (v == "missed" || v == "landed") && row.plan.is_some() {
-                    let moves = row.plan.as_ref().unwrap()["moves"]
-                        .as_array()
-                        .cloned()
-                        .unwrap_or_default();
+                if let (true, Some(plan)) = ((v == "missed" || v == "landed"), row.plan.as_ref()) {
+                    let moves = plan["moves"].as_array().cloned().unwrap_or_default();
                     if moves.len() == 1 {
                         let dial_sender = moves[0]["sender"].as_str().map(str::to_string);
                         let dial_param = moves[0]["param"].as_str().map(str::to_string);
@@ -2058,7 +2052,7 @@ async fn steer_plan_get(
                             (dial_sender, dial_param, setting)
                         {
                             let mut candidates: Vec<(String, String, f64, f64)> = Vec::new();
-                            for (name, receiver, channel, median, bar) in &receipts {
+                            for (_name, receiver, channel, median, bar) in &receipts {
                                 if let Some((neutral, _)) =
                                     state.anchor_for(receiver, channel).await
                                 {
@@ -2093,7 +2087,7 @@ async fn steer_plan_get(
                             if !to_bank.is_empty() {
                                 {
                                     let mut curves = state.curves.write().await;
-                                    for (receiver, channel, shift, bar, thr) in &to_bank {
+                                    for (receiver, channel, shift, _bar, thr) in &to_bank {
                                         curves.add_point(
                                             &dial_sender,
                                             receiver,
@@ -3888,7 +3882,7 @@ fn median_f64(v: &[f64]) -> f64 {
     let mut sorted = v.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
+    if sorted.len().is_multiple_of(2) {
         (sorted[mid - 1] + sorted[mid]) / 2.0
     } else {
         sorted[mid]

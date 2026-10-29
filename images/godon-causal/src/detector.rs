@@ -1,5 +1,5 @@
 use crate::graph::ChannelId;
-use crate::trial_reader::{mad, median, ProbeTrial, ProbeTrials, ReceiverTrial};
+use crate::trial_reader::{mad, median, ProbeTrials, ReceiverTrial};
 use serde::Serialize;
 
 // ─── Detection Result ───────────────────────────────────────────────
@@ -92,7 +92,7 @@ impl CfarDetector {
     /// Returns 0.0 if the signal can't be isolated (instant coupling or
     /// insufficient data) — which is the correct default for systems that
     /// respond within the same trial.
-    fn auto_derive_lag(sender: &ProbeTrials, receiver: &ProbeTrials, rounds: &[Round]) -> f64 {
+    fn auto_derive_lag(_sender: &ProbeTrials, receiver: &ProbeTrials, rounds: &[Round]) -> f64 {
         if rounds.is_empty() || receiver.receiver_hold_trials.is_empty() {
             return 0.0;
         }
@@ -131,7 +131,7 @@ impl CfarDetector {
 
             if let Some(rt) = responder {
                 let lag = rt.timestamp - round.push_start;
-                if lag >= 0.0 && lag < 120.0 {
+                if (0.0..120.0).contains(&lag) {
                     lags.push(lag);
                 }
             }
@@ -219,6 +219,7 @@ impl EdgeDetector for CfarDetector {
 }
 
 impl CfarDetector {
+    #[allow(clippy::too_many_arguments)]
     fn detect_channel(
         &self,
         _sender: &ProbeTrials,

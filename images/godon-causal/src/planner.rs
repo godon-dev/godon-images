@@ -565,7 +565,7 @@ fn branch_verdict(
         ));
     }
     reachable.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.total_cmp(&b.0)));
-    let (level, predicted_shift, n) = reachable[0];
+    let (level, predicted_shift, _n) = reachable[0];
     Ok(BranchVerdict::HillPick {
         setting: level,
         bar: sigma,
@@ -684,6 +684,7 @@ fn wander_floor_refusal(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn solve_claim(
     entries: &[CurveEntry],
     graph: Option<&CausalGraph>,
@@ -749,7 +750,7 @@ fn solve_claim(
         Some(crate::ambiences::AmbienceConsult::Patch {
             param,
             baseline,
-            anchor: entry_anchor,
+            anchor: _entry_anchor,
             points,
         }) => {
             // the patch's reachable reading span, in thermometer
@@ -2421,7 +2422,7 @@ mod tests {
                 assert_eq!(moves.len(), 1, "one dial carries one move");
                 let s = moves[0].setting;
                 assert!(
-                    s >= 40.0 && s <= 50.0,
+                    (40.0..=50.0).contains(&s),
                     "setting inside the joint span [40, 50], got {}",
                     s
                 );

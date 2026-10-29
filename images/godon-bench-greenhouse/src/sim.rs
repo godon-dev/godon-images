@@ -273,6 +273,7 @@ enum CropPhase {
 }
 
 impl Greenhouse {
+    #[allow(dead_code)] // kept: scaffolding constructor — suites construct via config paths
     /// Create a new greenhouse without coupling (backward compatible).
     pub fn new(scenario: Scenario, weather_mode: WeatherMode, seed: u64) -> Self {
         Self::with_coupling(scenario, weather_mode, seed, Vec::new(), 0.0)
@@ -639,7 +640,7 @@ impl Greenhouse {
             self.crop_quality += 0.0002 * dt;
         }
         // Scale by average damage factor
-        self.crop_quality *= (0.999 + 0.001 * avg_damage);
+        self.crop_quality *= 0.999 + 0.001 * avg_damage;
         self.crop_quality = self.crop_quality.clamp(0.0, 1.0);
 
         self.tick += 1;

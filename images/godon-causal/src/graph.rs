@@ -659,7 +659,7 @@ mod tests {
         assert_eq!(back.curves.len(), 1);
         assert_eq!(back.curves[0].sender_id, "A");
         assert_eq!(back.curves[0].state.points, graph.curves[0].state.points);
-        assert_eq!(back.curves[0].state.converged, true);
+        assert!(back.curves[0].state.converged);
         match &back.edges[0].response {
             ResponseFunction::CurveResponse { points, converged } => {
                 assert_eq!(points.len(), 3);

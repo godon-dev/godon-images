@@ -189,7 +189,7 @@ impl GoldenFixture {
         self.trials
             .iter()
             .map(|t| TrialRecord {
-                number: t.number as i64,
+                number: t.number,
                 kind: t.kind.clone(),
                 params: decode_map(t.params.clone()),
                 values: t.value.map(|v| vec![Some(v)]).unwrap_or_default(),

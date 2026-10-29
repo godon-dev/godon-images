@@ -4,8 +4,8 @@ use ledger_reader::{
 };
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
-use tokio_postgres::{Error, Row};
+use std::collections::HashMap;
+use tokio_postgres::Error;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StudyInfo {
@@ -276,7 +276,10 @@ impl OptunaReader {
             push_end: f64,
             pause_start: f64,
             pause_end: f64,
+            #[allow(dead_code)]
+            // kept: scaffolding counters — the reads ride the diagnostic debug tier
             push_count: usize,
+            #[allow(dead_code)]
             pause_count: usize,
         }
 
@@ -682,7 +685,7 @@ fn median(v: &[f64]) -> f64 {
     let mut sorted = v.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
+    if sorted.len().is_multiple_of(2) {
         (sorted[mid - 1] + sorted[mid]) / 2.0
     } else {
         sorted[mid]
@@ -723,7 +726,7 @@ pub fn parse_timestamp_secs(ts: &str) -> Option<f64> {
 
     // Split time from timezone offset
     let time_part = parts[1];
-    let (time_str, tz_offset_secs) = if let Some(pos) = time_part.find(|c| c == '+' || c == '-') {
+    let (time_str, tz_offset_secs) = if let Some(pos) = time_part.find(['+', '-']) {
         // Don't split on the '-' in the date or the '.' in seconds
         // Check that this + or - is after position 2 (HH:MM:SS minimum)
         if pos >= 8 {
@@ -770,7 +773,7 @@ fn parse_tz_offset(s: &str) -> Option<f64> {
         return Some(0.0);
     }
     let sign = if s.starts_with('-') { -1.0 } else { 1.0 };
-    let cleaned = s.trim_start_matches(|c| c == '+' || c == '-');
+    let cleaned = s.trim_start_matches(['+', '-']);
     let parts: Vec<&str> = cleaned.split(':').collect();
     if parts.len() == 2 {
         let h: f64 = parts[0].parse().ok()?;
@@ -788,6 +791,7 @@ fn parse_tz_offset(s: &str) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn test_impulse_detection_basic() {

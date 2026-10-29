@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
 
 // ─── Config ─────────────────────────────────────────────────────────
 
@@ -144,6 +143,8 @@ impl Default for NoiseConfig {
 
 #[derive(Debug, Clone)]
 pub struct NodeState {
+    #[allow(dead_code)]
+    // kept: the node's name — constructed by the config loader, reads ride the config paths
     pub id: String,
     pub config: NodeConfig,
     pub params: Vec<f64>,
@@ -188,11 +189,11 @@ impl NodeState {
             .map(|p| normalize(*p, self.config.param_lower, self.config.param_upper))
             .collect();
 
-        for obj_idx in 0..n_obj {
+        for (obj_idx, slot) in result.iter_mut().enumerate() {
             if let Some(row) = weights.get(obj_idx) {
                 for (param_idx, w) in row.iter().enumerate() {
                     if let Some(np) = normalized.get(param_idx) {
-                        result[obj_idx] += w * blend_base(base_a, base_b, p, *np);
+                        *slot += w * blend_base(base_a, base_b, p, *np);
                     }
                 }
             }
@@ -205,7 +206,7 @@ impl NodeState {
                         .iter()
                         .filter_map(|&pi| normalized.get(pi))
                         .product();
-                    result[obj_idx] += inter.weight * product;
+                    *slot += inter.weight * product;
                 }
             }
         }
@@ -223,11 +224,11 @@ impl NodeState {
             .iter()
             .map(|p| normalize(*p, self.config.param_lower, self.config.param_upper))
             .collect();
-        for obj_idx in 0..n_obj {
+        for (obj_idx, slot) in result.iter_mut().enumerate() {
             if let Some(row) = weights.get(obj_idx) {
                 for (param_idx, w) in row.iter().enumerate() {
                     if let Some(np) = normalized.get(param_idx) {
-                        result[obj_idx] += w * np;
+                        *slot += w * np;
                     }
                 }
             }
@@ -705,7 +706,8 @@ fn resolve_noise(mut noise: NoiseConfig) -> NoiseConfig {
             match ntype.as_str() {
                 "gaussian" => noise.gaussian_sigma = sigma,
                 "colored" => noise.colored_sigma = sigma,
-                "nonstationary" => noise.drift_rate = noise.drift_rate, // legacy drift_rate field
+                // legacy nonstationary drift rides its own field — nothing to map
+                "nonstationary" => {}
                 _ => noise.gaussian_sigma = sigma,
             }
         }

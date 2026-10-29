@@ -106,6 +106,7 @@ pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), E
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_curve_point(
     client: &tokio_postgres::Client,
     group_id: &str,
@@ -169,6 +170,7 @@ pub async fn load_curve_points(
         .collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Best-effort single-point persistence: log on failure, never propagate.
 /// Measurement serving must not fail because the DB is down.
 pub async fn persist_point(

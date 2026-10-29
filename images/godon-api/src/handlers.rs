@@ -97,7 +97,7 @@ fn still_creating(status: &str) -> bool {
 /// so the server bound always expires first — a timeout answers the
 /// row AS-IS, never an error.
 fn clamp_create_wait_timeout(timeout: Option<u64>) -> u64 {
-    timeout.unwrap_or(60).min(120).max(1)
+    timeout.unwrap_or(60).clamp(1, 120)
 }
 
 /// Poll cadence of the sync create wait.
