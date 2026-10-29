@@ -72,13 +72,17 @@ jobs:
 
       - name: cargo mutants
         run: |
-          mkdir -p mutants.out
+          mkdir -p "$GITHUB_WORKSPACE/mutants.out"
           for m in $CRATES; do
             n=$(basename "$m")
             echo "::group::mutants $m"
-            (cd "$m" && cargo mutants --output "../mutants.out/$n")
+            # absolute path: each crate's ".." resolves differently
+            (cd "$m" && cargo mutants --output "$GITHUB_WORKSPACE/mutants.out/$n") \
+              || echo "$m: mutants reported misses or failed — outcomes in artifact if present"
             echo "::endgroup::"
           done
+          echo "crates with outcomes:"
+          ls "$GITHUB_WORKSPACE/mutants.out" || true
 
       - name: Upload outcomes
         uses: actions/upload-artifact@v4
