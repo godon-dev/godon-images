@@ -227,3 +227,106 @@ async fn mcp_handler(
 async fn mcp_get_blocked() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registry() -> ToolRegistry {
+        use crate::client::GodonClient;
+        ToolRegistry::new(
+            GodonClient::new("localhost".into(), 8080, false),
+            GodonClient::new("localhost".into(), 9091, false),
+        )
+    }
+
+    fn req(method: &str, params: Option<serde_json::Value>) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: serde_json::json!(1),
+            method: method.into(),
+            params,
+        }
+    }
+
+    // ── the dispatch: every JSON-RPC method answers its exact shape ──
+
+    #[tokio::test]
+    async fn initialize_echoes_the_requested_protocol_version() {
+        let r = handle_request(
+            &registry(),
+            req(
+                "initialize",
+                Some(serde_json::json!({"protocolVersion": "2024-11-05"})),
+            ),
+        )
+        .await;
+        let result = r.result.unwrap();
+        assert_eq!(result["protocolVersion"], "2024-11-05");
+        assert_eq!(result["serverInfo"]["name"], "godon-mcp");
+    }
+
+    #[tokio::test]
+    async fn initialize_defaults_to_the_streamable_http_version() {
+        let r = handle_request(&registry(), req("initialize", None)).await;
+        assert_eq!(r.result.unwrap()["protocolVersion"], "2025-03-26");
+    }
+
+    #[tokio::test]
+    async fn initialized_notification_answers_null_result() {
+        let r = handle_request(&registry(), req("notifications/initialized", None)).await;
+        assert_eq!(r.result, Some(serde_json::Value::Null));
+        assert!(r.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn ping_answers_an_empty_object() {
+        let r = handle_request(&registry(), req("ping", None)).await;
+        assert_eq!(r.result, Some(serde_json::json!({})));
+    }
+
+    #[tokio::test]
+    async fn unknown_methods_get_the_standard_method_not_found_code() {
+        let r = handle_request(&registry(), req("workspace/whatever", None)).await;
+        let e = r.error.expect("must be an error response");
+        assert_eq!(e.code, -32601);
+        assert!(e.message.contains("workspace/whatever"));
+    }
+
+    // ── the tool catalog: names, uniqueness, required arguments ──
+
+    #[tokio::test]
+    async fn tools_list_carries_the_catalog_with_schemas() {
+        let r = handle_request(&registry(), req("tools/list", None)).await;
+        let tools = r.result.unwrap()["tools"].as_array().unwrap().clone();
+        assert!(
+            tools.len() >= 12,
+            "the catalog has grown past a dozen tools"
+        );
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        for expected in [
+            "systemtender_list",
+            "systemtender_get",
+            "systemtender_create",
+            "credential_list",
+        ] {
+            assert!(names.contains(&expected), "missing tool {}", expected);
+        }
+        let dupes = names.len() - names.iter().collect::<std::collections::HashSet<_>>().len();
+        assert_eq!(dupes, 0, "tool names must be unique");
+    }
+
+    #[tokio::test]
+    async fn the_id_demanding_tools_declare_their_required_argument() {
+        let r = handle_request(&registry(), req("tools/list", None)).await;
+        let tools = r.result.unwrap()["tools"].as_array().unwrap().clone();
+        let get = tools
+            .iter()
+            .find(|t| t["name"] == "systemtender_get")
+            .unwrap();
+        assert_eq!(
+            get["inputSchema"]["required"],
+            serde_json::json!(["systemtender_id"])
+        );
+    }
+}

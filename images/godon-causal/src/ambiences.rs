@@ -134,13 +134,6 @@ impl AmbienceRegistry {
             .push(point);
     }
 
-    /// Restore from persisted rows (boot).
-    pub fn restore(&self, rows: &[(String, String, String, String, String, f64, AmbiencePoint)]) {
-        for (group, tender, param, channel, baseline, anchor, point) in rows {
-            self.record(group, tender, param, channel, baseline, *anchor, *point);
-        }
-    }
-
     /// Every patch for one (group, tender, param, channel), any baseline.
     pub fn patches(
         &self,
@@ -340,10 +333,8 @@ pub fn patch_window(anchor: f64, param_range: Option<f64>, freshest: &[AmbienceP
 // ─── The planner's consult (what the ladder reads) ──────────────────
 
 /// The consult for one own-reading claim, keyed (receiver, channel).
-/// NoEntries leaves the chain ladder exactly as it was.
 #[derive(Debug, Clone)]
 pub enum AmbienceConsult {
-    NoEntries,
     /// Patches exist but none keyed at the current resting spot —
     /// the local ground drifted. Re-measure first.
     Drift {

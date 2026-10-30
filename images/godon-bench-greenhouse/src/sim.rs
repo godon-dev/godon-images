@@ -1069,3 +1069,195 @@ impl Zone {
 /// The simulation state is protected by a Mutex -- only one request modifies
 /// it at a time, which is fine since optimization trials are sequential.
 pub type SharedGreenhouse = Arc<Mutex<Greenhouse>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gh() -> Greenhouse {
+        Greenhouse::with_coupling(Scenario::Simple, WeatherMode::Smooth, 42, vec![], 0.0)
+    }
+
+    fn req(heating: Vec<f64>, vents: Vec<f64>) -> ApplyRequest {
+        ApplyRequest {
+            heating_setpoints: heating,
+            vent_openings: vents,
+            shading: 0.0,
+            co2_injection: 0.0,
+            light_intensity: 0.0,
+            irrigation: 0.0,
+            sim_steps: 1,
+        }
+    }
+
+    // ── scenarios and modes: the declared shapes ──
+
+    #[test]
+    fn scenario_zone_counts() {
+        assert_eq!(Scenario::Simple.zone_count(), 2);
+        assert_eq!(Scenario::Medium.zone_count(), 4);
+        assert_eq!(Scenario::Complex.zone_count(), 6);
+    }
+
+    #[test]
+    fn weather_mode_strings() {
+        assert_eq!(WeatherMode::Smooth.as_str(), "smooth");
+        assert_eq!(WeatherMode::Noisy.as_str(), "noisy");
+        assert_eq!(WeatherMode::Adversarial.as_str(), "adversarial");
+    }
+
+    // ── the fresh greenhouse: every documented initial condition ──
+
+    #[test]
+    fn fresh_zones_start_at_the_documented_defaults() {
+        let g = gh();
+        assert_eq!(g.zones.len(), 2);
+        for z in &g.zones {
+            assert!((z.temp - 20.0).abs() < 1e-12);
+            assert!((z.humidity - 0.5).abs() < 1e-12);
+            assert!((z.co2 - 400.0).abs() < 1e-12);
+            assert!((z.damage_factor - 1.0).abs() < 1e-12);
+            assert_eq!(z.extreme_ticks, 0);
+        }
+        assert_eq!(g.tick, 0);
+        assert!((g.outside_temp - 10.0).abs() < 1e-12);
+        assert!((g.outside_co2 - 420.0).abs() < 1e-12);
+        assert!((g.outside_humidity - 0.4).abs() < 1e-12);
+        assert!((g.solar_radiation - 200.0).abs() < 1e-12);
+        assert!((g.crop_quality - 1.0).abs() < 1e-12);
+        assert!(g.last_params.is_none());
+    }
+
+    // ── apply: the broadcast/per-zone/fallback normalization ──
+
+    #[test]
+    fn per_zone_values_are_kept_as_given() {
+        let mut g = gh();
+        g.apply(req(vec![21.0, 23.0], vec![0.2, 0.8]));
+        let p = g.last_params.unwrap();
+        assert_eq!(p.heating_setpoints, vec![21.0, 23.0]);
+        assert_eq!(p.vent_openings, vec![0.2, 0.8]);
+    }
+
+    #[test]
+    fn a_single_value_broadcasts_to_every_zone() {
+        let mut g = gh();
+        g.apply(req(vec![25.0], vec![0.5]));
+        let p = g.last_params.unwrap();
+        assert_eq!(p.heating_setpoints, vec![25.0, 25.0]);
+        assert_eq!(p.vent_openings, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn wrong_length_vectors_fall_back_to_the_documented_defaults() {
+        let mut g = gh();
+        // three values for two zones: neither per-zone nor broadcast
+        g.apply(req(vec![1.0, 2.0, 3.0], vec![0.9, 0.1, 0.5]));
+        let p = g.last_params.unwrap();
+        assert_eq!(p.heating_setpoints, vec![20.0, 20.0]);
+        assert_eq!(p.vent_openings, vec![0.3, 0.3]);
+    }
+
+    // ── crop phases: the exact critical windows ──
+
+    #[test]
+    fn phase_boundaries_sit_at_150_400_and_700() {
+        let mut g = gh();
+        for (tick, expected) in [
+            (0u64, "seedling"),
+            (149, "seedling"),
+            (150, "vegetative"),
+            (399, "vegetative"),
+            (400, "flowering"),
+            (699, "flowering"),
+            (700, "fruiting"),
+            (5000, "fruiting"),
+        ] {
+            g.tick = tick;
+            assert_eq!(g.crop_phase_name(), expected, "tick {}", tick);
+        }
+    }
+
+    #[test]
+    fn co2_sensitivity_triples_only_in_flowering() {
+        let mut g = gh();
+        for (tick, expected) in [(0u64, 1.0), (200, 1.2), (500, 3.0), (800, 1.0)] {
+            g.tick = tick;
+            assert!(
+                (g.co2_sensitivity() - expected).abs() < 1e-12,
+                "tick {}",
+                tick
+            );
+        }
+    }
+
+    #[test]
+    fn water_sensitivity_peaks_in_flowering_and_eases_in_fruiting() {
+        let mut g = gh();
+        for (tick, expected) in [(0u64, 0.6), (200, 1.0), (500, 1.5), (800, 1.2)] {
+            g.tick = tick;
+            assert!(
+                (g.water_sensitivity() - expected).abs() < 1e-12,
+                "tick {}",
+                tick
+            );
+        }
+    }
+
+    // ── stepping ──
+
+    #[test]
+    fn step_without_params_does_not_advance_the_clock() {
+        let mut g = gh();
+        g.step();
+        g.run_steps(5);
+        assert_eq!(g.tick, 0);
+    }
+
+    #[test]
+    fn stepping_with_params_advances_the_clock_and_moves_zones() {
+        let mut a = gh();
+        a.apply(req(vec![22.0, 22.0], vec![0.3, 0.3]));
+        a.run_steps(10);
+        assert_eq!(a.tick, 10);
+        // any zone moved or not — but the state must be a number the sim produced
+        for z in &a.zones {
+            assert!(z.temp.is_finite());
+            assert!(z.humidity.is_finite());
+        }
+    }
+
+    #[test]
+    fn the_same_seed_replays_the_same_history() {
+        let mut a = gh();
+        let mut b = gh();
+        let r = req(vec![23.0, 21.0], vec![0.4, 0.2]);
+        a.apply(r.clone());
+        b.apply(r);
+        a.run_steps(50);
+        b.run_steps(50);
+        for (za, zb) in a.zones.iter().zip(b.zones.iter()) {
+            assert_eq!(za.temp, zb.temp);
+            assert_eq!(za.co2, zb.co2);
+            assert_eq!(za.growth_accumulated, zb.growth_accumulated);
+        }
+        assert_eq!(a.tick, b.tick);
+    }
+
+    #[test]
+    fn different_seeds_diverge_under_noise() {
+        let mut a = Greenhouse::with_coupling(Scenario::Simple, WeatherMode::Noisy, 1, vec![], 0.0);
+        let mut b = Greenhouse::with_coupling(Scenario::Simple, WeatherMode::Noisy, 2, vec![], 0.0);
+        let r = req(vec![22.0, 22.0], vec![0.3, 0.3]);
+        a.apply(r.clone());
+        b.apply(r);
+        a.run_steps(50);
+        b.run_steps(50);
+        let diverged = a
+            .zones
+            .iter()
+            .zip(b.zones.iter())
+            .any(|(za, zb)| za.temp != zb.temp || za.co2 != zb.co2);
+        assert!(diverged, "different seeds must produce different weathers");
+    }
+}

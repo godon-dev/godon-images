@@ -1,7 +1,3 @@
-// the characterizer port keeps the python organ surface in full; not every
-// member is wired yet (its rung pending) — dead_code stays allowed until then.
-#![allow(dead_code)]
-
 mod ambience_store;
 mod ambiences;
 mod artifact;
@@ -14,7 +10,6 @@ mod otel;
 mod planner;
 mod positions;
 mod probe_curves;
-mod query;
 mod seek_plan;
 mod steer;
 mod trial_reader;
