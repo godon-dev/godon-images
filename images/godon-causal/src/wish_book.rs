@@ -68,9 +68,9 @@ pub async fn ensure_wish_tables(client: &tokio_postgres::Client) -> Result<(), E
             &[],
         )
         .await?;
-        client
-            .execute(
-                "CREATE TABLE IF NOT EXISTS outcome_anchors (\
+    client
+        .execute(
+            "CREATE TABLE IF NOT EXISTS outcome_anchors (\
                  group_id TEXT NOT NULL, \
                  receiver_id TEXT NOT NULL, \
                  channel TEXT NOT NULL, \
@@ -78,12 +78,12 @@ pub async fn ensure_wish_tables(client: &tokio_postgres::Client) -> Result<(), E
                  bar DOUBLE PRECISION NOT NULL, \
                  updated_tsz DOUBLE PRECISION NOT NULL, \
                  PRIMARY KEY (group_id, receiver_id, channel))",
-                &[],
-            )
-            .await?;
-        client
-            .execute(
-                "CREATE TABLE IF NOT EXISTS outcome_wander (\
+            &[],
+        )
+        .await?;
+    client
+        .execute(
+            "CREATE TABLE IF NOT EXISTS outcome_wander (\
                  group_id TEXT NOT NULL, \
                  receiver_id TEXT NOT NULL, \
                  channel TEXT NOT NULL, \
@@ -91,9 +91,9 @@ pub async fn ensure_wish_tables(client: &tokio_postgres::Client) -> Result<(), E
                  windows INTEGER NOT NULL, \
                  updated_tsz DOUBLE PRECISION NOT NULL, \
                  PRIMARY KEY (group_id, receiver_id, channel))",
-                &[],
-            )
-            .await?;
+            &[],
+        )
+        .await?;
     Ok(())
 }
 
@@ -122,24 +122,6 @@ pub async fn bank_outcome_anchor(
         )
         .await
         .map(|_| ())
-}
-
-/// The freshest banked neutral for the outcome channel, with its bar.
-/// None = no probe round has paused at neutral yet.
-pub async fn read_outcome_anchor(
-    client: &tokio_postgres::Client,
-    group_id: &str,
-    receiver_id: &str,
-    channel: &str,
-) -> Result<Option<(f64, f64)>, Error> {
-    let row = client
-        .query_opt(
-            "SELECT neutral, bar FROM outcome_anchors \
-             WHERE group_id = $1 AND receiver_id = $2 AND channel = $3",
-            &[&group_id, &receiver_id, &channel],
-        )
-        .await?;
-    Ok(row.map(|r| (r.get(0), r.get(1))))
 }
 
 /// The derived wander floor's price, banked per outcome channel: the
@@ -211,7 +193,13 @@ pub async fn load_outcome_wander(
         .into_iter()
         .map(|r| {
             let windows: i32 = r.get(4);
-            (r.get(0), r.get(1), r.get(2), r.get(3), windows.max(0) as usize)
+            (
+                r.get(0),
+                r.get(1),
+                r.get(2),
+                r.get(3),
+                windows.max(0) as usize,
+            )
         })
         .collect())
 }
@@ -345,10 +333,7 @@ pub async fn wish_for(
         // every tender holding one of the plan's moves must discover
         // the wish as its own, not only the first move's sender.
         if let Some(moves) = plan["moves"].as_array() {
-            if moves
-                .iter()
-                .any(|m| m["sender"].as_str() == Some(uuid))
-            {
+            if moves.iter().any(|m| m["sender"].as_str() == Some(uuid)) {
                 return Ok(Some((row.get::<_, String>(0), "sender")));
             }
         }
@@ -440,22 +425,6 @@ pub fn reading_bar(values: &[f64]) -> Option<f64> {
         .sum::<f64>()
         / (n as f64 - 1.0);
     Some(2.0 * var.sqrt() / (n as f64).sqrt())
-}
-
-/// How fresh the map is for one receiver: the newest curve-point timestamp,
-/// if any point exists. The re-plan trigger compares it against the miss.
-pub async fn latest_receiver_point_tsz(
-    client: &tokio_postgres::Client,
-    receiver_id: &str,
-) -> Result<Option<f64>, Error> {
-    let rows = client
-        .query(
-            "SELECT MAX(EXTRACT(EPOCH FROM written_at)::double precision) FROM curve_points \
-             WHERE receiver_id = $1",
-            &[&receiver_id],
-        )
-        .await?;
-    Ok(rows.into_iter().next().and_then(|r| r.get(0)))
 }
 
 // ─── The re-walk: bisection between known-bad and known-good ────────
@@ -572,6 +541,7 @@ pub struct WalkHint {
     pub phase: &'static str,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn next_hint(
     held: f64,
     miss_median: f64,
@@ -715,7 +685,7 @@ pub fn sign_flip(held: f64, miss_median: f64, journal: &[WalkPoint], slope: f64)
 pub fn budget_exhausted(budget: Option<u32>, walks_completed: usize) -> bool {
     match budget {
         None => false,
-        Some(b) => walks_completed >= 1 + b as usize,
+        Some(b) => walks_completed > b as usize,
     }
 }
 
@@ -768,25 +738,6 @@ pub async fn count_wish_events(
         .next()
         .map(|r| r.get::<_, i64>(0) as usize)
         .unwrap_or(0))
-}
-
-/// Latest tsz of any of `events` for the wish, optionally only before
-/// `before` — the dry-spell arithmetic's source.
-pub async fn latest_event_tsz(
-    client: &tokio_postgres::Client,
-    wish_id: &str,
-    events: &[&str],
-    before: Option<f64>,
-) -> Result<Option<f64>, Error> {
-    let rows = client
-        .query(
-            "SELECT MAX(tsz) FROM wish_events \
-             WHERE wish_id = $1 AND event = ANY($2) \
-             AND ($3::double precision IS NULL OR tsz < $3)",
-            &[&wish_id, &events, &before],
-        )
-        .await?;
-    Ok(rows.into_iter().next().and_then(|r| r.get(0)))
 }
 
 /// The detail payload of the latest `event`, parsed — the miss verdict's

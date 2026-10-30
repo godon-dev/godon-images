@@ -94,13 +94,21 @@ pub struct ComponentInfo {
 pub fn parse_component_config(yaml_path: &Path) -> Result<ComponentConfig> {
     log::info!("Parsing component config: {}", yaml_path.display());
 
-    let content = std::fs::read_to_string(yaml_path)
-        .context(format!("Failed to read component config: {}", yaml_path.display()))?;
+    let content = std::fs::read_to_string(yaml_path).context(format!(
+        "Failed to read component config: {}",
+        yaml_path.display()
+    ))?;
 
-    let config: ComponentConfig = serde_yaml::from_str(&content)
-        .context(format!("Failed to parse component YAML: {}", yaml_path.display()))?;
+    let config: ComponentConfig = serde_yaml::from_str(&content).context(format!(
+        "Failed to parse component YAML: {}",
+        yaml_path.display()
+    ))?;
 
-    log::info!("Parsed component '{}' with {} scripts", config.name, config.scripts.len());
+    log::info!(
+        "Parsed component '{}' with {} scripts",
+        config.name,
+        config.scripts.len()
+    );
 
     Ok(config)
 }
@@ -119,7 +127,11 @@ pub fn discover_components(source_dirs: &[String]) -> Result<Vec<ComponentInfo>>
 
         for entry in WalkDir::new(source_dir).into_iter().filter_map(|e| e.ok()) {
             let entry_path = entry.path();
-            if entry_path.file_name().map(|n| n == "component.yaml").unwrap_or(false) {
+            if entry_path
+                .file_name()
+                .map(|n| n == "component.yaml")
+                .unwrap_or(false)
+            {
                 log::info!("Found component config: {}", entry_path.display());
                 match parse_component_config(entry_path) {
                     Ok(config) => {
@@ -134,7 +146,11 @@ pub fn discover_components(source_dirs: &[String]) -> Result<Vec<ComponentInfo>>
                         });
                     }
                     Err(e) => {
-                        log::error!("Failed to parse component config {}: {}", entry_path.display(), e);
+                        log::error!(
+                            "Failed to parse component config {}: {}",
+                            entry_path.display(),
+                            e
+                        );
                     }
                 }
             }
@@ -161,11 +177,16 @@ fn find_files_by_pattern(base_dir: &Path, pattern: &str) -> Vec<String> {
         return files;
     }
 
-    let file_pattern = pattern_path.file_name()
+    let file_pattern = pattern_path
+        .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("*");
 
-    log::debug!("Searching for files matching pattern: {} in {}", pattern, parent.display());
+    log::debug!(
+        "Searching for files matching pattern: {} in {}",
+        pattern,
+        parent.display()
+    );
 
     if let Ok(paths) = glob::glob(&parent.join(file_pattern).to_string_lossy()) {
         for entry in paths.flatten() {
@@ -232,14 +253,17 @@ impl WindmillDeployer {
     pub fn workspace_exists(&self, workspace: &str) -> Result<bool> {
         let url = format!("{}/api/workspaces/exists", self.base_url);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .headers(self.auth_headers())
             .json(&json!({ "id": workspace }))
             .send()
             .context("Failed to check workspace existence")?;
 
-        let body = response.text().context("Failed to read workspace check response")?;
+        let body = response
+            .text()
+            .context("Failed to read workspace check response")?;
         Ok(body.trim().to_lowercase() == "true")
     }
 
@@ -253,7 +277,8 @@ impl WindmillDeployer {
 
         let url = format!("{}/api/workspaces/create", self.base_url);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .headers(self.auth_headers())
             .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -277,7 +302,8 @@ impl WindmillDeployer {
 
         let url = format!("{}/api/w/{}/folders/create", self.base_url, workspace);
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .headers(self.auth_headers())
             .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -295,16 +321,22 @@ impl WindmillDeployer {
     }
 
     pub fn script_exists(&self, workspace: &str, script_path: &str) -> Result<bool> {
-        let url = format!("{}/api/w/{}/scripts/exists/p/{}", self.base_url, workspace, script_path);
+        let url = format!(
+            "{}/api/w/{}/scripts/exists/p/{}",
+            self.base_url, workspace, script_path
+        );
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .headers(self.auth_headers())
             .send()
             .context("Failed to check script existence")?;
 
         if response.status().is_success() {
-            let body = response.json::<bool>().context("Failed to parse script exists response")?;
+            let body = response
+                .json::<bool>()
+                .context("Failed to parse script exists response")?;
             Ok(body)
         } else {
             Ok(false)
@@ -312,16 +344,22 @@ impl WindmillDeployer {
     }
 
     pub fn flow_exists(&self, workspace: &str, flow_path: &str) -> Result<bool> {
-        let url = format!("{}/api/w/{}/flows/exists/{}", self.base_url, workspace, flow_path);
+        let url = format!(
+            "{}/api/w/{}/flows/exists/{}",
+            self.base_url, workspace, flow_path
+        );
 
-        let response = self.client
+        let response = self
+            .client
             .get(&url)
             .headers(self.auth_headers())
             .send()
             .context("Failed to check flow existence")?;
 
         if response.status().is_success() {
-            let body = response.json::<bool>().context("Failed to parse flow exists response")?;
+            let body = response
+                .json::<bool>()
+                .context("Failed to parse flow exists response")?;
             Ok(body)
         } else {
             Ok(false)
@@ -355,7 +393,8 @@ impl WindmillDeployer {
             payload["tag"] = json!(tag);
         }
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .headers(self.auth_headers())
             .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -367,7 +406,11 @@ impl WindmillDeployer {
             log::info!("Successfully deployed script: {}", script_path);
             Ok(())
         } else {
-            anyhow::bail!("Failed to deploy script {}: {}", script_path, response.status())
+            anyhow::bail!(
+                "Failed to deploy script {}: {}",
+                script_path,
+                response.status()
+            )
         }
     }
 
@@ -380,8 +423,8 @@ impl WindmillDeployer {
     ) -> Result<()> {
         let url = format!("{}/api/w/{}/flows/create", self.base_url, workspace);
 
-        let mut flow_value: serde_json::Value = serde_yaml::from_str(flow_yaml)
-            .context("Failed to parse flow YAML")?;
+        let mut flow_value: serde_json::Value =
+            serde_yaml::from_str(flow_yaml).context("Failed to parse flow YAML")?;
 
         if !settings.summary.is_empty() {
             flow_value["summary"] = json!(settings.summary);
@@ -408,7 +451,8 @@ impl WindmillDeployer {
             }
         }
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .headers(self.auth_headers())
             .header(reqwest::header::CONTENT_TYPE, "application/json")
@@ -433,7 +477,10 @@ impl WindmillDeployer {
         file_path: &str,
     ) -> Result<()> {
         if self.script_exists(workspace, script_path)? {
-            log::info!("Script already exists, skipping deployment: {}", script_path);
+            log::info!(
+                "Script already exists, skipping deployment: {}",
+                script_path
+            );
             return Ok(());
         }
 
@@ -450,7 +497,12 @@ impl WindmillDeployer {
                         );
                         return Err(e);
                     }
-                    log::warn!("Attempt {} failed for script {}: {}", attempt + 1, script_path, e);
+                    log::warn!(
+                        "Attempt {} failed for script {}: {}",
+                        attempt + 1,
+                        script_path,
+                        e
+                    );
                     log::info!("Retrying in {} seconds...", self.retry_delay);
                     thread::sleep(Duration::from_secs(self.retry_delay));
                 }
@@ -485,7 +537,12 @@ impl WindmillDeployer {
                         );
                         return Err(e);
                     }
-                    log::warn!("Attempt {} failed for flow {}: {}", attempt + 1, flow_path, e);
+                    log::warn!(
+                        "Attempt {} failed for flow {}: {}",
+                        attempt + 1,
+                        flow_path,
+                        e
+                    );
                     log::info!("Retrying in {} seconds...", self.retry_delay);
                     thread::sleep(Duration::from_secs(self.retry_delay));
                 }
@@ -536,7 +593,9 @@ impl WindmillDeployer {
             .context("Failed to check schedule existence")?;
 
         if response.status().is_success() {
-            let body = response.json::<bool>().context("Failed to parse schedule exists response")?;
+            let body = response
+                .json::<bool>()
+                .context("Failed to parse schedule exists response")?;
             Ok(body)
         } else {
             Ok(false)
@@ -617,7 +676,12 @@ impl WindmillDeployer {
                         );
                         return Err(e);
                     }
-                    log::warn!("Attempt {} failed for schedule {}: {}", attempt + 1, schedule_path, e);
+                    log::warn!(
+                        "Attempt {} failed for schedule {}: {}",
+                        attempt + 1,
+                        schedule_path,
+                        e
+                    );
                     log::info!("Retrying in {} seconds...", self.retry_delay);
                     thread::sleep(Duration::from_secs(self.retry_delay));
                 }
@@ -693,7 +757,11 @@ impl WindmillDeployer {
                 &script_path,
                 &format!("{} - declared repeating trigger", component.name),
             ) {
-                log::error!("Failed to deploy schedule {} after retries: {}", schedule_path, e);
+                log::error!(
+                    "Failed to deploy schedule {} after retries: {}",
+                    schedule_path,
+                    e
+                );
                 failures += 1;
             }
         }
@@ -718,7 +786,10 @@ impl WindmillDeployer {
         }
 
         for script_spec in &component.scripts {
-            if script_spec.script.is_some() || script_spec.sandbox.is_some() || script_spec.tag_env.is_some() {
+            if script_spec.script.is_some()
+                || script_spec.sandbox.is_some()
+                || script_spec.tag_env.is_some()
+            {
                 failures += self.deploy_sandbox_script(workspace, component, script_spec);
                 continue;
             }
@@ -737,7 +808,9 @@ impl WindmillDeployer {
                     let pattern_path = base_dir.join(&script_spec.pattern);
                     if pattern_path.exists() && pattern_path.is_file() {
                         script_files.push(pattern_path.to_string_lossy().to_string());
-                    } else if script_spec.path.is_none() || script_spec.path.as_ref().map_or(true, |p| p.is_empty()) {
+                    } else if script_spec.path.is_none()
+                        || script_spec.path.as_ref().is_none_or(|p| p.is_empty())
+                    {
                         script_files = find_files_by_pattern(base_dir, &script_spec.pattern);
                     }
                 }
@@ -773,7 +846,11 @@ impl WindmillDeployer {
                             &script_spec.settings,
                             &script_file,
                         ) {
-                            log::error!("Failed to deploy script {} after retries: {}", script_file, e);
+                            log::error!(
+                                "Failed to deploy script {} after retries: {}",
+                                script_file,
+                                e
+                            );
                             failures += 1;
                         }
                     }
@@ -1003,28 +1080,356 @@ pub fn seed_workspace(
         }
 
         if !component.scripts.is_empty() {
-            let script_failures = deployer.deploy_component_scripts(&target_workspace, component, component_dir);
+            let script_failures =
+                deployer.deploy_component_scripts(&target_workspace, component, component_dir);
             total_failures += script_failures;
         }
 
         if !component.schedules.is_empty() {
-            let schedule_failures = deployer.deploy_component_schedules(&target_workspace, component);
+            let schedule_failures =
+                deployer.deploy_component_schedules(&target_workspace, component);
             total_failures += schedule_failures;
         }
 
         if let Some(ref flows) = component.flows {
             if !flows.is_empty() {
-                let flow_failures = deployer.deploy_component_flows(&target_workspace, component, component_dir);
+                let flow_failures =
+                    deployer.deploy_component_flows(&target_workspace, component, component_dir);
                 total_failures += flow_failures;
             }
         }
     }
 
     if total_failures > 0 {
-        log::error!("Component deployment completed with {} failures", total_failures);
+        log::error!(
+            "Component deployment completed with {} failures",
+            total_failures
+        );
     } else {
         log::info!("Component deployment completed successfully");
     }
 
     Ok(total_failures)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("godon-seeder-test-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // ── the cadence converter: the schedule grammar's one rule-set ──
+
+    #[test]
+    fn cron_whole_seconds_under_a_minute_step_the_seconds_field() {
+        assert_eq!(
+            WindmillDeployer::every_to_cron(30).unwrap(),
+            "*/30 * * * * *"
+        );
+        assert_eq!(WindmillDeployer::every_to_cron(1).unwrap(), "*/1 * * * * *");
+        assert_eq!(
+            WindmillDeployer::every_to_cron(59).unwrap(),
+            "*/59 * * * * *"
+        );
+    }
+
+    #[test]
+    fn cron_one_minute_is_the_plain_minute_tick() {
+        assert_eq!(WindmillDeployer::every_to_cron(60).unwrap(), "0 * * * * *");
+    }
+
+    #[test]
+    fn cron_whole_minutes_under_an_hour_step_the_minute_field() {
+        assert_eq!(
+            WindmillDeployer::every_to_cron(120).unwrap(),
+            "0 */2 * * * *"
+        );
+        assert_eq!(
+            WindmillDeployer::every_to_cron(59 * 60).unwrap(),
+            "0 */59 * * * *"
+        );
+    }
+
+    #[test]
+    fn cron_refuses_zero_negative_and_non_whole_cadences() {
+        assert!(WindmillDeployer::every_to_cron(0).is_err());
+        assert!(WindmillDeployer::every_to_cron(-60).is_err());
+        // 90s is neither whole seconds under a minute nor a whole minute
+        assert!(WindmillDeployer::every_to_cron(90).is_err());
+        // an hour and beyond is out of the supported band
+        assert!(WindmillDeployer::every_to_cron(3600).is_err());
+    }
+
+    // ── the language map ──
+
+    #[test]
+    fn language_follows_the_extension() {
+        assert_eq!(detect_language("run.py"), "python3");
+        assert_eq!(detect_language("run.js"), "deno");
+        assert_eq!(detect_language("run.go"), "go");
+        assert_eq!(detect_language("run.sh"), "bash");
+        assert_eq!(detect_language("run.sql"), "postgresql");
+        assert_eq!(detect_language("run.ts"), "nativets");
+        assert_eq!(detect_language("playbook.yml"), "ansible");
+        assert_eq!(detect_language("playbook.yaml"), "ansible");
+    }
+
+    #[test]
+    fn unknown_extensions_default_to_python() {
+        assert_eq!(detect_language("run.rb"), "python3");
+        assert_eq!(detect_language("no-extension"), "python3");
+    }
+
+    // ── pattern → files ──
+
+    #[test]
+    fn pattern_exact_file_returns_that_file() {
+        let root = temp_root("exact");
+        std::fs::write(root.join("a.ts"), "x").unwrap();
+        let files = find_files_by_pattern(&root, "a.ts");
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("a.ts"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pattern_wildcard_returns_matching_files_only() {
+        let root = temp_root("glob");
+        std::fs::write(root.join("a.ts"), "x").unwrap();
+        std::fs::write(root.join("b.ts"), "x").unwrap();
+        std::fs::write(root.join("c.py"), "x").unwrap();
+        let files = find_files_by_pattern(&root, "*.ts");
+        assert_eq!(files.len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pattern_in_a_missing_directory_is_empty_not_an_error() {
+        let root = temp_root("missing");
+        let files = find_files_by_pattern(&root.join("nowhere"), "*.ts");
+        assert!(files.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── component config parsing ──
+
+    #[test]
+    fn config_parses_the_full_shape() {
+        let root = temp_root("cfgfull");
+        let cfg_path = root.join("component.yaml");
+        std::fs::write(
+            &cfg_path,
+            "name: causal\nworkspace: godon\ntarget: causal\n\
+             scripts:\n  - pattern: '*.py'\n    path: src\n    settings:\n      summary: s\n      timeout: 30\n\
+             schedules:\n  - script: duty\n    every_seconds: 120\n",
+        )
+        .unwrap();
+        let cfg = parse_component_config(&cfg_path).unwrap();
+        assert_eq!(cfg.name, "causal");
+        assert_eq!(cfg.workspace, "godon");
+        assert_eq!(cfg.target, "causal");
+        assert_eq!(cfg.scripts.len(), 1);
+        assert_eq!(cfg.scripts[0].pattern, "*.py");
+        assert_eq!(cfg.scripts[0].path.as_deref(), Some("src"));
+        assert_eq!(cfg.scripts[0].settings.summary, "s");
+        assert_eq!(cfg.scripts[0].settings.timeout, Some(30));
+        assert!(cfg.flows.is_none());
+        assert_eq!(cfg.schedules.len(), 1);
+        assert_eq!(cfg.schedules[0].script, "duty");
+        assert_eq!(cfg.schedules[0].every_seconds, 120);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn config_defaults_when_fields_are_absent() {
+        let root = temp_root("cfgdef");
+        let cfg_path = root.join("component.yaml");
+        std::fs::write(&cfg_path, "").unwrap();
+        let cfg = parse_component_config(&cfg_path).unwrap();
+        assert_eq!(cfg.name, "");
+        assert_eq!(cfg.workspace, "");
+        assert_eq!(cfg.target, "");
+        assert!(cfg.scripts.is_empty());
+        assert!(cfg.schedules.is_empty());
+        assert!(cfg.flows.is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn config_refuses_broken_yaml() {
+        let root = temp_root("cfgbad");
+        let cfg_path = root.join("component.yaml");
+        std::fs::write(&cfg_path, "{not yaml").unwrap();
+        assert!(parse_component_config(&cfg_path).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn script_settings_wire_shape_omits_unset_optionals() {
+        let plain = ScriptSettings {
+            summary: "s".into(),
+            description: String::new(),
+            timeout: None,
+            tag: None,
+        };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("timeout"));
+        assert!(!json.contains("tag"));
+        let pinned = ScriptSettings {
+            timeout: Some(45),
+            tag: Some("robot".into()),
+            ..plain.clone()
+        };
+        let json = serde_json::to_string(&pinned).unwrap();
+        assert!(json.contains("\"timeout\":45"));
+        assert!(json.contains("\"tag\":\"robot\""));
+    }
+
+    // ── discovery ──
+
+    #[test]
+    fn discovery_finds_nested_components_and_skips_broken_ones() {
+        let root = temp_root("disc");
+        std::fs::create_dir_all(root.join("alpha/inner")).unwrap();
+        std::fs::create_dir_all(root.join("beta")).unwrap();
+        std::fs::write(
+            root.join("alpha/component.yaml"),
+            "name: alpha\ntarget: a\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("alpha/inner/component.yaml"),
+            "name: inner\ntarget: i\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("beta/component.yaml"), "{broken").unwrap();
+
+        let found = discover_components(&[root.to_string_lossy().to_string()]).unwrap();
+        let mut names: Vec<&str> = found.iter().map(|c| c.config.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["alpha", "inner"]);
+        // each component carries its own directory
+        for c in &found {
+            let dir = std::path::Path::new(&c.directory);
+            assert!(dir.join("component.yaml").exists());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn discovery_tolerates_a_missing_source_dir() {
+        let root = temp_root("discmiss");
+        let found =
+            discover_components(&[root.join("absent").to_string_lossy().to_string()]).unwrap();
+        assert!(found.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── the safety doors: refusals happen before any network call ──
+
+    use std::env;
+
+    fn deployer() -> WindmillDeployer {
+        env::set_var("WM_TOKEN", "test-token");
+        WindmillDeployer::new(0, 0).expect("deployer constructs with a token present")
+    }
+
+    fn spec(
+        script: Option<&str>,
+        pattern: &str,
+        sandbox: Option<&str>,
+        tag_env: Option<&str>,
+    ) -> ScriptSpec {
+        ScriptSpec {
+            pattern: pattern.to_string(),
+            script: script.map(str::to_string),
+            sandbox: sandbox.map(str::to_string),
+            tag_env: tag_env.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sandbox_refuses_without_a_script_name() {
+        let d = deployer();
+        let cfg = ComponentConfig::default();
+        // sandbox set but no script name: refuses without touching the network
+        let failures = d.deploy_sandbox_script("w", &cfg, &spec(None, "", Some("img"), Some("T")));
+        assert_eq!(failures, 1);
+    }
+
+    #[test]
+    fn sandbox_refuses_script_plus_pattern_ambiguity() {
+        let d = deployer();
+        let cfg = ComponentConfig::default();
+        let failures =
+            d.deploy_sandbox_script("w", &cfg, &spec(Some("s"), "*.py", Some("img"), Some("T")));
+        assert_eq!(failures, 1);
+    }
+
+    #[test]
+    fn sandbox_refuses_missing_sandbox_or_tag_env() {
+        let d = deployer();
+        let cfg = ComponentConfig::default();
+        // no sandbox image
+        assert_eq!(
+            d.deploy_sandbox_script("w", &cfg, &spec(Some("s"), "", None, Some("T"))),
+            1
+        );
+        // no tag env - an image ref that could drift to :latest is refused
+        assert_eq!(
+            d.deploy_sandbox_script("w", &cfg, &spec(Some("s"), "", Some("img"), None)),
+            1
+        );
+    }
+
+    #[test]
+    fn sandbox_refuses_when_the_tag_env_is_unset_or_blank() {
+        let d = deployer();
+        let cfg = ComponentConfig::default();
+        env::remove_var("GODON_SEEDER_TEST_TAG");
+        assert_eq!(
+            d.deploy_sandbox_script(
+                "w",
+                &cfg,
+                &spec(Some("s"), "", Some("img"), Some("GODON_SEEDER_TEST_TAG"))
+            ),
+            1
+        );
+        env::set_var("GODON_SEEDER_TEST_TAG", "   ");
+        assert_eq!(
+            d.deploy_sandbox_script(
+                "w",
+                &cfg,
+                &spec(Some("s"), "", Some("img"), Some("GODON_SEEDER_TEST_TAG"))
+            ),
+            1
+        );
+        env::remove_var("GODON_SEEDER_TEST_TAG");
+    }
+
+    #[test]
+    fn schedule_refuses_nameless_script_and_targetless_component() {
+        let d = deployer();
+        // a schedule without its script name
+        let mut cfg = ComponentConfig {
+            target: "t".into(),
+            schedules: vec![ScheduleSpec {
+                script: "  ".into(),
+                every_seconds: 60,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(d.deploy_component_schedules("w", &cfg), 1);
+        // a schedule whose component carries no target
+        cfg.target = String::new();
+        cfg.schedules[0].script = "duty".into();
+        assert_eq!(d.deploy_component_schedules("w", &cfg), 1);
+    }
 }

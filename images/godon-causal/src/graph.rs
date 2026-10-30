@@ -48,16 +48,6 @@ impl ResponseFunction {
             }
         }
     }
-
-    /// Evaluate the response at an absolute parameter level.
-    /// CurveResponse interpolates on the measured curve (clamped at the
-    /// measured range); StepResponse falls back to the linear model.
-    pub fn eval_level(&self, level: f64) -> f64 {
-        match self {
-            ResponseFunction::StepResponse { sensitivity, .. } => sensitivity * level,
-            ResponseFunction::CurveResponse { points, .. } => interp_curve(level, points),
-        }
-    }
 }
 
 /// Least-squares slope through (x, y) points; 0.0 for fewer than 2 points.
@@ -75,36 +65,6 @@ fn linear_regression_slope(points: &[(f64, f64)]) -> f64 {
         return 0.0;
     }
     (n * sxy - sx * sy) / denom
-}
-
-/// Linear interpolation on a curve, clamped outside the measured range.
-fn interp_curve(level: f64, points: &[(f64, f64)]) -> f64 {
-    if points.is_empty() {
-        return 0.0;
-    }
-    let sorted: Vec<(f64, f64)> = {
-        let mut v = points.to_vec();
-        v.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-        v
-    };
-    if level <= sorted[0].0 {
-        return sorted[0].1;
-    }
-    if level >= sorted[sorted.len() - 1].0 {
-        return sorted[sorted.len() - 1].1;
-    }
-    for i in 0..sorted.len() - 1 {
-        let (x0, y0) = sorted[i];
-        let (x1, y1) = sorted[i + 1];
-        if x0 <= level && level <= x1 {
-            if (x1 - x0).abs() < 1e-12 {
-                return y0;
-            }
-            let t = (level - x0) / (x1 - x0);
-            return y0 + t * (y1 - y0);
-        }
-    }
-    sorted[sorted.len() - 1].1
 }
 
 // ─── Characterized Edge ─────────────────────────────────────────────
@@ -210,53 +170,8 @@ impl CausalGraph {
             .collect()
     }
 
-    pub fn edges_between(&self, a: &str, b: &str) -> Vec<&CharacterizedEdge> {
-        self.edges
-            .iter()
-            .filter(|e| (e.sender_id == a && e.receiver_id == b) || (e.sender_id == b && e.receiver_id == a))
-            .collect()
-    }
-
     pub fn detected_edges(&self) -> Vec<&CharacterizedEdge> {
         self.edges.iter().filter(|e| e.detected).collect()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.edges.is_empty()
-    }
-
-    pub fn summary(&self) -> GraphSummary {
-        let detected: Vec<&CharacterizedEdge> = self.detected_edges();
-        let avg_confidence = if detected.is_empty() {
-            0.0
-        } else {
-            detected.iter().map(|e| e.confidence).sum::<f64>() / detected.len() as f64
-        };
-
-        let strongest = detected
-            .iter()
-            .max_by(|a, b| {
-                a.rising_edge
-                    .abs()
-                    .partial_cmp(&b.rising_edge.abs())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|e| EdgeSummary {
-                sender_id: e.sender_id.clone(),
-                receiver_id: e.receiver_id.clone(),
-                channel: e.channel.clone(),
-                rising_edge: e.rising_edge,
-                confidence: e.confidence,
-            });
-
-        GraphSummary {
-            node_count: self.nodes.len(),
-            edge_count: self.edges.len(),
-            detected_edge_count: detected.len(),
-            avg_confidence,
-            strongest_edge: strongest,
-            built_at: self.built_at.clone(),
-        }
     }
 
     /// Single-hop prediction (preserved for backward compat).
@@ -353,48 +268,29 @@ impl CausalGraph {
         }
 
         best.into_iter()
-            .map(|((receiver_id, channel), (composed_sens, confidence, path))| {
-                let shift = composed_sens * impulse_scale;
-                let noise_floor = detected
-                    .iter()
-                    .find(|e| e.receiver_id == receiver_id && e.channel == channel)
-                    .map(|e| e.noise_floor)
-                    .unwrap_or(1e-12);
-                Prediction {
-                    sender_id: sender_id.to_string(),
-                    receiver_id,
-                    channel,
-                    impulse_scale,
-                    predicted_shift: shift,
-                    confidence,
-                    noise_floor,
-                    snr_estimate: shift.abs() / noise_floor.max(1e-12),
-                    path,
-                }
-            })
+            .map(
+                |((receiver_id, channel), (composed_sens, confidence, path))| {
+                    let shift = composed_sens * impulse_scale;
+                    let noise_floor = detected
+                        .iter()
+                        .find(|e| e.receiver_id == receiver_id && e.channel == channel)
+                        .map(|e| e.noise_floor)
+                        .unwrap_or(1e-12);
+                    Prediction {
+                        sender_id: sender_id.to_string(),
+                        receiver_id,
+                        channel,
+                        impulse_scale,
+                        predicted_shift: shift,
+                        confidence,
+                        noise_floor,
+                        snr_estimate: shift.abs() / noise_floor.max(1e-12),
+                        path,
+                    }
+                },
+            )
             .collect()
     }
-}
-
-// ─── Summary Types ──────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize)]
-pub struct EdgeSummary {
-    pub sender_id: String,
-    pub receiver_id: String,
-    pub channel: ChannelId,
-    pub rising_edge: f64,
-    pub confidence: f64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct GraphSummary {
-    pub node_count: usize,
-    pub edge_count: usize,
-    pub detected_edge_count: usize,
-    pub avg_confidence: f64,
-    pub strongest_edge: Option<EdgeSummary>,
-    pub built_at: String,
 }
 
 // ─── Prediction ─────────────────────────────────────────────────────
@@ -410,20 +306,6 @@ pub struct Prediction {
     pub noise_floor: f64,
     pub snr_estimate: f64,
     pub path: Vec<String>,
-}
-
-// ─── Build Result ───────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize)]
-pub struct BuildResult {
-    pub status: String,
-    pub systemtenders_scanned: usize,
-    pub pairs_evaluated: usize,
-    pub edges_detected: usize,
-    pub edges_total: usize,
-    pub duration_secs: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
 }
 
 #[cfg(test)]
@@ -522,10 +404,7 @@ mod tests {
         // node-4: three-hop, sensitivity 0.7 × 0.5 × 0.3 = 0.105
         let p4 = &sorted[2];
         assert_eq!(p4.receiver_id, "node-4");
-        assert_eq!(
-            p4.path,
-            vec!["node-1", "node-2", "node-3", "node-4"]
-        );
+        assert_eq!(p4.path, vec!["node-1", "node-2", "node-3", "node-4"]);
         assert!(
             (p4.predicted_shift - 0.105).abs() < 0.001,
             "node-4 shift should be ~0.105, got {}",
@@ -602,19 +481,6 @@ mod tests {
     }
 
     #[test]
-    fn test_curve_response_eval_level_interpolates() {
-        // Saturating curve: rises 0→1 over levels 0→20, flat afterwards.
-        let rf = ResponseFunction::CurveResponse {
-            points: vec![(0.0, 0.0), (20.0, 1.0), (40.0, 1.0)],
-            converged: true,
-        };
-        assert!((rf.eval_level(10.0) - 0.5).abs() < 1e-9, "midpoint interpolation");
-        assert!((rf.eval_level(30.0) - 1.0).abs() < 1e-9, "flat region");
-        assert!((rf.eval_level(50.0) - 1.0).abs() < 1e-9, "clamped above range (saturation)");
-        assert!((rf.eval_level(-5.0) - 0.0).abs() < 1e-9, "clamped below range");
-    }
-
-    #[test]
     fn test_artifact_roundtrip_with_curves() {
         use crate::probe_curves::{CurveEntry, CurveState};
 
@@ -649,7 +515,7 @@ mod tests {
         assert_eq!(back.curves.len(), 1);
         assert_eq!(back.curves[0].sender_id, "A");
         assert_eq!(back.curves[0].state.points, graph.curves[0].state.points);
-        assert_eq!(back.curves[0].state.converged, true);
+        assert!(back.curves[0].state.converged);
         match &back.edges[0].response {
             ResponseFunction::CurveResponse { points, converged } => {
                 assert_eq!(points.len(), 3);

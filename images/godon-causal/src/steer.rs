@@ -156,55 +156,6 @@ fn slope_of(a: &CurvePoint, b: &CurvePoint) -> f64 {
     (b.shift - a.shift) / span
 }
 
-/// P3 eq. 3: one stage's output uncertainty - the stage's local bar at the
-/// operating point plus its local slope acting on the input's bar,
-/// combined in quadrature.
-pub fn propagate_stage(sigma_map: f64, slope: f64, sigma_in: f64) -> f64 {
-    let out = (sigma_map * sigma_map + (slope * sigma_in) * (slope * sigma_in)).sqrt();
-    debug!(
-        "STEER propagate: sigma_map {}, slope {}, sigma_in {} -> {}",
-        sigma_map, slope, sigma_in, out
-    );
-    out
-}
-
-/// Compose two stages at an absolute input level (P3 eq. 1, two hops).
-///
-/// `mid_level` is the level the first hop induces at the middle node's
-/// input address of the second stage (the level algebra phi is the
-/// caller's business; this function only demands levels).
-///
-/// `phi_scale` is |dphi/du| at the operating point: the induced level's
-/// uncertainty is phi_scale * the head's output bar. Identity algebra
-/// (mid address equals the head shift) uses 1.0 - the chain-era default.
-pub fn compose_two_stage(
-    first: &[CurvePoint],
-    second: &[CurvePoint],
-    level: f64,
-    phi_scale: f64,
-    mid_phi: impl Fn(f64) -> f64,
-) -> Option<Evaluated> {
-    let head = eval_level(first, level)?;
-    let mid = mid_phi(head.shift);
-    debug!(
-        "STEER compose: head shift {} -> phi -> mid address {} (phi_scale {})",
-        head.shift, mid, phi_scale
-    );
-    let tail = eval_level(second, mid)?;
-    let sigma_in = phi_scale * head.bar;
-    let bar = propagate_stage(tail.bar, tail.slope, sigma_in);
-    debug!(
-        "STEER compose result: shift {}, bar {} (head bar {}, tail bar {})",
-        tail.shift, bar, head.bar, tail.bar
-    );
-    Some(Evaluated {
-        shift: tail.shift,
-        bar,
-        slope: head.slope * tail.slope,
-        bracket: (level, level),
-    })
-}
-
 /// Invert a monotone composed map by bisection (P3 steering-precursor
 /// method). Returns the input setting whose evaluation hits `target`.
 ///
@@ -241,7 +192,10 @@ pub fn invert<F: Fn(f64) -> f64>(
         return None; // outside evaluated range - the binding constraint
     }
     let rising = f_hi >= f_lo;
-    debug!("STEER invert: map on bracket is {}", if rising { "rising" } else { "falling" });
+    debug!(
+        "STEER invert: map on bracket is {}",
+        if rising { "rising" } else { "falling" }
+    );
     let mut lo = lo;
     let mut hi = hi;
     for i in 0..iters {
@@ -254,7 +208,12 @@ pub fn invert<F: Fn(f64) -> f64>(
         };
         trace!(
             "STEER invert step {}: bracket [{}, {}], map ({}, {}), target {}",
-            i, lo, hi, f_mid, mid, target
+            i,
+            lo,
+            hi,
+            f_mid,
+            mid,
+            target
         );
         if below {
             lo = mid;
@@ -369,13 +328,6 @@ mod tests {
     }
 
     #[test]
-    fn propagate_matches_p3_equation_three() {
-        // sigma_stage = sqrt(sigma_map^2 + (slope * sigma_in)^2)
-        let s = propagate_stage(0.02, 0.5, 0.1);
-        assert!((s - (0.02_f64.powi(2) + 0.05_f64.powi(2)).sqrt()).abs() < 1e-12);
-    }
-
-    #[test]
     fn invert_lands_on_target_for_rising_map() {
         let curve = line_curve(0.0, 100.0, 0.5);
         let eval = |l: f64| eval_level(&curve, l).unwrap().shift;
@@ -410,29 +362,5 @@ mod tests {
             invert(75.0, 0.0, 100.0, &eval, 60).is_none(),
             "target above the evaluated range must refuse, never extrapolate"
         );
-    }
-
-    #[test]
-    fn compose_two_stage_chains_shift_and_propagates_bars() {
-        // first hop: gain 0.5 over [0, 100]; second hop: unity self-map
-        // over [0, 50]; identity level algebra
-        let first = line_curve(0.0, 100.0, 0.5);
-        let second = line_curve(0.0, 50.0, 1.0);
-        let e = compose_two_stage(&first, &second, 40.0, 1.0, |u| u).unwrap();
-        assert!((e.shift - 20.0).abs() < 1e-9);
-        // eq. 3 at the tail stage: sigma_map 0.02, slope 1.0, sigma_in 0.02
-        let expected = propagate_stage(0.02, 1.0, 0.02);
-        assert!((e.bar - expected).abs() < 1e-12, "bars must propagate");
-    }
-
-    #[test]
-    fn compose_phi_scale_scales_induced_uncertainty() {
-        let first = line_curve(0.0, 100.0, 0.5);
-        let second = line_curve(0.0, 50.0, 1.0);
-        // phi(u) = 50 + 45u -> |dphi/du| = 45: induced level uncertainty
-        // is 45x the head bar, visibly widening the composed bar
-        let plain = compose_two_stage(&first, &second, 40.0, 1.0, |u| u).unwrap();
-        let scaled = compose_two_stage(&first, &second, 40.0, 45.0, |u| 50.0 + 45.0 * u);
-        assert!(scaled.is_none() || scaled.unwrap().bar >= plain.bar);
     }
 }

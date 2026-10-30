@@ -1,0 +1,92 @@
+name: Rust Integrity
+
+# The boring tier for the images' rust crates: cargo fmt and cargo clippy
+# across all nine (eight images plus the shared ledger reader) — cheap
+# signals ahead of the per-image container builds.
+#
+# The mutants job is the test-discrimination instrument, looped over
+# the same nine crates (dispatch/weekly only — measurement, not a gate;
+# every suite runs on fakes, no database needed).
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'images/**'
+      - 'shared/**'
+      - '.github/workflows/rust-integrity.yml'
+  workflow_dispatch:
+  schedule:
+    # weekly, Monday 04:30 UTC — after the cli run
+    - cron: '30 4 * * 1'
+
+env:
+  CRATES: images/godon-api images/godon-bench-generic images/godon-bench-greenhouse images/godon-bench-microgrid images/godon-causal images/godon-mcp images/godon-observer images/godon-seeder shared/ledger-reader
+
+jobs:
+  fmt-and-clippy:
+    if: github.event_name == 'pull_request'
+    name: cargo fmt + cargo clippy (all crates)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cargo fmt
+        run: |
+          rustup component add rustfmt
+          for m in $CRATES; do
+            echo "::group::fmt $m"
+            (cd "$m" && cargo fmt --check)
+            echo "::endgroup::"
+          done
+
+      - name: cargo clippy
+        run: |
+          rustup component add clippy
+          for m in $CRATES; do
+            echo "::group::clippy $m"
+            (cd "$m" && cargo clippy --all-targets -- -D warnings)
+            echo "::endgroup::"
+          done
+
+  mutants:
+    if: github.event_name != 'pull_request'
+    name: cargo mutants (all image crates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked
+
+      - name: Baseline (every suite must be green before breaking it)
+        run: |
+          for m in $CRATES; do
+            echo "::group::test $m"
+            (cd "$m" && cargo test --quiet)
+            echo "::endgroup::"
+          done
+
+      - name: cargo mutants
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/mutants.out"
+          for m in $CRATES; do
+            n=$(basename "$m")
+            echo "::group::mutants $m"
+            # absolute path: each crate's ".." resolves differently
+            (cd "$m" && cargo mutants --output "$GITHUB_WORKSPACE/mutants.out/$n") \
+              || echo "$m: mutants reported misses or failed — outcomes in artifact if present"
+            echo "::endgroup::"
+          done
+          echo "crates with outcomes:"
+          ls "$GITHUB_WORKSPACE/mutants.out" || true
+
+      - name: Upload outcomes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-outcomes
+          path: mutants.out/

@@ -13,7 +13,6 @@ use log::error;
 use tokio_postgres::Error;
 
 pub struct CurvePointRow {
-    pub group_id: String,
     pub sender_id: String,
     /// Systemtender whose readout this point measured. Rows persisted before
     /// the column existed replay as "unknown".
@@ -24,10 +23,6 @@ pub struct CurvePointRow {
     pub shift: f64,
     pub bar: f64,
     pub convergence_threshold: f64,
-    /// Standing dials of the group at measurement time — the regime
-    /// this point was measured under. Rows persisted before the
-    /// column existed replay as NULL (regime unrecorded).
-    pub ambience: Option<String>,
 }
 
 pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), Error> {
@@ -106,6 +101,7 @@ pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), E
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_curve_point(
     client: &tokio_postgres::Client,
     group_id: &str,
@@ -146,8 +142,8 @@ pub async fn load_curve_points(
 ) -> Result<Vec<CurvePointRow>, Error> {
     let rows = client
         .query(
-            "SELECT group_id, sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, \
-             convergence_threshold, CAST(ambience AS TEXT) FROM curve_points ORDER BY id",
+            "SELECT sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, \
+             convergence_threshold FROM curve_points ORDER BY id",
             &[],
         )
         .await?;
@@ -155,20 +151,19 @@ pub async fn load_curve_points(
     Ok(rows
         .iter()
         .map(|row| CurvePointRow {
-            group_id: row.get(0),
-            sender_id: row.get(1),
-            receiver_id: row.get(2),
-            probe_param: row.get(3),
-            channel: row.get(4),
-            probe_level: row.get(5),
-            shift: row.get(6),
-            bar: row.get(7),
-            convergence_threshold: row.get(8),
-            ambience: row.get(9),
+            sender_id: row.get(0),
+            receiver_id: row.get(1),
+            probe_param: row.get(2),
+            channel: row.get(3),
+            probe_level: row.get(4),
+            shift: row.get(5),
+            bar: row.get(6),
+            convergence_threshold: row.get(7),
         })
         .collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 /// Best-effort single-point persistence: log on failure, never propagate.
 /// Measurement serving must not fail because the DB is down.
 pub async fn persist_point(

@@ -210,6 +210,8 @@ pub struct LiveDrift {
 
 #[derive(Debug, Clone)]
 pub struct NodeState {
+    #[allow(dead_code)]
+    // kept: the node's name — constructed by the config loader, reads ride the config paths
     pub id: String,
     pub config: NodeConfig,
     pub params: Vec<f64>,
@@ -255,15 +257,17 @@ impl NodeState {
         let n_obj = self.config.objectives;
         let mut result = vec![0.0; n_obj];
 
-        let normalized: Vec<f64> = self.params.iter()
+        let normalized: Vec<f64> = self
+            .params
+            .iter()
             .map(|p| normalize(*p, self.config.param_lower, self.config.param_upper))
             .collect();
 
-        for obj_idx in 0..n_obj {
+        for (obj_idx, slot) in result.iter_mut().enumerate() {
             if let Some(row) = weights.get(obj_idx) {
                 for (param_idx, w) in row.iter().enumerate() {
                     if let Some(np) = normalized.get(param_idx) {
-                        result[obj_idx] += w * blend_base(base_a, base_b, p, *np);
+                        *slot += w * blend_base(base_a, base_b, p, *np);
                     }
                 }
             }
@@ -271,10 +275,12 @@ impl NodeState {
             // Cross-parameter interaction contributions (always multiplicative)
             for inter in &self.config.interactions {
                 if inter.objective == obj_idx {
-                    let product: f64 = inter.params.iter()
+                    let product: f64 = inter
+                        .params
+                        .iter()
                         .filter_map(|&pi| normalized.get(pi))
                         .product();
-                    result[obj_idx] += inter.weight * product;
+                    *slot += inter.weight * product;
                 }
             }
         }
@@ -287,14 +293,16 @@ impl NodeState {
     pub fn compute_channel_inputs_eff(&self, weights: &[Vec<f64>]) -> Vec<f64> {
         let n_obj = self.config.objectives;
         let mut result = vec![0.0; n_obj];
-        let normalized: Vec<f64> = self.params.iter()
+        let normalized: Vec<f64> = self
+            .params
+            .iter()
             .map(|p| normalize(*p, self.config.param_lower, self.config.param_upper))
             .collect();
-        for obj_idx in 0..n_obj {
+        for (obj_idx, slot) in result.iter_mut().enumerate() {
             if let Some(row) = weights.get(obj_idx) {
                 for (param_idx, w) in row.iter().enumerate() {
                     if let Some(np) = normalized.get(param_idx) {
-                        result[obj_idx] += w * np;
+                        *slot += w * np;
                     }
                 }
             }
@@ -305,12 +313,16 @@ impl NodeState {
     /// Cross-parameter interaction terms, one per objective.
     fn interaction_terms(&self) -> Vec<f64> {
         let mut result = vec![0.0; self.config.objectives];
-        let normalized: Vec<f64> = self.params.iter()
+        let normalized: Vec<f64> = self
+            .params
+            .iter()
             .map(|p| normalize(*p, self.config.param_lower, self.config.param_upper))
             .collect();
         for inter in &self.config.interactions {
             if let Some(slot) = result.get_mut(inter.objective) {
-                let product: f64 = inter.params.iter()
+                let product: f64 = inter
+                    .params
+                    .iter()
                     .filter_map(|&pi| normalized.get(pi))
                     .product();
                 *slot += inter.weight * product;
@@ -349,7 +361,13 @@ impl NodeState {
 fn apply_base(name: &str, np: f64) -> f64 {
     match name {
         "polynomial" => np * np,
-        "threshold" => if np > 0.5 { 1.0 } else { 0.0 },
+        "threshold" => {
+            if np > 0.5 {
+                1.0
+            } else {
+                0.0
+            }
+        }
         "saturation" => np / (1.0 + (np - 0.5).abs() * 4.0),
         _ => np, // linear + default
     }
@@ -498,10 +516,11 @@ impl Simulator {
                 }
                 if let Some(w) = &m.target_weights {
                     assert!(
-                        w.len() == nc.objectives
-                            && w.iter().all(|row| row.len() == nc.params),
+                        w.len() == nc.objectives && w.iter().all(|row| row.len() == nc.params),
                         "node '{}': morph target_weights must be {}x{} (objectives x params)",
-                        nc.id, nc.objectives, nc.params
+                        nc.id,
+                        nc.objectives,
+                        nc.params
                     );
                 }
             }
@@ -732,12 +751,8 @@ impl Simulator {
                 } else {
                     // Legacy: coupling added to the output channel after
                     // this node's own map.
-                    let mut u = node.compute_base_eff(
-                        &e.weights,
-                        &e.base_a,
-                        Some(&e.base_b),
-                        e.progress,
-                    );
+                    let mut u =
+                        node.compute_base_eff(&e.weights, &e.base_a, Some(&e.base_b), e.progress);
                     for (ch, inc) in incoming.iter().enumerate() {
                         if ch < u.len() {
                             u[ch] += inc;
@@ -902,7 +917,8 @@ fn resolve_noise(mut noise: NoiseConfig) -> NoiseConfig {
             match ntype.as_str() {
                 "gaussian" => noise.gaussian_sigma = sigma,
                 "colored" => noise.colored_sigma = sigma,
-                "nonstationary" => noise.drift_rate = noise.drift_rate, // legacy drift_rate field
+                // legacy nonstationary drift rides its own field — nothing to map
+                "nonstationary" => {}
                 _ => noise.gaussian_sigma = sigma,
             }
         }
@@ -944,7 +960,11 @@ mod tests {
         let mut sim = two_node_sim();
         sim.apply("a", &[100.0]);
         let b = sim.get_status("b").expect("node b exists");
-        assert!((b[0] - 0.7).abs() < 1e-9, "b should read coupled 0.7, got {}", b[0]);
+        assert!(
+            (b[0] - 0.7).abs() < 1e-9,
+            "b should read coupled 0.7, got {}",
+            b[0]
+        );
     }
 
     #[test]
@@ -955,7 +975,11 @@ mod tests {
         sim.apply("a", &[0.0]); // a.obj back to 0
         let second = sim.get_status("b").unwrap()[0];
         assert!((first - 0.7).abs() < 1e-9);
-        assert!((second - 0.0).abs() < 1e-9, "b should track sender, got {}", second);
+        assert!(
+            (second - 0.0).abs() < 1e-9,
+            "b should track sender, got {}",
+            second
+        );
     }
 
     #[test]
@@ -995,8 +1019,11 @@ mod tests {
         let mut sim = door_saturation_sim();
         sim.apply("a", &[100.0]);
         let b = sim.get_status("b").unwrap();
-        assert!((b[0] - 1.0 / 3.0).abs() < 1e-9,
-            "door should bend incoming to 1/3, got {}", b[0]);
+        assert!(
+            (b[0] - 1.0 / 3.0).abs() < 1e-9,
+            "door should bend incoming to 1/3, got {}",
+            b[0]
+        );
     }
 
     #[test]
@@ -1025,8 +1052,11 @@ mod tests {
         sim.apply("b", &[50.0]);
         sim.apply("a", &[100.0]);
         let b = sim.get_status("b").unwrap();
-        assert!((b[0] - 1.0).abs() < 1e-9,
-            "door fires on combined level 0.8, expected 1.0, got {}", b[0]);
+        assert!(
+            (b[0] - 1.0).abs() < 1e-9,
+            "door fires on combined level 0.8, expected 1.0, got {}",
+            b[0]
+        );
     }
 
     #[test]
@@ -1060,8 +1090,12 @@ mod tests {
         sim.apply("a", &[80.0]);
         let c = sim.get_status("c").unwrap();
         let expected = 0.5 * 0.56 / 1.24;
-        assert!((c[0] - expected).abs() < 1e-9,
-            "nested chain should give {}, got {}", expected, c[0]);
+        assert!(
+            (c[0] - expected).abs() < 1e-9,
+            "nested chain should give {}, got {}",
+            expected,
+            c[0]
+        );
     }
 
     // ─── drift: signed edge drift, offset, morph schedule, truth ──────
@@ -1085,7 +1119,8 @@ mod tests {
                  "strength": 0.7, "drift_rate": drift}
             ],
             "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
-        })).unwrap();
+        }))
+        .unwrap();
         Simulator::from_config(config)
     }
 
@@ -1105,8 +1140,12 @@ mod tests {
         pump(&mut sim, &[100.0], 750);
         let b = sim.get_status("b").unwrap()[0];
         let expected = 0.7 * (1.0 - 0.002 * 750.0);
-        assert!((b - expected).abs() < 1e-9 && expected < 0.0,
-            "inverted coupling at T=750, got {} (want {})", b, expected);
+        assert!(
+            (b - expected).abs() < 1e-9 && expected < 0.0,
+            "inverted coupling at T=750, got {} (want {})",
+            b,
+            expected
+        );
 
         // the answer key reports the inverted effective strength
         let t = sim.truth("b").unwrap();
@@ -1123,7 +1162,8 @@ mod tests {
                  "offset_drift_rate": 0.01}
             ],
             "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
-        })).unwrap();
+        }))
+        .unwrap();
         let mut sim = Simulator::from_config(config);
 
         sim.apply("a", &[50.0]); // T=1: 0.5 + 0.01×1
@@ -1150,7 +1190,8 @@ mod tests {
                  "offset_drift_rate": 0.01, "offset_drift_cap": 0.015}
             ],
             "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
-        })).unwrap();
+        }))
+        .unwrap();
         let mut sim = Simulator::from_config(config);
 
         sim.apply("a", &[50.0]); // T=1: 0.5 + 0.01x1
@@ -1226,7 +1267,8 @@ mod tests {
                              "target_weights": [[0.0, 1.0]]}]}
             ],
             "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
-        })).unwrap();
+        }))
+        .unwrap();
         let mut sim = Simulator::from_config(config);
         let params = [20.0, 80.0]; // normalized 0.2 / 0.8
 
@@ -1257,7 +1299,8 @@ mod tests {
                              "target_base": "saturation"}]}
             ],
             "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
-        })).unwrap();
+        }))
+        .unwrap();
         let mut sim = Simulator::from_config(config);
         let params = [60.0]; // normalized 0.6: linear 0.6, saturation 0.6/1.4
 
@@ -1286,19 +1329,30 @@ mod tests {
                  ]}
             ],
             "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
-        })).unwrap();
+        }))
+        .unwrap();
         let mut sim = Simulator::from_config(config);
         let params = [20.0, 80.0];
 
         pump(&mut sim, &params, 50);
         assert!((sim.get_status("a").unwrap()[0] - 0.2).abs() < 1e-9, "T=50");
         pump(&mut sim, &params, 150);
-        assert!((sim.get_status("a").unwrap()[0] - 0.8).abs() < 1e-9, "T=150: first target settled");
+        assert!(
+            (sim.get_status("a").unwrap()[0] - 0.8).abs() < 1e-9,
+            "T=150: first target settled"
+        );
         pump(&mut sim, &params, 250);
-        assert!((sim.get_status("a").unwrap()[0] - 0.8).abs() < 1e-9, "T=250: holds");
+        assert!(
+            (sim.get_status("a").unwrap()[0] - 0.8).abs() < 1e-9,
+            "T=250: holds"
+        );
         pump(&mut sim, &params, 350);
         let read = sim.get_status("a").unwrap()[0];
-        assert!((read - 0.2).abs() < 1e-9, "T=350: second target settled, got {}", read);
+        assert!(
+            (read - 0.2).abs() < 1e-9,
+            "T=350: second target settled, got {}",
+            read
+        );
     }
 
     #[test]
@@ -1314,7 +1368,8 @@ mod tests {
                 {"from": "a", "from_channel": 0, "to": "b", "to_channel": 0, "strength": 0.7}
             ],
             "noise": {"gaussian_sigma": 0.1, "colored_sigma": 0.0, "drift_rate": 0.0}
-        })).unwrap();
+        }))
+        .unwrap();
         let mut sim = Simulator::from_config(config);
         for _ in 0..3 {
             sim.apply("a", &[100.0]);
@@ -1323,13 +1378,20 @@ mod tests {
         let t1 = sim.truth("b").unwrap();
         let t2 = sim.truth("b").unwrap();
         assert_eq!(t1.total_ticks, 3, "truth reports the global tick count");
-        assert!((t1.objectives[0] - 0.7).abs() < 1e-9,
-            "truth is noise-free cascade: got {}", t1.objectives[0]);
+        assert!(
+            (t1.objectives[0] - 0.7).abs() < 1e-9,
+            "truth is noise-free cascade: got {}",
+            t1.objectives[0]
+        );
         assert_eq!(t1.objectives, t2.objectives, "truth never jitters");
 
         // the live read carries fresh noise around the same truth
         let live = sim.get_status("b").unwrap()[0];
-        assert!((live - 0.7).abs() < 0.5, "live read near truth, got {}", live);
+        assert!(
+            (live - 0.7).abs() < 0.5,
+            "live read near truth, got {}",
+            live
+        );
     }
 
     #[test]
@@ -1342,7 +1404,8 @@ mod tests {
                  "morphs": [{"at_tick": 10, "target_weights": [[1.0, 0.0]]}]}
             ],
             "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
-        })).unwrap();
+        }))
+        .unwrap();
         let _ = Simulator::from_config(config);
     }
 

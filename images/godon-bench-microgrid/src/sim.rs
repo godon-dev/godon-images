@@ -1,6 +1,6 @@
 use crate::types::*;
-use rand_chacha::ChaCha8Rng;
 use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use std::sync::{Arc, Mutex};
 
 const NOMINAL_FREQUENCY: f64 = 50.0;
@@ -50,6 +50,7 @@ pub struct Microgrid {
     pub cumulative_energy_kwh: f64,
     pub last_params: Option<ApplyRequest>,
     pub seed: u64,
+    #[allow(dead_code)] // kept: the seeded generator rides the state shape
     rng: ChaCha8Rng,
     pub coupling: CouplingState,
 }
@@ -167,10 +168,8 @@ impl Microgrid {
         let self_freq_norm = 1.0 - (self_freq_dev / FREQ_NORMALIZATION_RANGE).min(1.0);
         let self_volt_norm = 1.0 - (self_volt_dev / VOLT_NORMALIZATION_RANGE).min(1.0);
 
-        let coupling_freq_norm =
-            self.coupling.last_delta_frequency / FREQ_NORMALIZATION_RANGE;
-        let coupling_volt_norm =
-            self.coupling.last_delta_voltage / VOLT_NORMALIZATION_RANGE;
+        let coupling_freq_norm = self.coupling.last_delta_frequency / FREQ_NORMALIZATION_RANGE;
+        let coupling_volt_norm = self.coupling.last_delta_voltage / VOLT_NORMALIZATION_RANGE;
 
         let freq_norm = self_freq_norm + coupling_freq_norm;
         let volt_norm = self_volt_norm + coupling_volt_norm;
@@ -185,8 +184,11 @@ impl Microgrid {
         let congestion = 1.0 - neighbor_usage * factor * COUPLING_CONGESTION_SCALE;
         let congestion = congestion.max(0.1);
 
-        let effective_draw = params.as_ref().map_or(0.0, |p| p.power_draw.clamp(0.0, 1000.0));
-        let base_throughput = effective_draw * 0.001 * efficiency * self.equipment_health * congestion;
+        let effective_draw = params
+            .as_ref()
+            .map_or(0.0, |p| p.power_draw.clamp(0.0, 1000.0));
+        let base_throughput =
+            effective_draw * 0.001 * efficiency * self.equipment_health * congestion;
         let throughput = base_throughput + direct_coupling;
 
         let voltage_stability = volt_norm + direct_coupling;
@@ -200,8 +202,12 @@ impl Microgrid {
             grid_frequency_hz: self.grid_frequency_hz,
             grid_voltage_kv: self.grid_voltage_kv,
             local_load_kw: effective_draw,
-            local_gen_kw: params.as_ref().map_or(0.0, |p| p.local_generation.clamp(0.0, 500.0)),
-            storage_kw: params.as_ref().map_or(0.0, |p| p.storage_dispatch.clamp(-500.0, 500.0)),
+            local_gen_kw: params
+                .as_ref()
+                .map_or(0.0, |p| p.local_generation.clamp(0.0, 500.0)),
+            storage_kw: params
+                .as_ref()
+                .map_or(0.0, |p| p.storage_dispatch.clamp(-500.0, 500.0)),
             tick: self.tick,
             coupling_delta_frequency: self.coupling.last_delta_frequency,
             coupling_delta_voltage: self.coupling.last_delta_voltage,
@@ -210,3 +216,502 @@ impl Microgrid {
 }
 
 pub type SharedMicrogrid = Arc<Mutex<Microgrid>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(draw: f64, gen: f64, storage: f64) -> ApplyRequest {
+        ApplyRequest {
+            power_draw: draw,
+            local_generation: gen,
+            storage_dispatch: storage,
+            sim_steps: 1,
+        }
+    }
+
+    fn neighbor(draw: f64, gen: f64, storage: f64) -> NeighborStatus {
+        NeighborStatus {
+            power_draw: draw,
+            local_generation: gen,
+            storage_dispatch: storage,
+        }
+    }
+
+    // ── the load model: clamps and the net balance ──
+
+    #[test]
+    fn full_draw_no_gen_sags_frequency_by_exactly_one_hz() {
+        let mut mg = Microgrid::with_coupling(42, vec![], 0.0);
+        mg.apply(params(1000.0, 0.0, 0.0));
+        mg.step();
+        assert!((mg.grid_frequency_hz - 49.0).abs() < 1e-9);
+        assert!((mg.grid_voltage_kv - 10.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn draws_above_the_clamp_behave_as_the_clamp() {
+        let mut over = Microgrid::with_coupling(42, vec![], 0.0);
+        over.apply(params(5000.0, 0.0, 0.0));
+        over.step();
+        let mut at = Microgrid::with_coupling(42, vec![], 0.0);
+        at.apply(params(1000.0, 0.0, 0.0));
+        at.step();
+        assert_eq!(over.grid_frequency_hz, at.grid_frequency_hz);
+        assert_eq!(over.grid_voltage_kv, at.grid_voltage_kv);
+    }
+
+    #[test]
+    fn generation_and_storage_offset_the_draw() {
+        let mut mg = Microgrid::with_coupling(42, vec![], 0.0);
+        mg.apply(params(1000.0, 500.0, 500.0));
+        mg.step();
+        // net = 0 → both grid quantities sit at nominal
+        assert!((mg.grid_frequency_hz - 50.0).abs() < 1e-9);
+        assert!((mg.grid_voltage_kv - 11.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn generation_above_the_clamp_behaves_as_the_clamp() {
+        let mut over = Microgrid::with_coupling(42, vec![], 0.0);
+        over.apply(params(2000.0, 5000.0, 0.0));
+        over.step();
+        let mut at = Microgrid::with_coupling(42, vec![], 0.0);
+        at.apply(params(1000.0, 500.0, 0.0));
+        at.step();
+        assert_eq!(over.grid_frequency_hz, at.grid_frequency_hz);
+    }
+
+    #[test]
+    fn export_storage_deepens_the_sag() {
+        let mut import = Microgrid::with_coupling(42, vec![], 0.0);
+        import.apply(params(1000.0, 0.0, 0.0));
+        import.step();
+        let mut export = Microgrid::with_coupling(42, vec![], 0.0);
+        export.apply(params(1000.0, 0.0, -500.0));
+        export.step();
+        // exporting storage raises net load 1000 → 1500: deviation grows 1.0 → 1.5 Hz
+        assert!((export.grid_frequency_hz - 48.5).abs() < 1e-9);
+        assert!(export.grid_frequency_hz < import.grid_frequency_hz);
+    }
+
+    #[test]
+    fn step_without_params_is_a_no_op() {
+        let mut mg = Microgrid::with_coupling(42, vec![], 0.0);
+        mg.step();
+        mg.run_steps(10);
+        assert_eq!(mg.tick, 0);
+        assert_eq!(mg.grid_frequency_hz, 50.0);
+    }
+
+    // ── coupling: neighbors pull the shared rails down ──
+
+    #[test]
+    fn a_loaded_neighbor_pulls_frequency_and_voltage_by_the_scaled_amount() {
+        let mut mg = Microgrid::with_coupling(42, vec!["n".into()], 1.0);
+        mg.apply_coupling(&[neighbor(1000.0, 0.0, 0.0)]);
+        // load_ratio 1 → delta_freq = -1 * 0.02 * 1 * 30000, delta_volt = -1 * 0.005 * 1 * 15000
+        assert!((mg.coupling.last_delta_frequency - (-600.0)).abs() < 1e-9);
+        assert!((mg.coupling.last_delta_voltage - (-75.0)).abs() < 1e-9);
+        assert!((mg.coupling.last_neighbor_load - 1000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn neighbor_loads_sum_before_scaling() {
+        let mut one = Microgrid::with_coupling(42, vec![], 1.0);
+        one.apply_coupling(&[neighbor(1000.0, 0.0, 0.0)]);
+        let mut two = Microgrid::with_coupling(42, vec![], 1.0);
+        two.apply_coupling(&[neighbor(600.0, 0.0, 0.0), neighbor(400.0, 0.0, 0.0)]);
+        assert_eq!(
+            one.coupling.last_delta_frequency,
+            two.coupling.last_delta_frequency
+        );
+        assert_eq!(
+            one.coupling.last_delta_voltage,
+            two.coupling.last_delta_voltage
+        );
+    }
+
+    #[test]
+    fn zero_factor_or_no_neighbors_zeroes_the_coupling_state() {
+        let mut mg = Microgrid::with_coupling(42, vec!["n".into()], 0.0);
+        mg.apply_coupling(&[neighbor(1000.0, 0.0, 0.0)]);
+        assert_eq!(mg.coupling.last_delta_frequency, 0.0);
+        assert_eq!(mg.coupling.last_delta_voltage, 0.0);
+        assert_eq!(mg.coupling.last_neighbor_load, 0.0);
+
+        let mut mg = Microgrid::with_coupling(42, vec![], 1.0);
+        mg.apply_coupling(&[]);
+        assert_eq!(mg.coupling.last_delta_frequency, 0.0);
+    }
+
+    #[test]
+    fn coupling_deltas_add_onto_the_self_deviation_in_step() {
+        let mut mg = Microgrid::with_coupling(42, vec!["n".into()], 1.0);
+        mg.apply_coupling(&[neighbor(1000.0, 0.0, 0.0)]);
+        mg.apply(params(1000.0, 0.0, 0.0));
+        mg.step();
+        // self sag -1.0 Hz plus coupling -600 Hz
+        assert!((mg.grid_frequency_hz - (-551.0)).abs() < 1e-9);
+    }
+
+    // ── equipment health: wear under load, recovery at rest, the floor ──
+
+    #[test]
+    fn heavy_load_wears_health_by_the_exact_rate() {
+        let mut mg = Microgrid::with_coupling(42, vec![], 0.0);
+        mg.apply(params(1000.0, 0.0, 0.0));
+        mg.step();
+        // degradation = 1.0*0.001 + 0.05*0.005 = 0.00125, applied at 0.1
+        assert!((mg.equipment_health - (1.0 - 0.000125)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn balanced_operation_recovers_health_up_to_the_cap() {
+        let mut mg = Microgrid::with_coupling(42, vec![], 0.0);
+        mg.equipment_health = 0.9;
+        mg.apply(params(1000.0, 500.0, 500.0));
+        mg.step();
+        assert!((mg.equipment_health - (0.9 + 0.0001)).abs() < 1e-12);
+
+        mg.equipment_health = 1.0;
+        mg.step();
+        assert_eq!(mg.equipment_health, 1.0);
+    }
+
+    #[test]
+    fn sustained_overload_bottoms_out_at_the_health_floor() {
+        let mut mg = Microgrid::with_coupling(42, vec![], 0.0);
+        mg.apply(params(1000.0, 0.0, 0.0));
+        mg.run_steps(50_000);
+        assert!((mg.equipment_health - 0.3).abs() < 1e-9);
+    }
+
+    // ── energy: the instantaneous rate, not a cumulative sum ──
+
+    #[test]
+    fn energy_is_the_instantaneous_rate_of_the_current_params() {
+        let mut mg = Microgrid::with_coupling(42, vec![], 0.0);
+        mg.apply(params(1000.0, 500.0, 0.0));
+        mg.step();
+        // net 500 → grid (500*0.001)*0.1 + local (500*0.0005)*0.1
+        assert!((mg.cumulative_energy_kwh - 0.075).abs() < 1e-12);
+        mg.run_steps(5);
+        assert!((mg.cumulative_energy_kwh - 0.075).abs() < 1e-12);
+        assert_eq!(mg.tick, 6);
+    }
+
+    // ── metrics: throughput, stability, congestion ──
+
+    #[test]
+    fn metrics_at_rest_are_nominal() {
+        let mut mg = Microgrid::with_coupling(42, vec![], 0.0);
+        let m = mg.metrics();
+        assert_eq!(m.tick, 0);
+        assert_eq!(m.local_load_kw, 0.0);
+        assert!((m.voltage_stability - 1.0).abs() < 1e-12);
+        assert!((m.throughput - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn throughput_combines_efficiency_health_and_congestion() {
+        let mut mg = Microgrid::with_coupling(42, vec![], 0.0);
+        mg.apply(params(1000.0, 0.0, 0.0));
+        mg.step();
+        let m = mg.metrics();
+        let freq_norm = 1.0 - 1.0 / 25.0;
+        let volt_norm = 1.0 - 0.05 / 15.0;
+        let efficiency = 0.5 * freq_norm + 0.5 * volt_norm;
+        let expected = 1000.0 * 0.001 * efficiency * (1.0 - 0.000125);
+        assert!((m.throughput - expected).abs() < 1e-9);
+        assert!((m.local_load_kw - 1000.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_coupled_neighbor_adds_direct_throughput_and_congestion() {
+        let mut mg = Microgrid::with_coupling(42, vec!["n".into()], 1.0);
+        mg.apply_coupling(&[neighbor(1000.0, 0.0, 0.0)]);
+        mg.apply(params(1000.0, 0.0, 0.0));
+        mg.step();
+        let m = mg.metrics();
+        // the coupling deltas are large relative to their normalization ranges,
+        // so both norms go NEGATIVE — the direct term must overcome that
+        let freq_norm = (1.0 - 1.0 / 25.0) + (-600.0 / 25.0);
+        let volt_norm = (1.0 - 0.05 / 15.0) + (-75.0 / 15.0);
+        let efficiency = 0.5 * freq_norm + 0.5 * volt_norm;
+        let congestion = 1.0 - 1.0 * 1.0 * 0.5;
+        let expected = 1000.0 * 0.001 * efficiency * (1.0 - 0.000125) * congestion + 10.0;
+        assert!((m.throughput - expected).abs() < 1e-9);
+        assert!((m.voltage_stability - (volt_norm + 10.0)).abs() < 1e-9);
+        assert!((m.coupling_delta_frequency - (-600.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn extreme_neighbor_load_floors_congestion_at_a_tenth() {
+        let mut mg = Microgrid::with_coupling(42, vec!["n".into()], 1.0);
+        // three loaded neighbors: usage 3 → 1 - 1.5 is negative, clamped to 0.1
+        mg.apply_coupling(&[
+            neighbor(1000.0, 0.0, 0.0),
+            neighbor(1000.0, 0.0, 0.0),
+            neighbor(1000.0, 0.0, 0.0),
+        ]);
+        mg.apply(params(1000.0, 0.0, 0.0));
+        mg.step();
+        let m = mg.metrics();
+        // three loaded neighbors: deltas triple → -1800 Hz / -225 kV before normalization
+        let freq_norm = (1.0 - 1.0 / 25.0) + (-1800.0 / 25.0);
+        let volt_norm = (1.0 - 0.05 / 15.0) + (-225.0 / 15.0);
+        let efficiency = 0.5 * freq_norm + 0.5 * volt_norm;
+        let direct = 3.0 * 1.0 * 10.0;
+        let expected = 1000.0 * 0.001 * efficiency * (1.0 - 0.000125) * 0.1 + direct;
+        assert!((m.throughput - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reset_rebuilds_from_the_same_seed_with_coupling_preserved() {
+        let mut mg = Microgrid::with_coupling(7, vec!["n".into()], 0.5);
+        mg.apply(params(1000.0, 0.0, 0.0));
+        mg.run_steps(20);
+        let fresh = Microgrid::with_coupling(7, vec!["n".into()], 0.5);
+        assert_eq!(fresh.seed, mg.seed);
+        assert_eq!(fresh.tick, 0);
+        assert_eq!(fresh.coupling.neighbors, mg.coupling.neighbors);
+        assert_eq!(fresh.coupling.factor, mg.coupling.factor);
+    }
+
+    // ── the golden trajectory: one committed run, replayed within tolerance ──
+    //
+    // The single-shot tests above pin each formula at one point; the golden
+    // pins the SEQUENCE — wear followed by recovery, clamp transitions,
+    // coupling held across segments, metrics read after every segment.
+    // The committed artifact (tests/microgrid_trajectory.json) is written
+    // by an ignored regenerator and reviewed like a diff. Regenerate after
+    // a DELIBERATE physics change:
+    //   cargo test regenerate_the_golden_trajectory -- --ignored
+    // Floats compare at 1e-9 RELATIVE (two compilations of one source were
+    // observed 1 ULP apart on the greenhouse crate — same lesson here);
+    // structure and words compare exactly. The artifact is READ AT RUNTIME.
+
+    struct GoldenSegment {
+        draw: f64,
+        gen: f64,
+        storage: f64,
+        steps: u64,
+    }
+
+    struct GoldenRun {
+        label: &'static str,
+        seed: u64,
+        coupling: Option<(f64, Vec<NeighborStatus>)>,
+        segments: Vec<GoldenSegment>,
+    }
+
+    fn golden_runs() -> Vec<GoldenRun> {
+        vec![
+            // island life: moderate wear, an export-driven deep sag, a
+            // balanced recovery window, over-clamp values, then rest
+            GoldenRun {
+                label: "island_life",
+                seed: 42,
+                coupling: None,
+                segments: vec![
+                    GoldenSegment {
+                        draw: 600.0,
+                        gen: 200.0,
+                        storage: 0.0,
+                        steps: 30,
+                    },
+                    GoldenSegment {
+                        draw: 1000.0,
+                        gen: 0.0,
+                        storage: -400.0,
+                        steps: 40,
+                    },
+                    GoldenSegment {
+                        draw: 500.0,
+                        gen: 400.0,
+                        storage: 100.0,
+                        steps: 50,
+                    },
+                    GoldenSegment {
+                        draw: 5000.0,
+                        gen: 5000.0,
+                        storage: 600.0,
+                        steps: 20,
+                    },
+                    GoldenSegment {
+                        draw: 0.0,
+                        gen: 0.0,
+                        storage: 0.0,
+                        steps: 60,
+                    },
+                ],
+            },
+            // the coupled shadow: two synthetic neighbors re-applied before
+            // every segment (the /apply flow) — one busy, one balanced
+            GoldenRun {
+                label: "coupled_shadow",
+                seed: 42,
+                coupling: Some((
+                    0.3,
+                    vec![neighbor(800.0, 100.0, -200.0), neighbor(300.0, 250.0, 50.0)],
+                )),
+                segments: vec![
+                    GoldenSegment {
+                        draw: 400.0,
+                        gen: 100.0,
+                        storage: 0.0,
+                        steps: 40,
+                    },
+                    GoldenSegment {
+                        draw: 900.0,
+                        gen: 0.0,
+                        storage: 300.0,
+                        steps: 40,
+                    },
+                    GoldenSegment {
+                        draw: 200.0,
+                        gen: 150.0,
+                        storage: 50.0,
+                        steps: 40,
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn replay_run(run: &GoldenRun) -> Vec<serde_json::Value> {
+        let (factor, neighbors) = match &run.coupling {
+            Some((f, ns)) => (*f, Some(ns.clone())),
+            None => (0.0, None),
+        };
+        let mut mg = Microgrid::with_coupling(run.seed, vec![], factor);
+        let mut out = Vec::new();
+        for seg in &run.segments {
+            if let Some(ns) = &neighbors {
+                mg.apply_coupling(ns);
+            }
+            mg.apply(params(seg.draw, seg.gen, seg.storage));
+            mg.run_steps(seg.steps);
+            let m = mg.metrics();
+            out.push(serde_json::to_value(&m).expect("metrics serialize"));
+        }
+        out
+    }
+
+    #[test]
+    #[ignore = "writes the committed artifact — run deliberately, review the diff"]
+    fn regenerate_the_golden_trajectory() {
+        let mut runs_json = Vec::new();
+        for run in golden_runs() {
+            let metrics = replay_run(&run);
+            let mut segments_json = Vec::new();
+            for (seg, m) in run.segments.iter().zip(metrics.iter()) {
+                segments_json.push(serde_json::json!({
+                    "draw": seg.draw,
+                    "gen": seg.gen,
+                    "storage": seg.storage,
+                    "steps": seg.steps,
+                    "metrics": m,
+                }));
+            }
+            runs_json.push(serde_json::json!({
+                "label": run.label,
+                "seed": run.seed,
+                "coupled": run.coupling.is_some(),
+                "segments": segments_json,
+            }));
+        }
+        let artifact = serde_json::json!({
+            "note": "the golden trajectory — regenerate via the ignored test, review like code",
+            "runs": runs_json,
+        });
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests");
+        std::fs::create_dir_all(dir).expect("tests dir");
+        let path = format!("{dir}/microgrid_trajectory.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&artifact).expect("pretty"))
+            .expect("write artifact");
+        println!("wrote {path}");
+    }
+
+    /// float leaves agree within 1e-9 RELATIVE — far below any physics
+    /// change, far above the 1-ULP codegen drift observed on the sister
+    /// crate. Structure and strings stay exact.
+    fn first_float_drift(
+        path: &str,
+        a: &serde_json::Value,
+        b: &serde_json::Value,
+    ) -> Option<String> {
+        match (a, b) {
+            (serde_json::Value::Number(x), serde_json::Value::Number(y)) => {
+                let (fx, fy) = (x.as_f64()?, y.as_f64()?);
+                let both_nan = fx.is_nan() && fy.is_nan();
+                let scale = fx.abs().max(fy.abs().max(1.0));
+                if both_nan || (fx - fy).abs() <= 1e-9 * scale {
+                    None
+                } else {
+                    Some(format!("{path}: {fx} vs {fy}"))
+                }
+            }
+            (serde_json::Value::Array(xs), serde_json::Value::Array(ys)) => {
+                if xs.len() != ys.len() {
+                    return Some(format!("{path}: {} entries vs {}", xs.len(), ys.len()));
+                }
+                xs.iter()
+                    .zip(ys.iter())
+                    .enumerate()
+                    .find_map(|(i, (x, y))| first_float_drift(&format!("{path}[{i}]"), x, y))
+            }
+            (serde_json::Value::Object(xm), serde_json::Value::Object(ym)) => {
+                if xm.len() != ym.len() {
+                    return Some(format!("{path}: {} keys vs {}", xm.len(), ym.len()));
+                }
+                xm.iter().find_map(|(k, x)| {
+                    let y = ym.get(k)?;
+                    first_float_drift(&format!("{path}.{k}"), x, y)
+                })
+            }
+            _ => {
+                if a == b {
+                    None
+                } else {
+                    Some(format!("{path}: {a} vs {b}"))
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_golden_trajectory_replays_within_tolerance() {
+        // read at RUNTIME: include_str! pins the compile-time copy and
+        // goes stale right after a regeneration
+        let path = format!(
+            "{}/tests/microgrid_trajectory.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let raw = std::fs::read_to_string(&path).expect("committed artifact present");
+        let artifact: serde_json::Value =
+            serde_json::from_str(&raw).expect("committed artifact parses");
+        let runs = artifact["runs"].as_array().expect("artifact carries runs");
+        let table = golden_runs();
+        assert_eq!(
+            runs.len(),
+            table.len(),
+            "artifact and table agree on run count"
+        );
+        for (rec, run) in runs.iter().zip(table.iter()) {
+            assert_eq!(rec["label"], run.label, "run order is part of the contract");
+            let metrics = replay_run(run);
+            let segs = rec["segments"].as_array().expect("segments");
+            assert_eq!(segs.len(), metrics.len(), "{}: segment count", run.label);
+            for (i, (seg, m)) in segs.iter().zip(metrics.iter()).enumerate() {
+                if let Some(diff) = first_float_drift("metrics", &seg["metrics"], m) {
+                    panic!(
+                        "{} segment {} drifted from the committed golden: {diff}",
+                        run.label, i
+                    );
+                }
+            }
+        }
+    }
+}

@@ -71,8 +71,8 @@
 
 use crate::types::*;
 use rand::Rng;
-use rand_chacha::ChaCha8Rng;
 use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 use std::sync::{Arc, Mutex};
 
 /// State of a single greenhouse zone.
@@ -273,6 +273,7 @@ enum CropPhase {
 }
 
 impl Greenhouse {
+    #[allow(dead_code)] // kept: scaffolding constructor — suites construct via config paths
     /// Create a new greenhouse without coupling (backward compatible).
     pub fn new(scenario: Scenario, weather_mode: WeatherMode, seed: u64) -> Self {
         Self::with_coupling(scenario, weather_mode, seed, Vec::new(), 0.0)
@@ -526,11 +527,7 @@ impl Greenhouse {
 
             // Net temperature change this timestep
             zone.temp += dt
-                * (solar_gain
-                    + wall_transfer
-                    - heat_loss_outside
-                    - vent_cooling
-                    + heating_power
+                * (solar_gain + wall_transfer - heat_loss_outside - vent_cooling + heating_power
                     - cooling_power);
 
             // --- Humidity dynamics ---
@@ -564,8 +561,7 @@ impl Greenhouse {
 
             // Shared water tank: effective irrigation scales with remaining water.
             // irrigation is the optimizer's requested rate; scarcity reduces it.
-            let effective_irrigation = irrigation
-                * (1.0 - self.coupling.last_delta_water);
+            let effective_irrigation = irrigation * (1.0 - self.coupling.last_delta_water);
 
             // --- Growth accumulation ---
 
@@ -614,7 +610,9 @@ impl Greenhouse {
         // Refill: slow well influx
         self.coupling.shared_water_tank += self.coupling.shared_water_influx * dt;
         // Clamp
-        self.coupling.shared_water_tank = self.coupling.shared_water_tank
+        self.coupling.shared_water_tank = self
+            .coupling
+            .shared_water_tank
             .clamp(0.0, self.coupling.shared_water_capacity);
 
         // --- Crop quality tracking ---
@@ -623,11 +621,17 @@ impl Greenhouse {
             / self.zones.len().max(1) as f64;
         let mut stress_count = 0;
         for zone in &self.zones {
-            if zone.temp > 35.0 || zone.temp < 8.0 { stress_count += 1; }
-            if zone.co2 < 200.0 || zone.co2 > 2500.0 { stress_count += 1; }
+            if zone.temp > 35.0 || zone.temp < 8.0 {
+                stress_count += 1;
+            }
+            if zone.co2 < 200.0 || zone.co2 > 2500.0 {
+                stress_count += 1;
+            }
         }
         let irrigation = params.irrigation;
-        if irrigation > 2.5 || irrigation < 0.1 { stress_count += 1; }
+        if irrigation > 2.5 || irrigation < 0.1 {
+            stress_count += 1;
+        }
 
         // Degradation from stress events
         self.crop_quality -= 0.001 * stress_count as f64 * dt;
@@ -636,7 +640,7 @@ impl Greenhouse {
             self.crop_quality += 0.0002 * dt;
         }
         // Scale by average damage factor
-        self.crop_quality *= (0.999 + 0.001 * avg_damage);
+        self.crop_quality *= 0.999 + 0.001 * avg_damage;
         self.crop_quality = self.crop_quality.clamp(0.0, 1.0);
 
         self.tick += 1;
@@ -747,12 +751,12 @@ impl Greenhouse {
             return;
         }
 
-        let my_avg_temp = self.zones.iter().map(|z| z.temp).sum::<f64>()
-            / self.zones.len().max(1) as f64;
-        let my_avg_co2 = self.zones.iter().map(|z| z.co2).sum::<f64>()
-            / self.zones.len().max(1) as f64;
-        let my_avg_humidity = self.zones.iter().map(|z| z.humidity).sum::<f64>()
-            / self.zones.len().max(1) as f64;
+        let my_avg_temp =
+            self.zones.iter().map(|z| z.temp).sum::<f64>() / self.zones.len().max(1) as f64;
+        let my_avg_co2 =
+            self.zones.iter().map(|z| z.co2).sum::<f64>() / self.zones.len().max(1) as f64;
+        let my_avg_humidity =
+            self.zones.iter().map(|z| z.humidity).sum::<f64>() / self.zones.len().max(1) as f64;
         let my_avg_vent = self.last_params.as_ref().map_or(0.0, |p| {
             p.vent_openings.iter().sum::<f64>() / p.vent_openings.len().max(1) as f64
         });
@@ -811,9 +815,8 @@ impl Greenhouse {
         self.coupling.neighbor_water_draw = total_neighbor_water;
 
         // Compute water scarcity factor: what fraction of irrigation is available
-        let tank_fraction = (self.coupling.shared_water_tank
-            / self.coupling.shared_water_capacity)
-            .clamp(0.0, 1.0);
+        let tank_fraction =
+            (self.coupling.shared_water_tank / self.coupling.shared_water_capacity).clamp(0.0, 1.0);
         let water_scarcity = 1.0 - tank_fraction; // 0 = full tank, 1 = empty
 
         self.coupling.last_delta_temp = delta_temp;
@@ -874,18 +877,22 @@ impl Greenhouse {
                     self.trial_water_liters,
                 ),
                 WeatherMode::Noisy | WeatherMode::Adversarial => {
-                    let nt: Vec<f64> = zone_temps.iter()
+                    let nt: Vec<f64> = zone_temps
+                        .iter()
                         .map(|t| t + self.rng.random_range(-0.3..0.3))
                         .collect();
-                    let nh: Vec<f64> = zone_humidities.iter()
+                    let nh: Vec<f64> = zone_humidities
+                        .iter()
                         .map(|h| (h + self.rng.random_range(-0.02..0.02)).clamp(0.0, 1.0))
                         .collect();
-                    let nc: Vec<f64> = zone_co2_levels.iter()
+                    let nc: Vec<f64> = zone_co2_levels
+                        .iter()
                         .map(|c| (c + self.rng.random_range(-15.0..15.0)).max(0.0))
                         .collect();
                     let ng = (avg_growth + self.rng.random_range(-0.02..0.02)).max(0.0);
                     let ne = self.trial_energy_kwh + self.rng.random_range(-0.01..0.01);
-                    let nw = (self.trial_water_liters + self.rng.random_range(-0.005..0.005)).max(0.0);
+                    let nw =
+                        (self.trial_water_liters + self.rng.random_range(-0.005..0.005)).max(0.0);
                     (nt, nh, nc, ng, ne, nw)
                 }
             };
@@ -901,9 +908,15 @@ impl Greenhouse {
             trial_water_liters: noisy_water,
             water_efficiency: noisy_growth / noisy_water.max(0.001),
             crop_quality: self.crop_quality,
-            max_temp: noisy_temps.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            max_temp: noisy_temps
+                .iter()
+                .cloned()
+                .fold(f64::NEG_INFINITY, f64::max),
             min_temp: noisy_temps.iter().cloned().fold(f64::INFINITY, f64::min),
-            max_humidity: noisy_humidities.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            max_humidity: noisy_humidities
+                .iter()
+                .cloned()
+                .fold(f64::NEG_INFINITY, f64::max),
             max_co2: noisy_co2.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
             outside_temp: self.outside_temp,
             outside_co2: self.outside_co2,
@@ -1056,3 +1069,561 @@ impl Zone {
 /// The simulation state is protected by a Mutex -- only one request modifies
 /// it at a time, which is fine since optimization trials are sequential.
 pub type SharedGreenhouse = Arc<Mutex<Greenhouse>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gh() -> Greenhouse {
+        Greenhouse::with_coupling(Scenario::Simple, WeatherMode::Smooth, 42, vec![], 0.0)
+    }
+
+    fn req(heating: Vec<f64>, vents: Vec<f64>) -> ApplyRequest {
+        ApplyRequest {
+            heating_setpoints: heating,
+            vent_openings: vents,
+            shading: 0.0,
+            co2_injection: 0.0,
+            light_intensity: 0.0,
+            irrigation: 0.0,
+            sim_steps: 1,
+        }
+    }
+
+    // ── scenarios and modes: the declared shapes ──
+
+    #[test]
+    fn scenario_zone_counts() {
+        assert_eq!(Scenario::Simple.zone_count(), 2);
+        assert_eq!(Scenario::Medium.zone_count(), 4);
+        assert_eq!(Scenario::Complex.zone_count(), 6);
+    }
+
+    #[test]
+    fn weather_mode_strings() {
+        assert_eq!(WeatherMode::Smooth.as_str(), "smooth");
+        assert_eq!(WeatherMode::Noisy.as_str(), "noisy");
+        assert_eq!(WeatherMode::Adversarial.as_str(), "adversarial");
+    }
+
+    // ── the fresh greenhouse: every documented initial condition ──
+
+    #[test]
+    fn fresh_zones_start_at_the_documented_defaults() {
+        let g = gh();
+        assert_eq!(g.zones.len(), 2);
+        for z in &g.zones {
+            assert!((z.temp - 20.0).abs() < 1e-12);
+            assert!((z.humidity - 0.5).abs() < 1e-12);
+            assert!((z.co2 - 400.0).abs() < 1e-12);
+            assert!((z.damage_factor - 1.0).abs() < 1e-12);
+            assert_eq!(z.extreme_ticks, 0);
+        }
+        assert_eq!(g.tick, 0);
+        assert!((g.outside_temp - 10.0).abs() < 1e-12);
+        assert!((g.outside_co2 - 420.0).abs() < 1e-12);
+        assert!((g.outside_humidity - 0.4).abs() < 1e-12);
+        assert!((g.solar_radiation - 200.0).abs() < 1e-12);
+        assert!((g.crop_quality - 1.0).abs() < 1e-12);
+        assert!(g.last_params.is_none());
+    }
+
+    // ── apply: the broadcast/per-zone/fallback normalization ──
+
+    #[test]
+    fn per_zone_values_are_kept_as_given() {
+        let mut g = gh();
+        g.apply(req(vec![21.0, 23.0], vec![0.2, 0.8]));
+        let p = g.last_params.unwrap();
+        assert_eq!(p.heating_setpoints, vec![21.0, 23.0]);
+        assert_eq!(p.vent_openings, vec![0.2, 0.8]);
+    }
+
+    #[test]
+    fn a_single_value_broadcasts_to_every_zone() {
+        let mut g = gh();
+        g.apply(req(vec![25.0], vec![0.5]));
+        let p = g.last_params.unwrap();
+        assert_eq!(p.heating_setpoints, vec![25.0, 25.0]);
+        assert_eq!(p.vent_openings, vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn wrong_length_vectors_fall_back_to_the_documented_defaults() {
+        let mut g = gh();
+        // three values for two zones: neither per-zone nor broadcast
+        g.apply(req(vec![1.0, 2.0, 3.0], vec![0.9, 0.1, 0.5]));
+        let p = g.last_params.unwrap();
+        assert_eq!(p.heating_setpoints, vec![20.0, 20.0]);
+        assert_eq!(p.vent_openings, vec![0.3, 0.3]);
+    }
+
+    // ── crop phases: the exact critical windows ──
+
+    #[test]
+    fn phase_boundaries_sit_at_150_400_and_700() {
+        let mut g = gh();
+        for (tick, expected) in [
+            (0u64, "seedling"),
+            (149, "seedling"),
+            (150, "vegetative"),
+            (399, "vegetative"),
+            (400, "flowering"),
+            (699, "flowering"),
+            (700, "fruiting"),
+            (5000, "fruiting"),
+        ] {
+            g.tick = tick;
+            assert_eq!(g.crop_phase_name(), expected, "tick {}", tick);
+        }
+    }
+
+    #[test]
+    fn co2_sensitivity_triples_only_in_flowering() {
+        let mut g = gh();
+        for (tick, expected) in [(0u64, 1.0), (200, 1.2), (500, 3.0), (800, 1.0)] {
+            g.tick = tick;
+            assert!(
+                (g.co2_sensitivity() - expected).abs() < 1e-12,
+                "tick {}",
+                tick
+            );
+        }
+    }
+
+    #[test]
+    fn water_sensitivity_peaks_in_flowering_and_eases_in_fruiting() {
+        let mut g = gh();
+        for (tick, expected) in [(0u64, 0.6), (200, 1.0), (500, 1.5), (800, 1.2)] {
+            g.tick = tick;
+            assert!(
+                (g.water_sensitivity() - expected).abs() < 1e-12,
+                "tick {}",
+                tick
+            );
+        }
+    }
+
+    // ── stepping ──
+
+    #[test]
+    fn step_without_params_does_not_advance_the_clock() {
+        let mut g = gh();
+        g.step();
+        g.run_steps(5);
+        assert_eq!(g.tick, 0);
+    }
+
+    #[test]
+    fn stepping_with_params_advances_the_clock_and_moves_zones() {
+        let mut a = gh();
+        a.apply(req(vec![22.0, 22.0], vec![0.3, 0.3]));
+        a.run_steps(10);
+        assert_eq!(a.tick, 10);
+        // any zone moved or not — but the state must be a number the sim produced
+        for z in &a.zones {
+            assert!(z.temp.is_finite());
+            assert!(z.humidity.is_finite());
+        }
+    }
+
+    #[test]
+    fn the_same_seed_replays_the_same_history() {
+        let mut a = gh();
+        let mut b = gh();
+        let r = req(vec![23.0, 21.0], vec![0.4, 0.2]);
+        a.apply(r.clone());
+        b.apply(r);
+        a.run_steps(50);
+        b.run_steps(50);
+        for (za, zb) in a.zones.iter().zip(b.zones.iter()) {
+            assert_eq!(za.temp, zb.temp);
+            assert_eq!(za.co2, zb.co2);
+            assert_eq!(za.growth_accumulated, zb.growth_accumulated);
+        }
+        assert_eq!(a.tick, b.tick);
+    }
+
+    #[test]
+    fn different_seeds_diverge_under_noise() {
+        let mut a = Greenhouse::with_coupling(Scenario::Simple, WeatherMode::Noisy, 1, vec![], 0.0);
+        let mut b = Greenhouse::with_coupling(Scenario::Simple, WeatherMode::Noisy, 2, vec![], 0.0);
+        let r = req(vec![22.0, 22.0], vec![0.3, 0.3]);
+        a.apply(r.clone());
+        b.apply(r);
+        a.run_steps(50);
+        b.run_steps(50);
+        let diverged = a
+            .zones
+            .iter()
+            .zip(b.zones.iter())
+            .any(|(za, zb)| za.temp != zb.temp || za.co2 != zb.co2);
+        assert!(diverged, "different seeds must produce different weathers");
+    }
+
+    // ── the golden trajectory: one committed run, replayed bit for bit ──
+    //
+    // The suite above pins named constants; the physics between them is
+    // pinned HERE, by record: the table below drives the sim through
+    // every crop phase, all three weathers, damage and recovery, and a
+    // coupled pair shadowed by synthetic neighbors. The committed
+    // artifact (tests/greenhouse_trajectory.json) is the single source
+    // of "what the sim does at this seed"; any behavior change —
+    // intentional or accidental — must show as a diff against it.
+    //
+    // Regenerate after a DELIBERATE physics change:
+    //   cargo test -p godon-bench-greenhouse --bin godon-bench-greenhouse \
+    //       regenerate_the_golden_trajectory -- --ignored
+    // then review the artifact diff like any other code change.
+
+    struct GoldenSegment {
+        heating: Vec<f64>,
+        vents: Vec<f64>,
+        shading: f64,
+        co2: f64,
+        light: f64,
+        irrigation: f64,
+        steps: u64,
+    }
+
+    impl GoldenSegment {
+        fn request(&self) -> ApplyRequest {
+            ApplyRequest {
+                heating_setpoints: self.heating.clone(),
+                vent_openings: self.vents.clone(),
+                shading: self.shading,
+                co2_injection: self.co2,
+                light_intensity: self.light,
+                irrigation: self.irrigation,
+                sim_steps: self.steps,
+            }
+        }
+    }
+
+    struct GoldenRun {
+        label: &'static str,
+        weather: WeatherMode,
+        seed: u64,
+        /// synthetic neighbors applied before every segment (the /apply flow)
+        coupling: Option<(f64, Vec<NeighborStatus>)>,
+        segments: Vec<GoldenSegment>,
+    }
+
+    fn synthetic_neighbor(
+        temp: f64,
+        humidity: f64,
+        co2: f64,
+        damage: f64,
+        energy: f64,
+        water: f64,
+    ) -> NeighborStatus {
+        NeighborStatus {
+            zones: vec![ZoneSnapshot {
+                temp,
+                humidity,
+                co2,
+                growth_rate: 0.4,
+                damage_factor: damage,
+            }],
+            trial_energy_kwh: energy,
+            trial_water_liters: water,
+        }
+    }
+
+    fn golden_runs() -> Vec<GoldenRun> {
+        vec![
+            // the full life: seedling → vegetative → flowering (the 3× CO2
+            // window) → fruiting, with an extreme-heat damage spell and a
+            // recovery tail. 900 ticks cross every phase boundary.
+            GoldenRun {
+                label: "smooth_full_life",
+                weather: WeatherMode::Smooth,
+                seed: 42,
+                coupling: None,
+                segments: vec![
+                    GoldenSegment {
+                        heating: vec![21.0, 19.0],
+                        vents: vec![0.2, 0.4],
+                        shading: 0.1,
+                        co2: 300.0,
+                        light: 50.0,
+                        irrigation: 0.5,
+                        steps: 100,
+                    },
+                    GoldenSegment {
+                        heating: vec![24.0, 24.0],
+                        vents: vec![0.3, 0.3],
+                        shading: 0.0,
+                        co2: 600.0,
+                        light: 120.0,
+                        irrigation: 0.8,
+                        steps: 150,
+                    },
+                    GoldenSegment {
+                        heating: vec![22.0, 23.0],
+                        vents: vec![0.15, 0.2],
+                        shading: 0.0,
+                        co2: 900.0,
+                        light: 200.0,
+                        irrigation: 1.0,
+                        steps: 150,
+                    },
+                    GoldenSegment {
+                        heating: vec![22.5, 22.5],
+                        vents: vec![0.25, 0.25],
+                        shading: 0.0,
+                        co2: 850.0,
+                        light: 180.0,
+                        irrigation: 1.0,
+                        steps: 299,
+                    },
+                    // the damage spell: sustained extremes with everything shut
+                    GoldenSegment {
+                        heating: vec![38.0, 38.0],
+                        vents: vec![0.05, 0.05],
+                        shading: 0.9,
+                        co2: 200.0,
+                        light: 10.0,
+                        irrigation: 0.2,
+                        steps: 80,
+                    },
+                    // the recovery tail under kind conditions
+                    GoldenSegment {
+                        heating: vec![21.0, 21.0],
+                        vents: vec![0.5, 0.5],
+                        shading: 0.2,
+                        co2: 500.0,
+                        light: 100.0,
+                        irrigation: 0.7,
+                        steps: 121,
+                    },
+                ],
+            },
+            // noisy weather: the RNG branch with two policy changes
+            GoldenRun {
+                label: "noisy_mid_life",
+                weather: WeatherMode::Noisy,
+                seed: 7,
+                coupling: None,
+                segments: vec![
+                    GoldenSegment {
+                        heating: vec![22.0, 22.0],
+                        vents: vec![0.3, 0.3],
+                        shading: 0.1,
+                        co2: 400.0,
+                        light: 80.0,
+                        irrigation: 0.6,
+                        steps: 200,
+                    },
+                    GoldenSegment {
+                        heating: vec![25.0, 20.0],
+                        vents: vec![0.1, 0.7],
+                        shading: 0.5,
+                        co2: 700.0,
+                        light: 150.0,
+                        irrigation: 0.9,
+                        steps: 100,
+                    },
+                ],
+            },
+            // adversarial weather: 250 ticks of shock draws at seed 9
+            GoldenRun {
+                label: "adversarial_shocks",
+                weather: WeatherMode::Adversarial,
+                seed: 9,
+                coupling: None,
+                segments: vec![GoldenSegment {
+                    heating: vec![20.0, 20.0],
+                    vents: vec![0.4, 0.4],
+                    shading: 0.0,
+                    co2: 500.0,
+                    light: 60.0,
+                    irrigation: 0.5,
+                    steps: 250,
+                }],
+            },
+            // the coupled shadow: a hot dry high-energy neighbor and a cool
+            // humid low-power one, both re-applied before every segment
+            // exactly like the /apply handler does
+            GoldenRun {
+                label: "coupled_shadow",
+                weather: WeatherMode::Smooth,
+                seed: 42,
+                coupling: Some((
+                    0.15,
+                    vec![
+                        synthetic_neighbor(32.0, 0.3, 800.0, 1.0, 2.7, 40.0),
+                        synthetic_neighbor(12.0, 0.8, 350.0, 0.7, 0.4, 5.0),
+                    ],
+                )),
+                segments: vec![
+                    // wide vents → strong air exchange through the shared duct
+                    GoldenSegment {
+                        heating: vec![22.0, 22.0],
+                        vents: vec![0.6, 0.6],
+                        shading: 0.0,
+                        co2: 500.0,
+                        light: 100.0,
+                        irrigation: 0.9,
+                        steps: 120,
+                    },
+                    // nearly closed → the wall channel dominates
+                    GoldenSegment {
+                        heating: vec![21.0, 21.0],
+                        vents: vec![0.1, 0.1],
+                        shading: 0.3,
+                        co2: 650.0,
+                        light: 90.0,
+                        irrigation: 0.7,
+                        steps: 130,
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn replay_run(run: &GoldenRun) -> Vec<serde_json::Value> {
+        let (factor, neighbors) = match &run.coupling {
+            Some((f, ns)) => (*f, Some(ns.clone())),
+            None => (0.0, None),
+        };
+        let mut gh = Greenhouse::with_coupling(
+            Scenario::Simple,
+            run.weather.clone(),
+            run.seed,
+            vec![],
+            factor,
+        );
+        let mut out = Vec::new();
+        for seg in &run.segments {
+            if let Some(ns) = &neighbors {
+                gh.apply_coupling(ns);
+            }
+            gh.apply(seg.request());
+            gh.run_steps(seg.steps);
+            let m = gh.growth_metrics();
+            out.push(serde_json::to_value(&m).expect("metrics serialize"));
+        }
+        out
+    }
+
+    #[test]
+    #[ignore = "writes the committed artifact — run deliberately, review the diff"]
+    fn regenerate_the_golden_trajectory() {
+        let mut runs_json = Vec::new();
+        for run in golden_runs() {
+            let metrics = replay_run(&run);
+            let mut segments_json = Vec::new();
+            for (seg, m) in run.segments.iter().zip(metrics.iter()) {
+                segments_json.push(serde_json::json!({
+                    "heating": seg.heating,
+                    "vents": seg.vents,
+                    "shading": seg.shading,
+                    "co2": seg.co2,
+                    "light": seg.light,
+                    "irrigation": seg.irrigation,
+                    "steps": seg.steps,
+                    "metrics": m,
+                }));
+            }
+            runs_json.push(serde_json::json!({
+                "label": run.label,
+                "weather": run.weather.as_str(),
+                "seed": run.seed,
+                "coupled": run.coupling.is_some(),
+                "segments": segments_json,
+            }));
+        }
+        let artifact = serde_json::json!({
+            "note": "the golden trajectory — regenerate via the ignored test, review like code",
+            "runs": runs_json,
+        });
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests");
+        std::fs::create_dir_all(dir).expect("tests dir");
+        let path = format!("{dir}/greenhouse_trajectory.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&artifact).expect("pretty"))
+            .expect("write artifact");
+        println!("wrote {path}");
+    }
+
+    /// float leaves agree within 1e-9 RELATIVE — far below any physics
+    /// change, far above the 1-ULP codegen drift observed between two
+    /// compilations of the same source. Structure and strings stay exact.
+    fn first_float_drift(
+        path: &str,
+        a: &serde_json::Value,
+        b: &serde_json::Value,
+    ) -> Option<String> {
+        match (a, b) {
+            (serde_json::Value::Number(x), serde_json::Value::Number(y)) => {
+                let (fx, fy) = (x.as_f64()?, y.as_f64()?);
+                let both_nan = fx.is_nan() && fy.is_nan();
+                let scale = fx.abs().max(fy.abs().max(1.0));
+                if both_nan || (fx - fy).abs() <= 1e-9 * scale {
+                    None
+                } else {
+                    Some(format!("{path}: {fx} vs {fy}"))
+                }
+            }
+            (serde_json::Value::Array(xs), serde_json::Value::Array(ys)) => {
+                if xs.len() != ys.len() {
+                    return Some(format!("{path}: {} entries vs {}", xs.len(), ys.len()));
+                }
+                xs.iter()
+                    .zip(ys.iter())
+                    .enumerate()
+                    .find_map(|(i, (x, y))| first_float_drift(&format!("{path}[{i}]"), x, y))
+            }
+            (serde_json::Value::Object(xm), serde_json::Value::Object(ym)) => {
+                if xm.len() != ym.len() {
+                    return Some(format!("{path}: {} keys vs {}", xm.len(), ym.len()));
+                }
+                xm.iter().find_map(|(k, x)| {
+                    let y = ym.get(k)?;
+                    first_float_drift(&format!("{path}.{k}"), x, y)
+                })
+            }
+            _ => {
+                if a == b {
+                    None
+                } else {
+                    Some(format!("{path}: {a} vs {b}"))
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_golden_trajectory_replays_within_tolerance() {
+        // read at RUNTIME: the regenerator writes the file after compile,
+        // and include_str! would pin yesterday's artifact until a rebuild
+        let path = format!(
+            "{}/tests/greenhouse_trajectory.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let raw = std::fs::read_to_string(&path).expect("committed artifact present");
+        let artifact: serde_json::Value =
+            serde_json::from_str(&raw).expect("committed artifact parses");
+        let runs = artifact["runs"].as_array().expect("artifact carries runs");
+        let table = golden_runs();
+        assert_eq!(
+            runs.len(),
+            table.len(),
+            "artifact and table agree on run count"
+        );
+        for (rec, run) in runs.iter().zip(table.iter()) {
+            assert_eq!(rec["label"], run.label, "run order is part of the contract");
+            let metrics = replay_run(run);
+            let segs = rec["segments"].as_array().expect("segments");
+            assert_eq!(segs.len(), metrics.len(), "{}: segment count", run.label);
+            for (i, (seg, m)) in segs.iter().zip(metrics.iter()).enumerate() {
+                if let Some(diff) = first_float_drift("metrics", &seg["metrics"], m) {
+                    panic!(
+                        "{} segment {} drifted from the committed golden: {diff}",
+                        run.label, i
+                    );
+                }
+            }
+        }
+    }
+}
