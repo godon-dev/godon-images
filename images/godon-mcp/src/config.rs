@@ -36,3 +36,87 @@ impl Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    fn clear() {
+        for k in [
+            "PORT",
+            "GODON_API_HOSTNAME",
+            "GODON_API_PORT",
+            "GODON_API_INSECURE",
+            "GODON_CAUSAL_HOSTNAME",
+            "GODON_CAUSAL_PORT",
+            "GODON_CAUSAL_INSECURE",
+        ] {
+            env::remove_var(k);
+        }
+    }
+
+    // one serial test: the scenarios share process env, and cargo runs
+    // test fns in parallel — a race here once (the estate's known pitfall)
+    #[test]
+    fn defaults_overrides_and_insecure_parsing_in_one_serial_pass() {
+        let saved = clear_and_save();
+        clear();
+
+        // defaults when nothing is set
+        let c = Config::from_env();
+        assert_eq!(c.port, 3001);
+        assert_eq!(c.api_hostname, "localhost");
+        assert_eq!(c.api_port, 8080);
+        assert!(!c.api_insecure);
+        assert_eq!(c.causal_hostname, "localhost");
+        assert_eq!(c.causal_port, 9091);
+        assert!(!c.causal_insecure);
+
+        // ports parse; unparseable falls back
+        env::set_var("PORT", "4242");
+        env::set_var("GODON_CAUSAL_PORT", "not-a-number");
+        let c = Config::from_env();
+        assert_eq!(c.port, 4242);
+        assert_eq!(c.causal_port, 9091);
+        env::remove_var("PORT");
+        env::remove_var("GODON_CAUSAL_PORT");
+
+        // insecure accepts true and 1, not yes
+        env::set_var("GODON_API_INSECURE", "true");
+        env::set_var("GODON_CAUSAL_INSECURE", "1");
+        assert!(Config::from_env().api_insecure);
+        assert!(Config::from_env().causal_insecure);
+        env::set_var("GODON_API_INSECURE", "yes");
+        assert!(!Config::from_env().api_insecure);
+
+        restore(saved);
+    }
+
+    fn clear_and_save() -> Vec<(&'static str, Option<String>)> {
+        let keys = [
+            "PORT",
+            "GODON_API_HOSTNAME",
+            "GODON_API_PORT",
+            "GODON_API_INSECURE",
+            "GODON_CAUSAL_HOSTNAME",
+            "GODON_CAUSAL_PORT",
+            "GODON_CAUSAL_INSECURE",
+        ];
+        keys.iter()
+            .map(|k| {
+                let v = env::var(k).ok();
+                env::remove_var(k);
+                (*k, v)
+            })
+            .collect()
+    }
+
+    fn restore(saved: Vec<(&'static str, Option<String>)>) {
+        for (k, v) in saved {
+            if let Some(v) = v {
+                env::set_var(k, v);
+            }
+        }
+    }
+}

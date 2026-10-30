@@ -94,30 +94,16 @@ fn sender_median(sender: &ProbeTrials, phase: &str, channel: usize) -> f64 {
     }
 }
 
-/// Build a complete graph from all detection results for all pairs.
-pub fn build_edges(
-    _sender_id: &str,
-    _receiver_id: &str,
-    sender: &ProbeTrials,
-    detections: &[DetectionResult],
-) -> Vec<CharacterizedEdge> {
-    detections.iter().map(|d| characterize(d, sender)).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::graph::ChannelId;
     use crate::trial_reader::ProbeTrial;
-    use std::collections::HashMap;
 
     fn make_probe_trial(value: f64, scale: f64) -> ProbeTrial {
         ProbeTrial {
             timestamp: 1000.0,
-            trial_number: 1,
-            params: HashMap::new(),
             values: vec![value],
-            observations: vec![],
             impulse_scale: scale,
         }
     }

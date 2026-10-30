@@ -159,3 +159,22 @@ pub fn get_base_url() -> String {
 pub fn get_token() -> Option<String> {
     env::var("WM_TOKEN").ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_url_trims_the_api_suffix_and_defaults_when_unset() {
+        let saved = env::var("WINDMILL_BASE_URL").ok();
+        env::set_var("WINDMILL_BASE_URL", "http://windmill:8000/api");
+        assert_eq!(get_base_url(), "http://windmill:8000");
+        env::set_var("WINDMILL_BASE_URL", "http://windmill:8000");
+        assert_eq!(get_base_url(), "http://windmill:8000");
+        env::remove_var("WINDMILL_BASE_URL");
+        assert_eq!(get_base_url(), "http://localhost:8000");
+        if let Some(v) = saved {
+            env::set_var("WINDMILL_BASE_URL", v);
+        }
+    }
+}

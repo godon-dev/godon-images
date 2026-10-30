@@ -124,24 +124,6 @@ pub async fn bank_outcome_anchor(
         .map(|_| ())
 }
 
-/// The freshest banked neutral for the outcome channel, with its bar.
-/// None = no probe round has paused at neutral yet.
-pub async fn read_outcome_anchor(
-    client: &tokio_postgres::Client,
-    group_id: &str,
-    receiver_id: &str,
-    channel: &str,
-) -> Result<Option<(f64, f64)>, Error> {
-    let row = client
-        .query_opt(
-            "SELECT neutral, bar FROM outcome_anchors \
-             WHERE group_id = $1 AND receiver_id = $2 AND channel = $3",
-            &[&group_id, &receiver_id, &channel],
-        )
-        .await?;
-    Ok(row.map(|r| (r.get(0), r.get(1))))
-}
-
 /// The derived wander floor's price, banked per outcome channel: the
 /// empirical P95 of |reading - median| over judged hold windows, kept as
 /// the median of the last WANDER_WINDOWS window prices. What the reading
@@ -443,22 +425,6 @@ pub fn reading_bar(values: &[f64]) -> Option<f64> {
         .sum::<f64>()
         / (n as f64 - 1.0);
     Some(2.0 * var.sqrt() / (n as f64).sqrt())
-}
-
-/// How fresh the map is for one receiver: the newest curve-point timestamp,
-/// if any point exists. The re-plan trigger compares it against the miss.
-pub async fn latest_receiver_point_tsz(
-    client: &tokio_postgres::Client,
-    receiver_id: &str,
-) -> Result<Option<f64>, Error> {
-    let rows = client
-        .query(
-            "SELECT MAX(EXTRACT(EPOCH FROM written_at)::double precision) FROM curve_points \
-             WHERE receiver_id = $1",
-            &[&receiver_id],
-        )
-        .await?;
-    Ok(rows.into_iter().next().and_then(|r| r.get(0)))
 }
 
 // ─── The re-walk: bisection between known-bad and known-good ────────
@@ -772,25 +738,6 @@ pub async fn count_wish_events(
         .next()
         .map(|r| r.get::<_, i64>(0) as usize)
         .unwrap_or(0))
-}
-
-/// Latest tsz of any of `events` for the wish, optionally only before
-/// `before` — the dry-spell arithmetic's source.
-pub async fn latest_event_tsz(
-    client: &tokio_postgres::Client,
-    wish_id: &str,
-    events: &[&str],
-    before: Option<f64>,
-) -> Result<Option<f64>, Error> {
-    let rows = client
-        .query(
-            "SELECT MAX(tsz) FROM wish_events \
-             WHERE wish_id = $1 AND event = ANY($2) \
-             AND ($3::double precision IS NULL OR tsz < $3)",
-            &[&wish_id, &events, &before],
-        )
-        .await?;
-    Ok(rows.into_iter().next().and_then(|r| r.get(0)))
 }
 
 /// The detail payload of the latest `event`, parsed — the miss verdict's

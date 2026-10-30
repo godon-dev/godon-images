@@ -481,11 +481,6 @@ impl CurveRegistry {
             .unwrap_or(false)
     }
 
-    pub fn get_state(&self, _sender_id: &str, _param: &str) -> Option<&CurveState> {
-        // Can't return reference to temporary — caller should use is_converged + last_delta
-        None
-    }
-
     pub fn get_curve(
         &self,
         sender_id: &str,
@@ -510,20 +505,6 @@ impl CurveRegistry {
         self.curves
             .retain(|(sender, _, _, _), _| sender != sender_id);
         before - self.curves.len()
-    }
-
-    pub fn all_curves(&self) -> Vec<(String, String, String, CurveState)> {
-        self.curves
-            .iter()
-            .map(|((sender, _recv, param, channel), curve)| {
-                (
-                    sender.clone(),
-                    param.clone(),
-                    channel.clone(),
-                    curve.state(),
-                )
-            })
-            .collect()
     }
 
     /// Serializable snapshot of every curve in the registry,

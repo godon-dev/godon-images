@@ -594,8 +594,6 @@ struct ClaimPlan {
     dial: (String, String),
     points: Vec<CurvePoint>,
     bracket: (f64, f64),
-    moves: Vec<Move>,
-    predicted_value: f64,
     predicted_bars: f64,
     range_used: Vec<(String, f64, f64)>,
     path: Vec<String>,
@@ -731,7 +729,7 @@ fn solve_claim(
     // with chain points. A missing patch leaves the ladder untouched.
     let mut consult_refusals: Vec<CandidateRefusal> = Vec::new();
     match ambiences.get(&(receiver.to_string(), channel.to_string())) {
-        None | Some(crate::ambiences::AmbienceConsult::NoEntries) => {}
+        None => {}
         Some(crate::ambiences::AmbienceConsult::Drift { current, banked }) => {
             // local ground exists but not HERE — the resting spot
             // moved. A candidate-level refusal (rank: it evaluated
@@ -836,13 +834,6 @@ fn solve_claim(
                         dial: (sender.clone(), param.clone()),
                         points: points.clone(),
                         bracket: (bracket.lo, bracket.hi),
-                        moves: vec![Move {
-                            sender: sender.clone(),
-                            param: param.clone(),
-                            setting,
-                            bars: bar,
-                        }],
-                        predicted_value: anchor + predicted_shift,
                         predicted_bars: bar,
                         range_used: vec![(param.clone(), bracket.lo, bracket.hi)],
                         path: vec![sender.clone(), receiver.to_string()],
@@ -892,13 +883,6 @@ fn solve_claim(
                         dial: (sender.clone(), param.clone()),
                         points: points.clone(),
                         bracket: (bracket.lo, bracket.hi),
-                        moves: vec![Move {
-                            sender: sender.clone(),
-                            param: param.clone(),
-                            setting,
-                            bars: evaluated.bar,
-                        }],
-                        predicted_value: anchor + evaluated.shift,
                         predicted_bars: evaluated.bar,
                         range_used: vec![(param.clone(), bracket.lo, bracket.hi)],
                         path: vec![sender.clone(), receiver.to_string()],

@@ -1111,3 +1111,325 @@ pub fn seed_workspace(
 
     Ok(total_failures)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("godon-seeder-test-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // ── the cadence converter: the schedule grammar's one rule-set ──
+
+    #[test]
+    fn cron_whole_seconds_under_a_minute_step_the_seconds_field() {
+        assert_eq!(
+            WindmillDeployer::every_to_cron(30).unwrap(),
+            "*/30 * * * * *"
+        );
+        assert_eq!(WindmillDeployer::every_to_cron(1).unwrap(), "*/1 * * * * *");
+        assert_eq!(
+            WindmillDeployer::every_to_cron(59).unwrap(),
+            "*/59 * * * * *"
+        );
+    }
+
+    #[test]
+    fn cron_one_minute_is_the_plain_minute_tick() {
+        assert_eq!(WindmillDeployer::every_to_cron(60).unwrap(), "0 * * * * *");
+    }
+
+    #[test]
+    fn cron_whole_minutes_under_an_hour_step_the_minute_field() {
+        assert_eq!(
+            WindmillDeployer::every_to_cron(120).unwrap(),
+            "0 */2 * * * *"
+        );
+        assert_eq!(
+            WindmillDeployer::every_to_cron(59 * 60).unwrap(),
+            "0 */59 * * * *"
+        );
+    }
+
+    #[test]
+    fn cron_refuses_zero_negative_and_non_whole_cadences() {
+        assert!(WindmillDeployer::every_to_cron(0).is_err());
+        assert!(WindmillDeployer::every_to_cron(-60).is_err());
+        // 90s is neither whole seconds under a minute nor a whole minute
+        assert!(WindmillDeployer::every_to_cron(90).is_err());
+        // an hour and beyond is out of the supported band
+        assert!(WindmillDeployer::every_to_cron(3600).is_err());
+    }
+
+    // ── the language map ──
+
+    #[test]
+    fn language_follows_the_extension() {
+        assert_eq!(detect_language("run.py"), "python3");
+        assert_eq!(detect_language("run.js"), "deno");
+        assert_eq!(detect_language("run.go"), "go");
+        assert_eq!(detect_language("run.sh"), "bash");
+        assert_eq!(detect_language("run.sql"), "postgresql");
+        assert_eq!(detect_language("run.ts"), "nativets");
+        assert_eq!(detect_language("playbook.yml"), "ansible");
+        assert_eq!(detect_language("playbook.yaml"), "ansible");
+    }
+
+    #[test]
+    fn unknown_extensions_default_to_python() {
+        assert_eq!(detect_language("run.rb"), "python3");
+        assert_eq!(detect_language("no-extension"), "python3");
+    }
+
+    // ── pattern → files ──
+
+    #[test]
+    fn pattern_exact_file_returns_that_file() {
+        let root = temp_root("exact");
+        std::fs::write(root.join("a.ts"), "x").unwrap();
+        let files = find_files_by_pattern(&root, "a.ts");
+        assert_eq!(files.len(), 1);
+        assert!(files[0].ends_with("a.ts"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pattern_wildcard_returns_matching_files_only() {
+        let root = temp_root("glob");
+        std::fs::write(root.join("a.ts"), "x").unwrap();
+        std::fs::write(root.join("b.ts"), "x").unwrap();
+        std::fs::write(root.join("c.py"), "x").unwrap();
+        let files = find_files_by_pattern(&root, "*.ts");
+        assert_eq!(files.len(), 2);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pattern_in_a_missing_directory_is_empty_not_an_error() {
+        let root = temp_root("missing");
+        let files = find_files_by_pattern(&root.join("nowhere"), "*.ts");
+        assert!(files.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── component config parsing ──
+
+    #[test]
+    fn config_parses_the_full_shape() {
+        let root = temp_root("cfgfull");
+        let cfg_path = root.join("component.yaml");
+        std::fs::write(
+            &cfg_path,
+            "name: causal\nworkspace: godon\ntarget: causal\n\
+             scripts:\n  - pattern: '*.py'\n    path: src\n    settings:\n      summary: s\n      timeout: 30\n\
+             schedules:\n  - script: duty\n    every_seconds: 120\n",
+        )
+        .unwrap();
+        let cfg = parse_component_config(&cfg_path).unwrap();
+        assert_eq!(cfg.name, "causal");
+        assert_eq!(cfg.workspace, "godon");
+        assert_eq!(cfg.target, "causal");
+        assert_eq!(cfg.scripts.len(), 1);
+        assert_eq!(cfg.scripts[0].pattern, "*.py");
+        assert_eq!(cfg.scripts[0].path.as_deref(), Some("src"));
+        assert_eq!(cfg.scripts[0].settings.summary, "s");
+        assert_eq!(cfg.scripts[0].settings.timeout, Some(30));
+        assert!(cfg.flows.is_none());
+        assert_eq!(cfg.schedules.len(), 1);
+        assert_eq!(cfg.schedules[0].script, "duty");
+        assert_eq!(cfg.schedules[0].every_seconds, 120);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn config_defaults_when_fields_are_absent() {
+        let root = temp_root("cfgdef");
+        let cfg_path = root.join("component.yaml");
+        std::fs::write(&cfg_path, "").unwrap();
+        let cfg = parse_component_config(&cfg_path).unwrap();
+        assert_eq!(cfg.name, "");
+        assert_eq!(cfg.workspace, "");
+        assert_eq!(cfg.target, "");
+        assert!(cfg.scripts.is_empty());
+        assert!(cfg.schedules.is_empty());
+        assert!(cfg.flows.is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn config_refuses_broken_yaml() {
+        let root = temp_root("cfgbad");
+        let cfg_path = root.join("component.yaml");
+        std::fs::write(&cfg_path, "{not yaml").unwrap();
+        assert!(parse_component_config(&cfg_path).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn script_settings_wire_shape_omits_unset_optionals() {
+        let plain = ScriptSettings {
+            summary: "s".into(),
+            description: String::new(),
+            timeout: None,
+            tag: None,
+        };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("timeout"));
+        assert!(!json.contains("tag"));
+        let pinned = ScriptSettings {
+            timeout: Some(45),
+            tag: Some("robot".into()),
+            ..plain.clone()
+        };
+        let json = serde_json::to_string(&pinned).unwrap();
+        assert!(json.contains("\"timeout\":45"));
+        assert!(json.contains("\"tag\":\"robot\""));
+    }
+
+    // ── discovery ──
+
+    #[test]
+    fn discovery_finds_nested_components_and_skips_broken_ones() {
+        let root = temp_root("disc");
+        std::fs::create_dir_all(root.join("alpha/inner")).unwrap();
+        std::fs::create_dir_all(root.join("beta")).unwrap();
+        std::fs::write(
+            root.join("alpha/component.yaml"),
+            "name: alpha\ntarget: a\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("alpha/inner/component.yaml"),
+            "name: inner\ntarget: i\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("beta/component.yaml"), "{broken").unwrap();
+
+        let found = discover_components(&[root.to_string_lossy().to_string()]).unwrap();
+        let mut names: Vec<&str> = found.iter().map(|c| c.config.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["alpha", "inner"]);
+        // each component carries its own directory
+        for c in &found {
+            let dir = std::path::Path::new(&c.directory);
+            assert!(dir.join("component.yaml").exists());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn discovery_tolerates_a_missing_source_dir() {
+        let root = temp_root("discmiss");
+        let found =
+            discover_components(&[root.join("absent").to_string_lossy().to_string()]).unwrap();
+        assert!(found.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // ── the safety doors: refusals happen before any network call ──
+
+    use std::env;
+
+    fn deployer() -> WindmillDeployer {
+        env::set_var("WM_TOKEN", "test-token");
+        WindmillDeployer::new(0, 0).expect("deployer constructs with a token present")
+    }
+
+    fn spec(
+        script: Option<&str>,
+        pattern: &str,
+        sandbox: Option<&str>,
+        tag_env: Option<&str>,
+    ) -> ScriptSpec {
+        ScriptSpec {
+            pattern: pattern.to_string(),
+            script: script.map(str::to_string),
+            sandbox: sandbox.map(str::to_string),
+            tag_env: tag_env.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sandbox_refuses_without_a_script_name() {
+        let d = deployer();
+        let cfg = ComponentConfig::default();
+        // sandbox set but no script name: refuses without touching the network
+        let failures = d.deploy_sandbox_script("w", &cfg, &spec(None, "", Some("img"), Some("T")));
+        assert_eq!(failures, 1);
+    }
+
+    #[test]
+    fn sandbox_refuses_script_plus_pattern_ambiguity() {
+        let d = deployer();
+        let cfg = ComponentConfig::default();
+        let failures =
+            d.deploy_sandbox_script("w", &cfg, &spec(Some("s"), "*.py", Some("img"), Some("T")));
+        assert_eq!(failures, 1);
+    }
+
+    #[test]
+    fn sandbox_refuses_missing_sandbox_or_tag_env() {
+        let d = deployer();
+        let cfg = ComponentConfig::default();
+        // no sandbox image
+        assert_eq!(
+            d.deploy_sandbox_script("w", &cfg, &spec(Some("s"), "", None, Some("T"))),
+            1
+        );
+        // no tag env - an image ref that could drift to :latest is refused
+        assert_eq!(
+            d.deploy_sandbox_script("w", &cfg, &spec(Some("s"), "", Some("img"), None)),
+            1
+        );
+    }
+
+    #[test]
+    fn sandbox_refuses_when_the_tag_env_is_unset_or_blank() {
+        let d = deployer();
+        let cfg = ComponentConfig::default();
+        env::remove_var("GODON_SEEDER_TEST_TAG");
+        assert_eq!(
+            d.deploy_sandbox_script(
+                "w",
+                &cfg,
+                &spec(Some("s"), "", Some("img"), Some("GODON_SEEDER_TEST_TAG"))
+            ),
+            1
+        );
+        env::set_var("GODON_SEEDER_TEST_TAG", "   ");
+        assert_eq!(
+            d.deploy_sandbox_script(
+                "w",
+                &cfg,
+                &spec(Some("s"), "", Some("img"), Some("GODON_SEEDER_TEST_TAG"))
+            ),
+            1
+        );
+        env::remove_var("GODON_SEEDER_TEST_TAG");
+    }
+
+    #[test]
+    fn schedule_refuses_nameless_script_and_targetless_component() {
+        let d = deployer();
+        // a schedule without its script name
+        let mut cfg = ComponentConfig {
+            target: "t".into(),
+            schedules: vec![ScheduleSpec {
+                script: "  ".into(),
+                every_seconds: 60,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(d.deploy_component_schedules("w", &cfg), 1);
+        // a schedule whose component carries no target
+        cfg.target = String::new();
+        cfg.schedules[0].script = "duty".into();
+        assert_eq!(d.deploy_component_schedules("w", &cfg), 1);
+    }
+}
