@@ -147,7 +147,7 @@ jobs:
           -d '{"param_0": 50.0, "param_1": 50.0, "param_2": 50.0}' > /dev/null
         sleep 1
         curl -sf http://localhost:8091/node-1/drift/state \
-          | jq -e '.running | length == 1 and .running[0].name == "slide" and .running[0].current_offset > 0' > /dev/null \
+          | jq -e '(.running | length) == 1 and .running[0].name == "slide" and .running[0].current_offset > 0' > /dev/null \
           || { echo "declared drift should be cued and ramping"; curl -sf http://localhost:8091/node-1/drift/state; exit 1; }
         # Truth carries the live drift (world): obj_1 base at params 50
         # is 0.5; capped offset 0.5 -> ~1.0 (slack for the read instant).
