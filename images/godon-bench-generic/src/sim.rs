@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
 use std::time::Instant;
 
 // ─── Config ─────────────────────────────────────────────────────────
@@ -204,8 +203,6 @@ pub struct LiveDrift {
     pub cap: Option<f64>,
     pub cued_uptime_secs: f64,
     pub cued_tick: u64,
-    #[serde(skip)]
-    pub cued_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -578,7 +575,6 @@ impl Simulator {
                         cap: d.cap,
                         cued_uptime_secs: now,
                         cued_tick: tick,
-                        cued_at: Instant::now(),
                     });
                 }
             }
@@ -620,7 +616,6 @@ impl Simulator {
             cap,
             cued_uptime_secs: now,
             cued_tick: tick,
-            cued_at: Instant::now(),
         };
         info!(
             "drift cued by door: node {} at tick {} uptime {:.3}s rate {:.6}/s cap {:?}",
@@ -929,6 +924,7 @@ fn resolve_noise(mut noise: NoiseConfig) -> NoiseConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn two_node_sim() -> Simulator {
         let config: serde_json::Value = serde_json::json!({
@@ -1419,7 +1415,6 @@ mod tests {
             cap,
             cued_uptime_secs: cued_at,
             cued_tick: 0,
-            cued_at: Instant::now(),
         }
     }
 
@@ -1441,7 +1436,10 @@ mod tests {
         let w = DriftWhen::default();
         assert!(when_holds(&w, 0.0, 0, &[]), "empty condition always holds");
 
-        let mut w = DriftWhen { seconds: Some(60.0), ..Default::default() };
+        let mut w = DriftWhen {
+            seconds: Some(60.0),
+            ..Default::default()
+        };
         assert!(!when_holds(&w, 59.9, 0, &[]));
         assert!(when_holds(&w, 60.0, 0, &[]));
 
@@ -1449,15 +1447,27 @@ mod tests {
         assert!(!when_holds(&w, 61.0, 4, &[]));
         assert!(when_holds(&w, 61.0, 5, &[]));
 
-        w.param = Some(DriftParamWhen { param: 1, op: ">=".to_string(), value: 80.0 });
+        w.param = Some(DriftParamWhen {
+            param: 1,
+            op: ">=".to_string(),
+            value: 80.0,
+        });
         assert!(!when_holds(&w, 61.0, 5, &[50.0, 79.9]));
         assert!(when_holds(&w, 61.0, 5, &[50.0, 80.0]));
 
         // unknown operator never holds — declared, not guessed
-        w.param = Some(DriftParamWhen { param: 0, op: ">".to_string(), value: 0.0 });
+        w.param = Some(DriftParamWhen {
+            param: 0,
+            op: ">".to_string(),
+            value: 0.0,
+        });
         assert!(!when_holds(&w, 100.0, 100, &[50.0]));
         // out-of-range param index never holds
-        w.param = Some(DriftParamWhen { param: 9, op: ">=".to_string(), value: 0.0 });
+        w.param = Some(DriftParamWhen {
+            param: 9,
+            op: ">=".to_string(),
+            value: 0.0,
+        });
         assert!(!when_holds(&w, 100.0, 100, &[50.0]));
     }
 
@@ -1502,7 +1512,10 @@ mod tests {
             sim.drift_start("a", 0.1, None, None).unwrap().is_err(),
             "second knock refuses"
         );
-        assert!(sim.drift_start("nope", 0.1, None, None).is_none(), "unknown node");
+        assert!(
+            sim.drift_start("nope", 0.1, None, None).is_none(),
+            "unknown node"
+        );
 
         // 10/s capped 0.5: after >=120ms the readout has visibly slid
         // (a's base at default params is 0)
