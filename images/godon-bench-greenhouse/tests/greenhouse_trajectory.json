@@ -1,0 +1,664 @@
+{
+  "note": "the golden trajectory — regenerate via the ignored test, review like code",
+  "runs": [
+    {
+      "coupled": false,
+      "label": "smooth_full_life",
+      "seed": 42,
+      "segments": [
+        {
+          "co2": 300.0,
+          "heating": [
+            21.0,
+            19.0
+          ],
+          "irrigation": 0.5,
+          "light": 50.0,
+          "metrics": {
+            "coupling_delta_co2": 0.0,
+            "coupling_delta_humidity": 0.0,
+            "coupling_delta_light": 0.0,
+            "coupling_delta_temp": 0.0,
+            "coupling_delta_water": 0.0,
+            "crop_phase": "seedling",
+            "crop_quality": 0.9981000000000002,
+            "growth_rate": 0.07901725157659956,
+            "max_co2": 2879.838028144081,
+            "max_humidity": 0.5714370225841747,
+            "max_temp": 33.24878422517901,
+            "min_temp": 30.40808882398392,
+            "outside_co2": 420.0,
+            "outside_humidity": 0.4,
+            "outside_temp": 13.591683715479707,
+            "solar_radiation": 358.6053659578147,
+            "tick": 100,
+            "trial_energy_kwh": 0.053000000000000005,
+            "trial_water_liters": 0.05,
+            "water_efficiency": 1.5803450315319911,
+            "zone_co2_levels": [
+              2879.838028144081,
+              2478.0557866747554
+            ],
+            "zone_damage": [
+              1.0,
+              1.0
+            ],
+            "zone_growth_rates": [
+              0.05334280592320151,
+              0.10469169722999759
+            ],
+            "zone_humidities": [
+              0.5714370225841747,
+              0.5146302066749456
+            ],
+            "zone_temps": [
+              33.24878422517901,
+              30.40808882398392
+            ]
+          },
+          "shading": 0.1,
+          "steps": 100,
+          "vents": [
+            0.2,
+            0.4
+          ]
+        },
+        {
+          "co2": 600.0,
+          "heating": [
+            24.0,
+            24.0
+          ],
+          "irrigation": 0.8,
+          "light": 120.0,
+          "metrics": {
+            "coupling_delta_co2": 0.0,
+            "coupling_delta_humidity": 0.0,
+            "coupling_delta_light": 0.0,
+            "coupling_delta_temp": 0.0,
+            "coupling_delta_water": 0.0,
+            "crop_phase": "vegetative",
+            "crop_quality": 0.9438000000000062,
+            "growth_rate": 0.12164428901743964,
+            "max_co2": 3000.0,
+            "max_humidity": 0.6807968495121599,
+            "max_temp": 36.20667423438173,
+            "min_temp": 36.20636387263867,
+            "outside_co2": 420.0,
+            "outside_humidity": 0.4,
+            "outside_temp": 13.78583547507096,
+            "solar_radiation": 366.85776888127646,
+            "tick": 250,
+            "trial_energy_kwh": 0.123,
+            "trial_water_liters": 0.08000000000000002,
+            "water_efficiency": 1.520553612717995,
+            "zone_co2_levels": [
+              3000.0,
+              3000.0
+            ],
+            "zone_damage": [
+              1.0,
+              1.0
+            ],
+            "zone_growth_rates": [
+              0.12163931288415922,
+              0.12164926515072005
+            ],
+            "zone_humidities": [
+              0.6807968495121599,
+              0.6650584309989532
+            ],
+            "zone_temps": [
+              36.20667423438173,
+              36.20636387263867
+            ]
+          },
+          "shading": 0.0,
+          "steps": 150,
+          "vents": [
+            0.3,
+            0.3
+          ]
+        },
+        {
+          "co2": 900.0,
+          "heating": [
+            22.0,
+            23.0
+          ],
+          "irrigation": 1.0,
+          "light": 200.0,
+          "metrics": {
+            "coupling_delta_co2": 0.0,
+            "coupling_delta_humidity": 0.0,
+            "coupling_delta_light": 0.0,
+            "coupling_delta_temp": 0.0,
+            "coupling_delta_water": 0.0,
+            "crop_phase": "flowering",
+            "crop_quality": 0.8838000000000128,
+            "growth_rate": 0.1886081346111247,
+            "max_co2": 3000.0,
+            "max_humidity": 0.947828675258851,
+            "max_temp": 37.17517841119488,
+            "min_temp": 37.07528378441904,
+            "outside_co2": 420.0,
+            "outside_humidity": 0.4,
+            "outside_temp": 13.391043957677475,
+            "solar_radiation": 370.0182763567081,
+            "tick": 400,
+            "trial_energy_kwh": 0.20175,
+            "trial_water_liters": 0.1,
+            "water_efficiency": 1.886081346111247,
+            "zone_co2_levels": [
+              3000.0,
+              3000.0
+            ],
+            "zone_damage": [
+              1.0,
+              1.0
+            ],
+            "zone_growth_rates": [
+              0.08474464766415366,
+              0.29247162155809575
+            ],
+            "zone_humidities": [
+              0.947828675258851,
+              0.8741284258105455
+            ],
+            "zone_temps": [
+              37.17517841119488,
+              37.07528378441904
+            ]
+          },
+          "shading": 0.0,
+          "steps": 150,
+          "vents": [
+            0.15,
+            0.2
+          ]
+        },
+        {
+          "co2": 850.0,
+          "heating": [
+            22.5,
+            22.5
+          ],
+          "irrigation": 1.0,
+          "light": 180.0,
+          "metrics": {
+            "coupling_delta_co2": 0.0,
+            "coupling_delta_humidity": 0.0,
+            "coupling_delta_light": 0.0,
+            "coupling_delta_temp": 0.0,
+            "coupling_delta_water": 0.0,
+            "crop_phase": "flowering",
+            "crop_quality": 0.764200000000026,
+            "growth_rate": 0.4426703464132956,
+            "max_co2": 3000.0,
+            "max_humidity": 0.8839793051427238,
+            "max_temp": 35.57329653688713,
+            "min_temp": 35.57329653484696,
+            "outside_co2": 420.0,
+            "outside_humidity": 0.4,
+            "outside_temp": 12.598124414910089,
+            "solar_radiation": 366.66181430020833,
+            "tick": 699,
+            "trial_energy_kwh": 0.1825,
+            "trial_water_liters": 0.1,
+            "water_efficiency": 4.426703464132956,
+            "zone_co2_levels": [
+              3000.0,
+              3000.0
+            ],
+            "zone_damage": [
+              1.0,
+              1.0
+            ],
+            "zone_growth_rates": [
+              0.4426703463112872,
+              0.44267034651530396
+            ],
+            "zone_humidities": [
+              0.8839793051427238,
+              0.876198916993226
+            ],
+            "zone_temps": [
+              35.57329653688713,
+              35.57329653484696
+            ]
+          },
+          "shading": 0.0,
+          "steps": 299,
+          "vents": [
+            0.25,
+            0.25
+          ]
+        },
+        {
+          "co2": 200.0,
+          "heating": [
+            38.0,
+            38.0
+          ],
+          "irrigation": 0.2,
+          "light": 10.0,
+          "metrics": {
+            "coupling_delta_co2": 0.0,
+            "coupling_delta_humidity": 0.0,
+            "coupling_delta_light": 0.0,
+            "coupling_delta_temp": 0.0,
+            "coupling_delta_water": 0.0,
+            "crop_phase": "fruiting",
+            "crop_quality": 0.746000000000028,
+            "growth_rate": 0.022872056456564198,
+            "max_co2": 3000.0,
+            "max_humidity": 0.8814955122631365,
+            "max_temp": 34.461009945679294,
+            "min_temp": 34.461009945673894,
+            "outside_co2": 420.0,
+            "outside_humidity": 0.4,
+            "outside_temp": 12.718000595809746,
+            "solar_radiation": 365.0093262735588,
+            "tick": 779,
+            "trial_energy_kwh": 0.08127980108646812,
+            "trial_water_liters": 0.020000000000000004,
+            "water_efficiency": 1.1436028228282096,
+            "zone_co2_levels": [
+              3000.0,
+              3000.0
+            ],
+            "zone_damage": [
+              1.0,
+              1.0
+            ],
+            "zone_growth_rates": [
+              0.02287205645655305,
+              0.02287205645657535
+            ],
+            "zone_humidities": [
+              0.8814955122631365,
+              0.8745955486536988
+            ],
+            "zone_temps": [
+              34.461009945679294,
+              34.461009945673894
+            ]
+          },
+          "shading": 0.9,
+          "steps": 80,
+          "vents": [
+            0.05,
+            0.05
+          ]
+        },
+        {
+          "co2": 500.0,
+          "heating": [
+            21.0,
+            21.0
+          ],
+          "irrigation": 0.7,
+          "light": 100.0,
+          "metrics": {
+            "coupling_delta_co2": 0.0,
+            "coupling_delta_humidity": 0.0,
+            "coupling_delta_light": 0.0,
+            "coupling_delta_temp": 0.0,
+            "coupling_delta_water": 0.0,
+            "crop_phase": "fruiting",
+            "crop_quality": 0.7218000000000306,
+            "growth_rate": 0.2760200755951338,
+            "max_co2": 3000.0,
+            "max_humidity": 0.5925159264453643,
+            "max_temp": 29.1208303537954,
+            "min_temp": 29.1208303537954,
+            "outside_co2": 420.0,
+            "outside_humidity": 0.4,
+            "outside_temp": 13.312669141343665,
+            "solar_radiation": 363.06775312347276,
+            "tick": 900,
+            "trial_energy_kwh": 0.10500000000000001,
+            "trial_water_liters": 0.06999999999999999,
+            "water_efficiency": 3.9431439370733403,
+            "zone_co2_levels": [
+              3000.0,
+              3000.0
+            ],
+            "zone_damage": [
+              1.0,
+              1.0
+            ],
+            "zone_growth_rates": [
+              0.2760200755951338,
+              0.2760200755951338
+            ],
+            "zone_humidities": [
+              0.5925159264453643,
+              0.5914076944344019
+            ],
+            "zone_temps": [
+              29.1208303537954,
+              29.1208303537954
+            ]
+          },
+          "shading": 0.2,
+          "steps": 121,
+          "vents": [
+            0.5,
+            0.5
+          ]
+        }
+      ],
+      "weather": "smooth"
+    },
+    {
+      "coupled": false,
+      "label": "noisy_mid_life",
+      "seed": 7,
+      "segments": [
+        {
+          "co2": 400.0,
+          "heating": [
+            22.0,
+            22.0
+          ],
+          "irrigation": 0.6,
+          "light": 80.0,
+          "metrics": {
+            "coupling_delta_co2": 0.0,
+            "coupling_delta_humidity": 0.0,
+            "coupling_delta_light": 0.0,
+            "coupling_delta_temp": 0.0,
+            "coupling_delta_water": 0.0,
+            "crop_phase": "vegetative",
+            "crop_quality": 0.972400000000003,
+            "growth_rate": 0.16983386991092833,
+            "max_co2": 3006.754786381465,
+            "max_humidity": 0.6084258227935347,
+            "max_temp": 33.50462847897969,
+            "min_temp": 33.31632600976833,
+            "outside_co2": 420.0,
+            "outside_humidity": 0.4,
+            "outside_temp": 12.69949072022491,
+            "solar_radiation": 376.8380757660757,
+            "tick": 200,
+            "trial_energy_kwh": 0.08141919311744852,
+            "trial_water_liters": 0.057986633869549185,
+            "water_efficiency": 2.9288451247747638,
+            "zone_co2_levels": [
+              3006.754786381465,
+              2994.05182180802
+            ],
+            "zone_damage": [
+              1.0,
+              1.0
+            ],
+            "zone_growth_rates": [
+              0.17908490463125742,
+              0.17908490463125742
+            ],
+            "zone_humidities": [
+              0.6084258227935347,
+              0.6050803848196278
+            ],
+            "zone_temps": [
+              33.50462847897969,
+              33.31632600976833
+            ]
+          },
+          "shading": 0.1,
+          "steps": 200,
+          "vents": [
+            0.3,
+            0.3
+          ]
+        },
+        {
+          "co2": 700.0,
+          "heating": [
+            25.0,
+            20.0
+          ],
+          "irrigation": 0.9,
+          "light": 150.0,
+          "metrics": {
+            "coupling_delta_co2": 0.0,
+            "coupling_delta_humidity": 0.0,
+            "coupling_delta_light": 0.0,
+            "coupling_delta_temp": 0.0,
+            "coupling_delta_water": 0.0,
+            "crop_phase": "vegetative",
+            "crop_quality": 0.9524000000000052,
+            "growth_rate": 0.38451605090235375,
+            "max_co2": 3009.4348132862015,
+            "max_humidity": 0.7783639339647987,
+            "max_temp": 30.885128814209256,
+            "min_temp": 24.216132916170935,
+            "outside_co2": 420.0,
+            "outside_humidity": 0.4,
+            "outside_temp": 13.586237396097285,
+            "solar_radiation": 358.48350513094346,
+            "tick": 300,
+            "trial_energy_kwh": 0.15419661098975745,
+            "trial_water_liters": 0.09067682720256862,
+            "water_efficiency": 4.2405106438424385,
+            "zone_co2_levels": [
+              3009.4348132862015,
+              3000.437815648478
+            ],
+            "zone_damage": [
+              1.0,
+              1.0
+            ],
+            "zone_growth_rates": [
+              0.32009449765799275,
+              0.4144
+            ],
+            "zone_humidities": [
+              0.7783639339647987,
+              0.5103636880716401
+            ],
+            "zone_temps": [
+              30.885128814209256,
+              24.216132916170935
+            ]
+          },
+          "shading": 0.5,
+          "steps": 100,
+          "vents": [
+            0.1,
+            0.7
+          ]
+        }
+      ],
+      "weather": "noisy"
+    },
+    {
+      "coupled": false,
+      "label": "adversarial_shocks",
+      "seed": 9,
+      "segments": [
+        {
+          "co2": 500.0,
+          "heating": [
+            20.0,
+            20.0
+          ],
+          "irrigation": 0.5,
+          "light": 60.0,
+          "metrics": {
+            "coupling_delta_co2": 0.0,
+            "coupling_delta_humidity": 0.0,
+            "coupling_delta_light": 0.0,
+            "coupling_delta_temp": 0.0,
+            "coupling_delta_water": 0.0,
+            "crop_phase": "vegetative",
+            "crop_quality": 0.9600000000000044,
+            "growth_rate": 0.1860683149338045,
+            "max_co2": 3014.134371984285,
+            "max_humidity": 0.5466215212380156,
+            "max_temp": 32.874113741612234,
+            "min_temp": 32.76020762080463,
+            "outside_co2": 420.0,
+            "outside_humidity": 0.4,
+            "outside_temp": 13.499819035077284,
+            "solar_radiation": 341.72555657128487,
+            "tick": 250,
+            "trial_energy_kwh": 0.06785006150427833,
+            "trial_water_liters": 0.048485284558779956,
+            "water_efficiency": 3.8376244798198327,
+            "zone_co2_levels": [
+              3011.074002663028,
+              3014.134371984285
+            ],
+            "zone_damage": [
+              1.0,
+              1.0
+            ],
+            "zone_growth_rates": [
+              0.17951402679147974,
+              0.17951402679147974
+            ],
+            "zone_humidities": [
+              0.5466215212380156,
+              0.5250912213436895
+            ],
+            "zone_temps": [
+              32.874113741612234,
+              32.76020762080463
+            ]
+          },
+          "shading": 0.0,
+          "steps": 250,
+          "vents": [
+            0.4,
+            0.4
+          ]
+        }
+      ],
+      "weather": "adversarial"
+    },
+    {
+      "coupled": true,
+      "label": "coupled_shadow",
+      "seed": 42,
+      "segments": [
+        {
+          "co2": 500.0,
+          "heating": [
+            22.0,
+            22.0
+          ],
+          "irrigation": 0.9,
+          "light": 100.0,
+          "metrics": {
+            "coupling_delta_co2": 7.949999999999999,
+            "coupling_delta_humidity": -0.0031499999999999987,
+            "coupling_delta_light": 0.0,
+            "coupling_delta_temp": 0.14999999999999997,
+            "coupling_delta_water": 0.0,
+            "crop_phase": "seedling",
+            "crop_quality": 0.9872000000000014,
+            "growth_rate": 0.08228420543468651,
+            "max_co2": 3000.0,
+            "max_humidity": 0.5323232701835203,
+            "max_temp": 31.60365250666464,
+            "min_temp": 31.60365250666464,
+            "outside_co2": 420.0,
+            "outside_humidity": 0.4,
+            "outside_temp": 13.663626233705088,
+            "solar_radiation": 360.03184951183806,
+            "tick": 120,
+            "trial_energy_kwh": 0.10600000000000001,
+            "trial_water_liters": 0.09000000000000001,
+            "water_efficiency": 0.9142689492742945,
+            "zone_co2_levels": [
+              3000.0,
+              3000.0
+            ],
+            "zone_damage": [
+              1.0,
+              1.0
+            ],
+            "zone_growth_rates": [
+              0.08228420543468651,
+              0.08228420543468651
+            ],
+            "zone_humidities": [
+              0.5323232701835203,
+              0.5323232701835203
+            ],
+            "zone_temps": [
+              31.60365250666464,
+              31.60365250666464
+            ]
+          },
+          "shading": 0.0,
+          "steps": 120,
+          "vents": [
+            0.6,
+            0.6
+          ]
+        },
+        {
+          "co2": 650.0,
+          "heating": [
+            21.0,
+            21.0
+          ],
+          "irrigation": 0.7,
+          "light": 90.0,
+          "metrics": {
+            "coupling_delta_co2": -117.97499999999998,
+            "coupling_delta_humidity": -0.0034242443267218934,
+            "coupling_delta_light": 0.0,
+            "coupling_delta_temp": -0.7202739379998481,
+            "coupling_delta_water": 1.0,
+            "crop_phase": "vegetative",
+            "crop_quality": 0.9612000000000043,
+            "growth_rate": 0.28506956222586927,
+            "max_co2": 2988.2025,
+            "max_humidity": 0.6837004307695457,
+            "max_temp": 30.460521811768466,
+            "min_temp": 30.460521811768466,
+            "outside_co2": 420.0,
+            "outside_humidity": 0.4,
+            "outside_temp": 13.78583547507096,
+            "solar_radiation": 366.85776888127646,
+            "tick": 250,
+            "trial_energy_kwh": 0.091,
+            "trial_water_liters": 0.06999999999999999,
+            "water_efficiency": 4.072422317512419,
+            "zone_co2_levels": [
+              2988.2025,
+              2988.2025
+            ],
+            "zone_damage": [
+              1.0,
+              1.0
+            ],
+            "zone_growth_rates": [
+              0.28506956222586927,
+              0.28506956222586927
+            ],
+            "zone_humidities": [
+              0.6837004307695457,
+              0.6837004307695457
+            ],
+            "zone_temps": [
+              30.460521811768466,
+              30.460521811768466
+            ]
+          },
+          "shading": 0.3,
+          "steps": 130,
+          "vents": [
+            0.1,
+            0.1
+          ]
+        }
+      ],
+      "weather": "smooth"
+    }
+  ]
+}
