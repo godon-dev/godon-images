@@ -1260,4 +1260,370 @@ mod tests {
             .any(|(za, zb)| za.temp != zb.temp || za.co2 != zb.co2);
         assert!(diverged, "different seeds must produce different weathers");
     }
+
+    // ── the golden trajectory: one committed run, replayed bit for bit ──
+    //
+    // The suite above pins named constants; the physics between them is
+    // pinned HERE, by record: the table below drives the sim through
+    // every crop phase, all three weathers, damage and recovery, and a
+    // coupled pair shadowed by synthetic neighbors. The committed
+    // artifact (tests/greenhouse_trajectory.json) is the single source
+    // of "what the sim does at this seed"; any behavior change —
+    // intentional or accidental — must show as a diff against it.
+    //
+    // Regenerate after a DELIBERATE physics change:
+    //   cargo test -p godon-bench-greenhouse --bin godon-bench-greenhouse \
+    //       regenerate_the_golden_trajectory -- --ignored
+    // then review the artifact diff like any other code change.
+
+    struct GoldenSegment {
+        heating: Vec<f64>,
+        vents: Vec<f64>,
+        shading: f64,
+        co2: f64,
+        light: f64,
+        irrigation: f64,
+        steps: u64,
+    }
+
+    impl GoldenSegment {
+        fn request(&self) -> ApplyRequest {
+            ApplyRequest {
+                heating_setpoints: self.heating.clone(),
+                vent_openings: self.vents.clone(),
+                shading: self.shading,
+                co2_injection: self.co2,
+                light_intensity: self.light,
+                irrigation: self.irrigation,
+                sim_steps: self.steps,
+            }
+        }
+    }
+
+    struct GoldenRun {
+        label: &'static str,
+        weather: WeatherMode,
+        seed: u64,
+        /// synthetic neighbors applied before every segment (the /apply flow)
+        coupling: Option<(f64, Vec<NeighborStatus>)>,
+        segments: Vec<GoldenSegment>,
+    }
+
+    fn synthetic_neighbor(
+        temp: f64,
+        humidity: f64,
+        co2: f64,
+        damage: f64,
+        energy: f64,
+        water: f64,
+    ) -> NeighborStatus {
+        NeighborStatus {
+            zones: vec![ZoneSnapshot {
+                temp,
+                humidity,
+                co2,
+                growth_rate: 0.4,
+                damage_factor: damage,
+            }],
+            trial_energy_kwh: energy,
+            trial_water_liters: water,
+        }
+    }
+
+    fn golden_runs() -> Vec<GoldenRun> {
+        vec![
+            // the full life: seedling → vegetative → flowering (the 3× CO2
+            // window) → fruiting, with an extreme-heat damage spell and a
+            // recovery tail. 900 ticks cross every phase boundary.
+            GoldenRun {
+                label: "smooth_full_life",
+                weather: WeatherMode::Smooth,
+                seed: 42,
+                coupling: None,
+                segments: vec![
+                    GoldenSegment {
+                        heating: vec![21.0, 19.0],
+                        vents: vec![0.2, 0.4],
+                        shading: 0.1,
+                        co2: 300.0,
+                        light: 50.0,
+                        irrigation: 0.5,
+                        steps: 100,
+                    },
+                    GoldenSegment {
+                        heating: vec![24.0, 24.0],
+                        vents: vec![0.3, 0.3],
+                        shading: 0.0,
+                        co2: 600.0,
+                        light: 120.0,
+                        irrigation: 0.8,
+                        steps: 150,
+                    },
+                    GoldenSegment {
+                        heating: vec![22.0, 23.0],
+                        vents: vec![0.15, 0.2],
+                        shading: 0.0,
+                        co2: 900.0,
+                        light: 200.0,
+                        irrigation: 1.0,
+                        steps: 150,
+                    },
+                    GoldenSegment {
+                        heating: vec![22.5, 22.5],
+                        vents: vec![0.25, 0.25],
+                        shading: 0.0,
+                        co2: 850.0,
+                        light: 180.0,
+                        irrigation: 1.0,
+                        steps: 299,
+                    },
+                    // the damage spell: sustained extremes with everything shut
+                    GoldenSegment {
+                        heating: vec![38.0, 38.0],
+                        vents: vec![0.05, 0.05],
+                        shading: 0.9,
+                        co2: 200.0,
+                        light: 10.0,
+                        irrigation: 0.2,
+                        steps: 80,
+                    },
+                    // the recovery tail under kind conditions
+                    GoldenSegment {
+                        heating: vec![21.0, 21.0],
+                        vents: vec![0.5, 0.5],
+                        shading: 0.2,
+                        co2: 500.0,
+                        light: 100.0,
+                        irrigation: 0.7,
+                        steps: 121,
+                    },
+                ],
+            },
+            // noisy weather: the RNG branch with two policy changes
+            GoldenRun {
+                label: "noisy_mid_life",
+                weather: WeatherMode::Noisy,
+                seed: 7,
+                coupling: None,
+                segments: vec![
+                    GoldenSegment {
+                        heating: vec![22.0, 22.0],
+                        vents: vec![0.3, 0.3],
+                        shading: 0.1,
+                        co2: 400.0,
+                        light: 80.0,
+                        irrigation: 0.6,
+                        steps: 200,
+                    },
+                    GoldenSegment {
+                        heating: vec![25.0, 20.0],
+                        vents: vec![0.1, 0.7],
+                        shading: 0.5,
+                        co2: 700.0,
+                        light: 150.0,
+                        irrigation: 0.9,
+                        steps: 100,
+                    },
+                ],
+            },
+            // adversarial weather: 250 ticks of shock draws at seed 9
+            GoldenRun {
+                label: "adversarial_shocks",
+                weather: WeatherMode::Adversarial,
+                seed: 9,
+                coupling: None,
+                segments: vec![GoldenSegment {
+                    heating: vec![20.0, 20.0],
+                    vents: vec![0.4, 0.4],
+                    shading: 0.0,
+                    co2: 500.0,
+                    light: 60.0,
+                    irrigation: 0.5,
+                    steps: 250,
+                }],
+            },
+            // the coupled shadow: a hot dry high-energy neighbor and a cool
+            // humid low-power one, both re-applied before every segment
+            // exactly like the /apply handler does
+            GoldenRun {
+                label: "coupled_shadow",
+                weather: WeatherMode::Smooth,
+                seed: 42,
+                coupling: Some((
+                    0.15,
+                    vec![
+                        synthetic_neighbor(32.0, 0.3, 800.0, 1.0, 2.7, 40.0),
+                        synthetic_neighbor(12.0, 0.8, 350.0, 0.7, 0.4, 5.0),
+                    ],
+                )),
+                segments: vec![
+                    // wide vents → strong air exchange through the shared duct
+                    GoldenSegment {
+                        heating: vec![22.0, 22.0],
+                        vents: vec![0.6, 0.6],
+                        shading: 0.0,
+                        co2: 500.0,
+                        light: 100.0,
+                        irrigation: 0.9,
+                        steps: 120,
+                    },
+                    // nearly closed → the wall channel dominates
+                    GoldenSegment {
+                        heating: vec![21.0, 21.0],
+                        vents: vec![0.1, 0.1],
+                        shading: 0.3,
+                        co2: 650.0,
+                        light: 90.0,
+                        irrigation: 0.7,
+                        steps: 130,
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn replay_run(run: &GoldenRun) -> Vec<serde_json::Value> {
+        let (factor, neighbors) = match &run.coupling {
+            Some((f, ns)) => (*f, Some(ns.clone())),
+            None => (0.0, None),
+        };
+        let mut gh = Greenhouse::with_coupling(
+            Scenario::Simple,
+            run.weather.clone(),
+            run.seed,
+            vec![],
+            factor,
+        );
+        let mut out = Vec::new();
+        for seg in &run.segments {
+            if let Some(ns) = &neighbors {
+                gh.apply_coupling(ns);
+            }
+            gh.apply(seg.request());
+            gh.run_steps(seg.steps);
+            let m = gh.growth_metrics();
+            out.push(serde_json::to_value(&m).expect("metrics serialize"));
+        }
+        out
+    }
+
+    #[test]
+    #[ignore = "writes the committed artifact — run deliberately, review the diff"]
+    fn regenerate_the_golden_trajectory() {
+        let mut runs_json = Vec::new();
+        for run in golden_runs() {
+            let metrics = replay_run(&run);
+            let mut segments_json = Vec::new();
+            for (seg, m) in run.segments.iter().zip(metrics.iter()) {
+                segments_json.push(serde_json::json!({
+                    "heating": seg.heating,
+                    "vents": seg.vents,
+                    "shading": seg.shading,
+                    "co2": seg.co2,
+                    "light": seg.light,
+                    "irrigation": seg.irrigation,
+                    "steps": seg.steps,
+                    "metrics": m,
+                }));
+            }
+            runs_json.push(serde_json::json!({
+                "label": run.label,
+                "weather": run.weather.as_str(),
+                "seed": run.seed,
+                "coupled": run.coupling.is_some(),
+                "segments": segments_json,
+            }));
+        }
+        let artifact = serde_json::json!({
+            "note": "the golden trajectory — regenerate via the ignored test, review like code",
+            "runs": runs_json,
+        });
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests");
+        std::fs::create_dir_all(dir).expect("tests dir");
+        let path = format!("{dir}/greenhouse_trajectory.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&artifact).expect("pretty"))
+            .expect("write artifact");
+        println!("wrote {path}");
+    }
+
+    /// float leaves agree within 1e-9 RELATIVE — far below any physics
+    /// change, far above the 1-ULP codegen drift observed between two
+    /// compilations of the same source. Structure and strings stay exact.
+    fn first_float_drift(
+        path: &str,
+        a: &serde_json::Value,
+        b: &serde_json::Value,
+    ) -> Option<String> {
+        match (a, b) {
+            (serde_json::Value::Number(x), serde_json::Value::Number(y)) => {
+                let (fx, fy) = (x.as_f64()?, y.as_f64()?);
+                let both_nan = fx.is_nan() && fy.is_nan();
+                let scale = fx.abs().max(fy.abs().max(1.0));
+                if both_nan || (fx - fy).abs() <= 1e-9 * scale {
+                    None
+                } else {
+                    Some(format!("{path}: {fx} vs {fy}"))
+                }
+            }
+            (serde_json::Value::Array(xs), serde_json::Value::Array(ys)) => {
+                if xs.len() != ys.len() {
+                    return Some(format!("{path}: {} entries vs {}", xs.len(), ys.len()));
+                }
+                xs.iter()
+                    .zip(ys.iter())
+                    .enumerate()
+                    .find_map(|(i, (x, y))| first_float_drift(&format!("{path}[{i}]"), x, y))
+            }
+            (serde_json::Value::Object(xm), serde_json::Value::Object(ym)) => {
+                if xm.len() != ym.len() {
+                    return Some(format!("{path}: {} keys vs {}", xm.len(), ym.len()));
+                }
+                xm.iter().find_map(|(k, x)| {
+                    let y = ym.get(k)?;
+                    first_float_drift(&format!("{path}.{k}"), x, y)
+                })
+            }
+            _ => {
+                if a == b {
+                    None
+                } else {
+                    Some(format!("{path}: {a} vs {b}"))
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_golden_trajectory_replays_within_tolerance() {
+        // read at RUNTIME: the regenerator writes the file after compile,
+        // and include_str! would pin yesterday's artifact until a rebuild
+        let path = format!(
+            "{}/tests/greenhouse_trajectory.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let raw = std::fs::read_to_string(&path).expect("committed artifact present");
+        let artifact: serde_json::Value =
+            serde_json::from_str(&raw).expect("committed artifact parses");
+        let runs = artifact["runs"].as_array().expect("artifact carries runs");
+        let table = golden_runs();
+        assert_eq!(
+            runs.len(),
+            table.len(),
+            "artifact and table agree on run count"
+        );
+        for (rec, run) in runs.iter().zip(table.iter()) {
+            assert_eq!(rec["label"], run.label, "run order is part of the contract");
+            let metrics = replay_run(run);
+            let segs = rec["segments"].as_array().expect("segments");
+            assert_eq!(segs.len(), metrics.len(), "{}: segment count", run.label);
+            for (i, (seg, m)) in segs.iter().zip(metrics.iter()).enumerate() {
+                if let Some(diff) = first_float_drift("metrics", &seg["metrics"], m) {
+                    panic!(
+                        "{} segment {} drifted from the committed golden: {diff}",
+                        run.label, i
+                    );
+                }
+            }
+        }
+    }
 }
