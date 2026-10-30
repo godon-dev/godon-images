@@ -80,9 +80,85 @@ jobs:
         echo "node-2 objective_0 after node-1 apply: ${V}"
         awk -v v="${V}" 'BEGIN { if (v > 0.5) exit 0; print "FAIL: expected ~0.7 (coupled), got " v; exit 1 }'
 
+    - name: Test drift door (start idempotency + state)
+      run: |
+        # First knock: 200 started, cue stamps in both clocks
+        R=$(curl -sf -X POST http://localhost:8090/node-1/drift/start \
+          -H "Content-Type: application/json" \
+          -d '{"rate_per_second": 0.5, "cap": 0.2}')
+        echo "$R" | grep -q '"status":"started"' || { echo "first drift/start failed: $R"; exit 1; }
+        echo "$R" | grep -q '"cued_tick"' || { echo "missing cue stamp: $R"; exit 1; }
+        echo "$R" | grep -q '"cued_uptime_secs"' || { echo "missing uptime stamp: $R"; exit 1; }
+        # Second knock: 409 already_running (idempotent per node)
+        CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8090/node-1/drift/start \
+          -H "Content-Type: application/json" \
+          -d '{"rate_per_second": 0.5}')
+        [ "${CODE}" = "409" ] || { echo "expected 409 on second start, got ${CODE}"; exit 1; }
+        # State door: exactly one running drift, origin door
+        S=$(curl -sf http://localhost:8090/node-1/drift/state)
+        echo "$S" | jq -e '.running | length == 1' > /dev/null || { echo "state should list 1 drift: $S"; exit 1; }
+        echo "$S" | jq -e '.running[0].origin == "door"' > /dev/null || { echo "origin should be door: $S"; exit 1; }
+        # Bad rate: 400
+        CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8090/node-1/drift/start \
+          -H "Content-Type: application/json" \
+          -d '{"rate_per_second": -1.0}')
+        [ "${CODE}" = "400" ] || { echo "expected 400 on bad rate, got ${CODE}"; exit 1; }
+        # Unknown node: 404
+        CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8090/nope/drift/state)
+        [ "${CODE}" = "404" ] || { echo "expected 404 unknown node, got ${CODE}"; exit 1; }
+
+    - name: Test declared drift list (condition + wall-time ramp)
+      run: |
+        # A second container with a declared drift: cues at tick 2,
+        # then ramps in wall time (rate 10/s capped 0.5).
+        cat > /tmp/drift-topology.yaml <<'YAML'
+        nodes:
+          - id: node-1
+            params: 3
+            objectives: 2
+            base: linear
+            weights: [[0.3, 0.5, 0.2], [0.1, 0.4, 0.5]]
+            param_lower: 0.0
+            param_upper: 100.0
+            drifts:
+              - name: slide
+                rate_per_second: 10.0
+                cap: 0.5
+                when: {ticks: 2}
+        noise: {gaussian_sigma: 0.0, colored_sigma: 0.0, drift_rate: 0.0}
+        YAML
+        docker rm -f bench-drift-test 2>/dev/null || true
+        docker run -d --name bench-drift-test -p 8091:8090 \
+          -e CONFIG_PATH=/drift-topology.yaml -e PORT=8090 \
+          -v /tmp/drift-topology.yaml:/drift-topology.yaml \
+          godon-bench-generic-test:test-${{ github.run_number }}
+        for i in $(seq 1 15); do
+          curl -sf --connect-timeout 2 http://localhost:8091/health >/dev/null 2>&1 && break
+          sleep 2
+        done
+        # One apply: ticks=1, condition unmet -> nothing running
+        curl -sf -X POST http://localhost:8091/node-1/apply -H "Content-Type: application/json" \
+          -d '{"param_0": 50.0, "param_1": 50.0, "param_2": 50.0}' > /dev/null
+        curl -sf http://localhost:8091/node-1/drift/state \
+          | jq -e '.running | length == 0' > /dev/null \
+          || { echo "should be unfired at tick 1"; exit 1; }
+        # Second apply: ticks=2 -> cued, and ramping by the time we read
+        curl -sf -X POST http://localhost:8091/node-1/apply -H "Content-Type: application/json" \
+          -d '{"param_0": 50.0, "param_1": 50.0, "param_2": 50.0}' > /dev/null
+        sleep 1
+        curl -sf http://localhost:8091/node-1/drift/state \
+          | jq -e '(.running | length) == 1 and .running[0].name == "slide" and .running[0].current_offset > 0' > /dev/null \
+          || { echo "declared drift should be cued and ramping"; curl -sf http://localhost:8091/node-1/drift/state; exit 1; }
+        # Truth carries the live drift (world): obj_1 base at params 50
+        # is 0.5; capped offset 0.5 -> ~1.0 (slack for the read instant).
+        V=$(curl -sf http://localhost:8091/node-1/truth | jq -r '.objectives[1]')
+        echo "truth objective_1 under the slide: ${V}"
+        awk -v v="${V}" 'BEGIN { if (v > 0.75 && v < 1.25) exit 0; print "FAIL: expected ~1.0 (0.5 base + 0.5 slide cap), got " v; exit 1 }'
+
     - name: Container cleanup
       if: always()
       run: |
         docker stop bench-test || true
         docker rm bench-test || true
+        docker rm -f bench-drift-test || true
         docker rmi godon-bench-generic-test:test-${{ github.run_number }} || true
