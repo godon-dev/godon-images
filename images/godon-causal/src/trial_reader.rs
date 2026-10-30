@@ -1,6 +1,5 @@
 use ledger_reader::{record_from_row, TrialRecord, FETCH_TRIALS_SQL};
 use log::{debug, info};
-use std::collections::HashMap;
 use tokio_postgres::Error;
 
 // ─── DB Config & Reader ─────────────────────────────────────────────
@@ -411,49 +410,27 @@ impl ProbeTrials {
             // kind is written once by the worker (classify) — no more
             // string-matching attr literals to bucket a trial (a stamp
             // rename once starved this reader silently for two days).
-            let params: HashMap<String, f64> = t
-                .params
-                .iter()
-                .filter_map(|(k, v)| v.as_f64().map(|f| (k.clone(), f)))
-                .collect();
-
             match t.kind.as_str() {
                 "push" => push_trials.push(ProbeTrial {
                     timestamp,
-                    trial_number: t.number as i32,
-                    params: params.clone(),
                     values: values.clone(),
-                    observations: observations.clone(),
                     impulse_scale,
                 }),
                 "pause" => pause_trials.push(ProbeTrial {
                     timestamp,
-                    trial_number: t.number as i32,
-                    params: params.clone(),
                     values: values.clone(),
-                    observations: observations.clone(),
                     impulse_scale,
                 }),
                 "hold_calib" => hold_calib_trials.push(ProbeTrial {
                     timestamp,
-                    trial_number: t.number as i32,
-                    params: params.clone(),
                     values: values.clone(),
-                    observations: observations.clone(),
                     impulse_scale,
                 }),
                 "hold" => {
-                    let lease_phase = t
-                        .attr_str("lease_phase")
-                        .or_else(|| t.attr_str("impulse_phase"))
-                        .unwrap_or("")
-                        .to_string();
                     receiver_hold_trials.push(ReceiverTrial {
                         timestamp,
-                        trial_number: t.number as i32,
                         values: values.clone(),
                         observations,
-                        phase: lease_phase,
                     });
                 }
                 _ => {}
@@ -473,49 +450,18 @@ impl ProbeTrials {
 #[derive(Debug, Clone)]
 pub struct ProbeTrial {
     pub timestamp: f64,
-    pub trial_number: i32,
-    pub params: HashMap<String, f64>,
     pub values: Vec<f64>,
-    pub observations: Vec<f64>,
     pub impulse_scale: f64,
 }
 
 #[derive(Debug, Clone)]
 pub struct ReceiverTrial {
     pub timestamp: f64,
-    pub trial_number: i32,
     pub values: Vec<f64>,
     pub observations: Vec<f64>,
-    pub phase: String,
 }
 
 // ─── Helpers (ported from observer) ─────────────────────────────────
-
-fn extract_observations(user_attrs: &HashMap<String, serde_json::Value>) -> Vec<f64> {
-    let raw = match user_attrs.get("observations") {
-        Some(v) => v,
-        None => return Vec::new(),
-    };
-
-    // observations may be a JSON string or already-parsed object
-    let parsed: serde_json::Value = if let Some(s) = raw.as_str() {
-        serde_json::from_str(s).unwrap_or(serde_json::Value::Null)
-    } else {
-        raw.clone()
-    };
-
-    let mut result = Vec::new();
-    if let Some(obj) = parsed.as_object() {
-        let mut keys: Vec<&String> = obj.keys().collect();
-        keys.sort();
-        for key in keys {
-            if let Some(v) = obj.get(key).and_then(|vv| vv.as_f64()) {
-                result.push(v);
-            }
-        }
-    }
-    result
-}
 
 pub fn parse_timestamp_secs(ts: &str) -> Option<f64> {
     let normalized = ts.trim().replace(' ', "T");
@@ -646,6 +592,7 @@ mod kind_classification_tests {
     //! absent, can no longer drive or starve the bucketing.
 
     use super::*;
+    use std::collections::HashMap;
 
     fn trial(kind: &str, phase_attr: Option<&str>) -> TrialRecord {
         let mut user_attrs = HashMap::new();
@@ -680,13 +627,6 @@ mod kind_classification_tests {
                 "kind={kind} with attr={phase_attr:?} must classify as push"
             );
         }
-    }
-
-    #[test]
-    fn receiver_hold_takes_phase_from_lease() {
-        let probe = ProbeTrials::from_trials("s", &[trial("hold", Some("probe_hold"))]);
-        assert_eq!(probe.receiver_hold_trials.len(), 1);
-        assert_eq!(probe.receiver_hold_trials[0].phase, "probe_hold");
     }
 
     #[test]
