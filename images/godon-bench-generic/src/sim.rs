@@ -1,3 +1,4 @@
+use log::info;
 use rand::rngs::StdRng;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -5,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
+use std::time::Instant;
 
 // ─── Config ─────────────────────────────────────────────────────────
 
@@ -64,6 +66,55 @@ pub struct NodeConfig {
     /// schedule. Default 0 = the classic from-boot ramp.
     #[serde(default)]
     pub offset_drift_start_tick: Option<u64>,
+    /// The declared drift list (v2): readout slides that cue when a
+    /// bench-observable condition first holds (uptime seconds, global
+    /// ticks, this node's dial positions), then ramp in WALL TIME.
+    /// Multiple drifts compose additively — parallel by declaration.
+    /// The door (`POST /{id}/drift/start`) cues the same machinery by
+    /// hand; engine state is deliberately not a condition here (the
+    /// engine is the subject — story cues come from outside).
+    #[serde(default)]
+    pub drifts: Vec<DriftConfig>,
+}
+
+/// One declared drift. When `when` first holds, the drift is cued:
+/// from the cue on, the node's readout slides by
+/// `rate_per_second × seconds since cue`, capped at ±cap.
+/// WALL TIME, not ticks — the world's speed must not be an artifact
+/// of trial cadence (receipt: godon#423 — the same rate input took
+/// ~6 min of wall time in one room and ~10 in the next).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriftConfig {
+    #[serde(default)]
+    pub name: Option<String>,
+    pub rate_per_second: f64,
+    #[serde(default)]
+    pub cap: Option<f64>,
+    #[serde(default)]
+    pub when: DriftWhen,
+}
+
+/// The firing condition — everything the bench itself observes.
+/// Fields AND together; an empty condition arms at first evaluation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DriftWhen {
+    /// Bench uptime in seconds.
+    #[serde(default)]
+    pub seconds: Option<f64>,
+    /// The global total tick counter.
+    #[serde(default)]
+    pub ticks: Option<u64>,
+    /// This node's dial position (last applied value).
+    #[serde(default)]
+    pub param: Option<DriftParamWhen>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriftParamWhen {
+    pub param: usize,
+    /// ">=" or "<="
+    pub op: String,
+    pub value: f64,
 }
 
 /// One scheduled shape target. `travel_ticks` 0 = instant step at
@@ -142,6 +193,21 @@ impl Default for NoiseConfig {
 
 // ─── Node State ─────────────────────────────────────────────────────
 
+/// A cued drift, running on wall time. `cued_uptime_secs` and
+/// `cued_tick` are the replay stamps — both clocks at the cue.
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveDrift {
+    pub name: Option<String>,
+    /// "declared" (from the config list) or "door" (POSTed by hand).
+    pub origin: String,
+    pub rate_per_second: f64,
+    pub cap: Option<f64>,
+    pub cued_uptime_secs: f64,
+    pub cued_tick: u64,
+    #[serde(skip)]
+    pub cued_at: Instant,
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeState {
     pub id: String,
@@ -149,18 +215,25 @@ pub struct NodeState {
     pub params: Vec<f64>,
     pub objectives: Vec<f64>,
     pub tick: u64,
+    /// Declared drifts that have already fired (cue-once semantics).
+    pub drifts_cued: Vec<bool>,
+    /// Drifts currently running (declared + door), composing additively.
+    pub live_drifts: Vec<LiveDrift>,
 }
 
 impl NodeState {
     pub fn new(config: NodeConfig) -> Self {
         let params = vec![config.param_lower; config.params];
         let objectives = vec![0.0; config.objectives];
+        let drifts_cued = vec![false; config.drifts.len()];
         Self {
             id: config.id.clone(),
             config,
             params,
             objectives,
             tick: 0,
+            drifts_cued,
+            live_drifts: Vec::new(),
         }
     }
 
@@ -307,9 +380,54 @@ pub struct Simulator {
     pub colored_state: f64,
     pub nonstationary_drift: f64,
     pub total_ticks: u64,
+    /// Bench boot time — the wall clock every live drift ramps on.
+    pub boot: Instant,
 }
 
 pub type SharedSimulator = Arc<Mutex<Simulator>>;
+
+/// Total offset contributed by running live drifts at a given uptime.
+/// Pure function of the cue stamps — replayable from the record.
+pub fn live_offset_at(live: &[LiveDrift], now_secs: f64) -> f64 {
+    live.iter()
+        .map(|d| {
+            let raw = d.rate_per_second * (now_secs - d.cued_uptime_secs).max(0.0);
+            match d.cap {
+                Some(c) => raw.clamp(-c.abs(), c.abs()),
+                None => raw,
+            }
+        })
+        .sum()
+}
+
+/// Does a declared drift's condition hold right now? Everything the
+/// bench itself observes; fields AND together; empty = always.
+pub fn when_holds(w: &DriftWhen, uptime_secs: f64, total_ticks: u64, params: &[f64]) -> bool {
+    if let Some(s) = w.seconds {
+        if uptime_secs < s {
+            return false;
+        }
+    }
+    if let Some(t) = w.ticks {
+        if total_ticks < t {
+            return false;
+        }
+    }
+    if let Some(p) = &w.param {
+        let holds = match params.get(p.param) {
+            Some(v) => match p.op.as_str() {
+                ">=" => *v >= p.value,
+                "<=" => *v <= p.value,
+                _ => false,
+            },
+            None => false,
+        };
+        if !holds {
+            return false;
+        }
+    }
+    true
+}
 
 /// The node's shape at one instant: morphed weights and, while a
 /// travel is in flight, the base blend from A toward B.
@@ -410,7 +528,87 @@ impl Simulator {
             colored_state: 0.0,
             nonstationary_drift: 0.0,
             total_ticks: 0,
+            boot: Instant::now(),
         }
+    }
+
+    pub fn uptime_secs(&self) -> f64 {
+        self.boot.elapsed().as_secs_f64()
+    }
+
+    /// Cue every declared drift whose condition first holds. Runs on
+    /// the mutating paths (apply / live read) — `truth` stays
+    /// read-only and never cues: an unfired drift has not moved the
+    /// world, and the answer key must agree.
+    fn cue_due_drifts(&mut self) {
+        let now = self.uptime_secs();
+        let tick = self.total_ticks;
+        for node in self.nodes.values_mut() {
+            let params = node.params.clone();
+            let mut cued: Vec<LiveDrift> = Vec::new();
+            for (i, d) in node.config.drifts.iter().enumerate() {
+                if node.drifts_cued.get(i).copied().unwrap_or(true) {
+                    continue;
+                }
+                if when_holds(&d.when, now, tick, &params) {
+                    node.drifts_cued[i] = true;
+                    cued.push(LiveDrift {
+                        name: d.name.clone(),
+                        origin: "declared".to_string(),
+                        rate_per_second: d.rate_per_second,
+                        cap: d.cap,
+                        cued_uptime_secs: now,
+                        cued_tick: tick,
+                        cued_at: Instant::now(),
+                    });
+                }
+            }
+            for d in &cued {
+                info!(
+                    "drift cued: node {} drift {} at tick {} uptime {:.3}s rate {:.6}/s cap {:?}",
+                    node.id,
+                    d.name.clone().unwrap_or_else(|| "-".to_string()),
+                    d.cued_tick,
+                    d.cued_uptime_secs,
+                    d.rate_per_second,
+                    d.cap
+                );
+            }
+            node.live_drifts.extend(cued);
+        }
+    }
+
+    /// The manual door (v1): cue a live drift on this node NOW.
+    /// One door-origin drift per node — the second knock is the
+    /// caller's 409, not a second drift.
+    pub fn drift_start(
+        &mut self,
+        node_id: &str,
+        rate_per_second: f64,
+        cap: Option<f64>,
+        name: Option<String>,
+    ) -> Option<Result<LiveDrift, ()>> {
+        let now = self.uptime_secs();
+        let tick = self.total_ticks;
+        let node = self.nodes.get_mut(node_id)?;
+        if node.live_drifts.iter().any(|d| d.origin == "door") {
+            return Some(Err(()));
+        }
+        let live = LiveDrift {
+            name: name.or_else(|| Some("door".to_string())),
+            origin: "door".to_string(),
+            rate_per_second,
+            cap,
+            cued_uptime_secs: now,
+            cued_tick: tick,
+            cued_at: Instant::now(),
+        };
+        info!(
+            "drift cued by door: node {} at tick {} uptime {:.3}s rate {:.6}/s cap {:?}",
+            node.id, live.cued_tick, live.cued_uptime_secs, live.rate_per_second, live.cap
+        );
+        node.live_drifts.push(live.clone());
+        Some(Ok(live))
     }
 
     /// Apply params to a node, then recompute all node objectives.
@@ -567,9 +765,16 @@ impl Simulator {
     }
 
     fn recompute_objectives(&mut self, requesting_node: &str) -> Vec<f64> {
+        // Declared drifts cue on the mutating paths (cue-before-read:
+        // the world moves, then we look at it).
+        self.cue_due_drifts();
+
         let mut result = self.cascade()[requesting_node].clone();
+        let now = self.uptime_secs();
 
         // Readout bias drift: part of the true signal, not of noise.
+        // Legacy scheduled offset (tick function) + live drifts
+        // (wall-time ramps) compose additively — both are world.
         let offset = self
             .nodes
             .get(requesting_node)
@@ -578,10 +783,11 @@ impl Simulator {
                     .total_ticks
                     .saturating_sub(n.config.offset_drift_start_tick.unwrap_or(0));
                 let raw = n.config.offset_drift_rate * elapsed as f64;
-                match n.config.offset_drift_cap {
+                let scheduled = match n.config.offset_drift_cap {
                     Some(cap) => raw.clamp(-cap.abs(), cap.abs()),
                     None => raw,
-                }
+                };
+                scheduled + live_offset_at(&n.live_drifts, now)
             })
             .unwrap_or(0.0);
         for val in result.iter_mut() {
@@ -610,10 +816,14 @@ impl Simulator {
             .total_ticks
             .saturating_sub(node.config.offset_drift_start_tick.unwrap_or(0));
         let raw = node.config.offset_drift_rate * elapsed as f64;
-        let offset = match node.config.offset_drift_cap {
+        let scheduled = match node.config.offset_drift_cap {
             Some(cap) => raw.clamp(-cap.abs(), cap.abs()),
             None => raw,
         };
+        // Live drifts count (they have moved the world); cueing does
+        // NOT happen here — truth is the read-only answer key, and an
+        // unfired declared drift has not moved anything yet.
+        let offset = scheduled + live_offset_at(&node.live_drifts, self.uptime_secs());
         for v in objectives.iter_mut() {
             *v += offset;
         }
@@ -1134,5 +1344,173 @@ mod tests {
             "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
         })).unwrap();
         let _ = Simulator::from_config(config);
+    }
+
+    // ─── drift door + declared drift list (wall-time ramps) ──────────
+
+    fn live_drift(rate: f64, cap: Option<f64>, cued_at: f64) -> LiveDrift {
+        LiveDrift {
+            name: Some("t".to_string()),
+            origin: "door".to_string(),
+            rate_per_second: rate,
+            cap,
+            cued_uptime_secs: cued_at,
+            cued_tick: 0,
+            cued_at: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn live_offset_ramps_caps_sums_and_waits() {
+        // uncapped ramp: 0.1/s, 30s past the cue -> 3.0
+        assert!((live_offset_at(&[live_drift(0.1, None, 10.0)], 40.0) - 3.0).abs() < 1e-12);
+        // capped: same ramp stops at 0.15
+        assert!((live_offset_at(&[live_drift(0.1, Some(0.15), 10.0)], 40.0) - 0.15).abs() < 1e-12);
+        // parallel: 0.1/s from t=10 plus 0.02/s from t=30, read at t=40
+        let pair = [live_drift(0.1, None, 10.0), live_drift(0.02, None, 30.0)];
+        assert!((live_offset_at(&pair, 40.0) - 3.2).abs() < 1e-12);
+        // before its cue: zero
+        assert!(live_offset_at(&[live_drift(0.1, None, 10.0)], 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn when_holds_ands_conditions_and_rejects_unknown() {
+        let w = DriftWhen::default();
+        assert!(when_holds(&w, 0.0, 0, &[]), "empty condition always holds");
+
+        let mut w = DriftWhen { seconds: Some(60.0), ..Default::default() };
+        assert!(!when_holds(&w, 59.9, 0, &[]));
+        assert!(when_holds(&w, 60.0, 0, &[]));
+
+        w.ticks = Some(5);
+        assert!(!when_holds(&w, 61.0, 4, &[]));
+        assert!(when_holds(&w, 61.0, 5, &[]));
+
+        w.param = Some(DriftParamWhen { param: 1, op: ">=".to_string(), value: 80.0 });
+        assert!(!when_holds(&w, 61.0, 5, &[50.0, 79.9]));
+        assert!(when_holds(&w, 61.0, 5, &[50.0, 80.0]));
+
+        // unknown operator never holds — declared, not guessed
+        w.param = Some(DriftParamWhen { param: 0, op: ">".to_string(), value: 0.0 });
+        assert!(!when_holds(&w, 100.0, 100, &[50.0]));
+        // out-of-range param index never holds
+        w.param = Some(DriftParamWhen { param: 9, op: ">=".to_string(), value: 0.0 });
+        assert!(!when_holds(&w, 100.0, 100, &[50.0]));
+    }
+
+    #[test]
+    fn declared_drifts_cue_once_and_run_parallel() {
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]],
+                 "drifts": [
+                    {"name": "early", "rate_per_second": 0.5, "when": {"ticks": 2}},
+                    {"name": "late", "rate_per_second": 0.25,
+                     "when": {"param": {"param": 0, "op": ">=", "value": 80.0}}}
+                 ]}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        }))
+        .unwrap();
+        let mut sim = Simulator::from_config(config);
+
+        sim.apply("a", &[50.0]); // T=1: neither condition holds
+        assert!(sim.nodes["a"].live_drifts.is_empty());
+
+        sim.apply("a", &[50.0]); // T=2: "early" cues
+        assert_eq!(sim.nodes["a"].live_drifts.len(), 1);
+        assert_eq!(sim.nodes["a"].live_drifts[0].name.as_deref(), Some("early"));
+        assert_eq!(sim.nodes["a"].live_drifts[0].cued_tick, 2);
+        assert_eq!(sim.nodes["a"].live_drifts[0].origin, "declared");
+
+        sim.apply("a", &[80.0]); // dial hits 80: "late" cues — parallel
+        assert_eq!(sim.nodes["a"].live_drifts.len(), 2);
+
+        pump(&mut sim, &[80.0], 50); // cue-once: nothing re-fires
+        assert_eq!(sim.nodes["a"].live_drifts.len(), 2);
+    }
+
+    #[test]
+    fn door_is_idempotent_per_node_and_moves_the_world() {
+        let mut sim = two_node_sim();
+        assert!(sim.drift_start("a", 10.0, Some(0.5), None).unwrap().is_ok());
+        assert!(
+            sim.drift_start("a", 0.1, None, None).unwrap().is_err(),
+            "second knock refuses"
+        );
+        assert!(sim.drift_start("nope", 0.1, None, None).is_none(), "unknown node");
+
+        // 10/s capped 0.5: after >=120ms the readout has visibly slid
+        // (a's base at default params is 0)
+        std::thread::sleep(Duration::from_millis(120));
+        let read = sim.get_status("a").unwrap()[0];
+        assert!(read > 0.0, "door drift moves the world, got {}", read);
+        let t = sim.truth("a").unwrap();
+        assert!(
+            t.objectives[0] > 0.0 && t.objectives[0] <= 0.5,
+            "truth carries the live drift within cap, got {}",
+            t.objectives[0]
+        );
+    }
+
+    #[test]
+    fn unfired_declared_drift_leaves_truth_alone() {
+        // truth is the read-only answer key: no cueing, no movement
+        // before the cue fires on a mutating path.
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]],
+                 "drifts": [{"rate_per_second": 100.0, "when": {"ticks": 1000}}]}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        }))
+        .unwrap();
+        let mut sim = Simulator::from_config(config);
+        sim.apply("a", &[100.0]); // cue check runs; ticks=1000 unmet
+        assert!(sim.nodes["a"].live_drifts.is_empty());
+        let t = sim.truth("a").unwrap();
+        assert!(
+            (t.objectives[0] - 1.0).abs() < 1e-9,
+            "unfired drift leaves truth alone, got {}",
+            t.objectives[0]
+        );
+    }
+
+    #[test]
+    fn door_composes_with_legacy_scheduled_offset() {
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]],
+                 "offset_drift_rate": 0.01}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        }))
+        .unwrap();
+        let mut sim = Simulator::from_config(config);
+        sim.apply("a", &[50.0]); // T=1: 0.5 + 0.01 legacy
+        assert!((sim.get_status("a").unwrap()[0] - 0.51).abs() < 1e-9);
+
+        sim.drift_start("a", 1.0, None, None).unwrap().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let read = sim.truth("a").unwrap().objectives[0];
+        assert!(
+            read > 0.55 && read < 0.75,
+            "legacy 0.51 + live ramp compose, got {}",
+            read
+        );
+    }
+
+    #[test]
+    fn reset_clears_live_drifts_and_rearms_the_door() {
+        let mut sim = two_node_sim();
+        sim.drift_start("a", 10.0, None, None).unwrap().unwrap();
+        assert_eq!(sim.nodes["a"].live_drifts.len(), 1);
+        let config = sim.nodes["a"].config.clone();
+        sim.nodes.insert("a".to_string(), NodeState::new(config));
+        assert!(sim.nodes["a"].live_drifts.is_empty());
+        assert!(sim.drift_start("a", 1.0, None, None).unwrap().is_ok());
     }
 }

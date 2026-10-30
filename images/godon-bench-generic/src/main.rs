@@ -28,11 +28,24 @@
 //
 //   GET  /health                    Liveness + node list
 //   GET  /config                    Return the loaded topology (ground truth)
+//
+// DRIFT ENDPOINTS (per node)
+//
+//   POST /{node_id}/drift/start     Cue a live readout drift NOW:
+//                                   body {rate_per_second, cap?, name?}.
+//                                   200 first cue, 409 if a door drift is
+//                                   already running on the node. The ramp
+//                                   runs on WALL TIME — the world's speed
+//                                   is not an artifact of trial cadence.
+//   GET  /{node_id}/drift/state     Running drifts (door + declared),
+//                                   cue stamps in BOTH clocks (uptime
+//                                   seconds + tick), current offsets.
 
 mod sim;
 
 use axum::{
     extract::{Path, State},
+    http::StatusCode,
     routing::{get, post},
     Json, Router,
 };
@@ -197,6 +210,101 @@ async fn reset(
     }
 }
 
+/// POST /{node_id}/drift/start — cue a live readout drift NOW. The
+/// stage door for story-cued slides (walk finished, hold landed —
+/// engine state the bench must never observe itself). One door drift
+/// per node: the second knock is a 409.
+#[derive(Debug, Deserialize)]
+struct DriftStartRequest {
+    rate_per_second: f64,
+    #[serde(default)]
+    cap: Option<f64>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+async fn drift_start(
+    State(state): State<Arc<AppState>>,
+    Path(node_id): Path<String>,
+    Json(req): Json<DriftStartRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if !req.rate_per_second.is_finite() || req.rate_per_second <= 0.0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "rate_per_second must be a positive finite number"
+            })),
+        );
+    }
+    let mut sim = state.sim.lock().unwrap();
+    match sim.drift_start(&node_id, req.rate_per_second, req.cap, req.name) {
+        Some(Ok(live)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "started",
+                "node": node_id,
+                "name": live.name,
+                "rate_per_second": live.rate_per_second,
+                "cap": live.cap,
+                "cued_uptime_secs": live.cued_uptime_secs,
+                "cued_tick": live.cued_tick,
+            })),
+        ),
+        Some(Err(())) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "status": "already_running",
+                "node": node_id,
+                "error": "a door drift is already running on this node"
+            })),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("unknown node: {node_id}")})),
+        ),
+    }
+}
+
+/// GET /{node_id}/drift/state — every running drift (door + declared)
+/// with its cue stamps in both clocks and its current offset.
+async fn drift_state(
+    State(state): State<Arc<AppState>>,
+    Path(node_id): Path<String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let sim = state.sim.lock().unwrap();
+    let Some(node) = sim.nodes.get(&node_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("unknown node: {node_id}")})),
+        );
+    };
+    let now = sim.uptime_secs();
+    let running: Vec<serde_json::Value> = node
+        .live_drifts
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "name": d.name,
+                "origin": d.origin,
+                "rate_per_second": d.rate_per_second,
+                "cap": d.cap,
+                "cued_uptime_secs": d.cued_uptime_secs,
+                "cued_tick": d.cued_tick,
+                "current_offset": sim::live_offset_at(std::slice::from_ref(d), now),
+            })
+        })
+        .collect();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "node": node_id,
+            "uptime_secs": now,
+            "total_ticks": sim.total_ticks,
+            "running": running,
+        })),
+    )
+}
+
 // ─── Main ───────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -248,6 +356,8 @@ async fn main() {
         .route("/{node_id}/status", get(status))
         .route("/{node_id}/truth", get(truth))
         .route("/{node_id}/reset", post(reset))
+        .route("/{node_id}/drift/start", post(drift_start))
+        .route("/{node_id}/drift/state", get(drift_state))
         .with_state(state);
 
     let port: u16 = std::env::var("PORT")
@@ -278,6 +388,7 @@ fn default_config() -> BenchConfig {
                 offset_drift_rate: 0.0,
                 offset_drift_cap: None,
                 offset_drift_start_tick: None,
+                drifts: vec![],
             },
             NodeConfig {
                 id: "node-2".to_string(),
@@ -293,6 +404,7 @@ fn default_config() -> BenchConfig {
                 offset_drift_rate: 0.0,
                 offset_drift_cap: None,
                 offset_drift_start_tick: None,
+                drifts: vec![],
             },
         ],
         edges: vec![SimEdgeConfig {
