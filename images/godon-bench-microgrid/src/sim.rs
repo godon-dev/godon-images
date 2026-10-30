@@ -478,4 +478,240 @@ mod tests {
         assert_eq!(fresh.coupling.neighbors, mg.coupling.neighbors);
         assert_eq!(fresh.coupling.factor, mg.coupling.factor);
     }
+
+    // ── the golden trajectory: one committed run, replayed within tolerance ──
+    //
+    // The single-shot tests above pin each formula at one point; the golden
+    // pins the SEQUENCE — wear followed by recovery, clamp transitions,
+    // coupling held across segments, metrics read after every segment.
+    // The committed artifact (tests/microgrid_trajectory.json) is written
+    // by an ignored regenerator and reviewed like a diff. Regenerate after
+    // a DELIBERATE physics change:
+    //   cargo test regenerate_the_golden_trajectory -- --ignored
+    // Floats compare at 1e-9 RELATIVE (two compilations of one source were
+    // observed 1 ULP apart on the greenhouse crate — same lesson here);
+    // structure and words compare exactly. The artifact is READ AT RUNTIME.
+
+    struct GoldenSegment {
+        draw: f64,
+        gen: f64,
+        storage: f64,
+        steps: u64,
+    }
+
+    struct GoldenRun {
+        label: &'static str,
+        seed: u64,
+        coupling: Option<(f64, Vec<NeighborStatus>)>,
+        segments: Vec<GoldenSegment>,
+    }
+
+    fn golden_runs() -> Vec<GoldenRun> {
+        vec![
+            // island life: moderate wear, an export-driven deep sag, a
+            // balanced recovery window, over-clamp values, then rest
+            GoldenRun {
+                label: "island_life",
+                seed: 42,
+                coupling: None,
+                segments: vec![
+                    GoldenSegment {
+                        draw: 600.0,
+                        gen: 200.0,
+                        storage: 0.0,
+                        steps: 30,
+                    },
+                    GoldenSegment {
+                        draw: 1000.0,
+                        gen: 0.0,
+                        storage: -400.0,
+                        steps: 40,
+                    },
+                    GoldenSegment {
+                        draw: 500.0,
+                        gen: 400.0,
+                        storage: 100.0,
+                        steps: 50,
+                    },
+                    GoldenSegment {
+                        draw: 5000.0,
+                        gen: 5000.0,
+                        storage: 600.0,
+                        steps: 20,
+                    },
+                    GoldenSegment {
+                        draw: 0.0,
+                        gen: 0.0,
+                        storage: 0.0,
+                        steps: 60,
+                    },
+                ],
+            },
+            // the coupled shadow: two synthetic neighbors re-applied before
+            // every segment (the /apply flow) — one busy, one balanced
+            GoldenRun {
+                label: "coupled_shadow",
+                seed: 42,
+                coupling: Some((
+                    0.3,
+                    vec![neighbor(800.0, 100.0, -200.0), neighbor(300.0, 250.0, 50.0)],
+                )),
+                segments: vec![
+                    GoldenSegment {
+                        draw: 400.0,
+                        gen: 100.0,
+                        storage: 0.0,
+                        steps: 40,
+                    },
+                    GoldenSegment {
+                        draw: 900.0,
+                        gen: 0.0,
+                        storage: 300.0,
+                        steps: 40,
+                    },
+                    GoldenSegment {
+                        draw: 200.0,
+                        gen: 150.0,
+                        storage: 50.0,
+                        steps: 40,
+                    },
+                ],
+            },
+        ]
+    }
+
+    fn replay_run(run: &GoldenRun) -> Vec<serde_json::Value> {
+        let (factor, neighbors) = match &run.coupling {
+            Some((f, ns)) => (*f, Some(ns.clone())),
+            None => (0.0, None),
+        };
+        let mut mg = Microgrid::with_coupling(run.seed, vec![], factor);
+        let mut out = Vec::new();
+        for seg in &run.segments {
+            if let Some(ns) = &neighbors {
+                mg.apply_coupling(ns);
+            }
+            mg.apply(params(seg.draw, seg.gen, seg.storage));
+            mg.run_steps(seg.steps);
+            let m = mg.metrics();
+            out.push(serde_json::to_value(&m).expect("metrics serialize"));
+        }
+        out
+    }
+
+    #[test]
+    #[ignore = "writes the committed artifact — run deliberately, review the diff"]
+    fn regenerate_the_golden_trajectory() {
+        let mut runs_json = Vec::new();
+        for run in golden_runs() {
+            let metrics = replay_run(&run);
+            let mut segments_json = Vec::new();
+            for (seg, m) in run.segments.iter().zip(metrics.iter()) {
+                segments_json.push(serde_json::json!({
+                    "draw": seg.draw,
+                    "gen": seg.gen,
+                    "storage": seg.storage,
+                    "steps": seg.steps,
+                    "metrics": m,
+                }));
+            }
+            runs_json.push(serde_json::json!({
+                "label": run.label,
+                "seed": run.seed,
+                "coupled": run.coupling.is_some(),
+                "segments": segments_json,
+            }));
+        }
+        let artifact = serde_json::json!({
+            "note": "the golden trajectory — regenerate via the ignored test, review like code",
+            "runs": runs_json,
+        });
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests");
+        std::fs::create_dir_all(dir).expect("tests dir");
+        let path = format!("{dir}/microgrid_trajectory.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&artifact).expect("pretty"))
+            .expect("write artifact");
+        println!("wrote {path}");
+    }
+
+    /// float leaves agree within 1e-9 RELATIVE — far below any physics
+    /// change, far above the 1-ULP codegen drift observed on the sister
+    /// crate. Structure and strings stay exact.
+    fn first_float_drift(
+        path: &str,
+        a: &serde_json::Value,
+        b: &serde_json::Value,
+    ) -> Option<String> {
+        match (a, b) {
+            (serde_json::Value::Number(x), serde_json::Value::Number(y)) => {
+                let (fx, fy) = (x.as_f64()?, y.as_f64()?);
+                let both_nan = fx.is_nan() && fy.is_nan();
+                let scale = fx.abs().max(fy.abs().max(1.0));
+                if both_nan || (fx - fy).abs() <= 1e-9 * scale {
+                    None
+                } else {
+                    Some(format!("{path}: {fx} vs {fy}"))
+                }
+            }
+            (serde_json::Value::Array(xs), serde_json::Value::Array(ys)) => {
+                if xs.len() != ys.len() {
+                    return Some(format!("{path}: {} entries vs {}", xs.len(), ys.len()));
+                }
+                xs.iter()
+                    .zip(ys.iter())
+                    .enumerate()
+                    .find_map(|(i, (x, y))| first_float_drift(&format!("{path}[{i}]"), x, y))
+            }
+            (serde_json::Value::Object(xm), serde_json::Value::Object(ym)) => {
+                if xm.len() != ym.len() {
+                    return Some(format!("{path}: {} keys vs {}", xm.len(), ym.len()));
+                }
+                xm.iter().find_map(|(k, x)| {
+                    let y = ym.get(k)?;
+                    first_float_drift(&format!("{path}.{k}"), x, y)
+                })
+            }
+            _ => {
+                if a == b {
+                    None
+                } else {
+                    Some(format!("{path}: {a} vs {b}"))
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_golden_trajectory_replays_within_tolerance() {
+        // read at RUNTIME: include_str! pins the compile-time copy and
+        // goes stale right after a regeneration
+        let path = format!(
+            "{}/tests/microgrid_trajectory.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let raw = std::fs::read_to_string(&path).expect("committed artifact present");
+        let artifact: serde_json::Value =
+            serde_json::from_str(&raw).expect("committed artifact parses");
+        let runs = artifact["runs"].as_array().expect("artifact carries runs");
+        let table = golden_runs();
+        assert_eq!(
+            runs.len(),
+            table.len(),
+            "artifact and table agree on run count"
+        );
+        for (rec, run) in runs.iter().zip(table.iter()) {
+            assert_eq!(rec["label"], run.label, "run order is part of the contract");
+            let metrics = replay_run(run);
+            let segs = rec["segments"].as_array().expect("segments");
+            assert_eq!(segs.len(), metrics.len(), "{}: segment count", run.label);
+            for (i, (seg, m)) in segs.iter().zip(metrics.iter()).enumerate() {
+                if let Some(diff) = first_float_drift("metrics", &seg["metrics"], m) {
+                    panic!(
+                        "{} segment {} drifted from the committed golden: {diff}",
+                        run.label, i
+                    );
+                }
+            }
+        }
+    }
 }
