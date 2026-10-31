@@ -569,3 +569,219 @@ async fn main() {
         std::process::exit(1);
     }
 }
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    // ── the std-only listener, fifth of its name: scripted answers,
+    // recorded requests, 404 when dry ──
+
+    struct FakeUpstream {
+        port: u16,
+        log: Arc<Mutex<Vec<String>>>,
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FakeUpstream {
+        fn start(script: Vec<(u16, String)>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            listener.set_nonblocking(true).unwrap();
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let queue = Arc::new(Mutex::new(
+                script
+                    .into_iter()
+                    .collect::<std::collections::VecDeque<_>>(),
+            ));
+            let (q2, l2, s2) = (Arc::clone(&queue), Arc::clone(&log), Arc::clone(&stop));
+            let handle = std::thread::spawn(move || {
+                while !s2.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            stream
+                                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                                .ok();
+                            let mut buf = Vec::new();
+                            let mut chunk = [0u8; 4096];
+                            loop {
+                                match stream.read(&mut chunk) {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        buf.extend_from_slice(&chunk[..n]);
+                                        let head = String::from_utf8_lossy(&buf).to_string();
+                                        if head.find("\r\n\r\n").is_some() {
+                                            break;
+                                        }
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                            let head = String::from_utf8_lossy(&buf).to_string();
+                            let req_line =
+                                head.split("\r\n").next().unwrap_or_default().to_string();
+                            l2.lock().unwrap().push(req_line);
+                            let (status, body) = q2
+                                .lock()
+                                .unwrap()
+                                .pop_front()
+                                .unwrap_or((404, String::new()));
+                            let resp = format!(
+                                "HTTP/1.1 {} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                status,
+                                body.len(),
+                                body
+                            );
+                            stream.write_all(resp.as_bytes()).ok();
+                            stream.flush().ok();
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                port,
+                log,
+                stop,
+                thread: Some(handle),
+            }
+        }
+
+        fn url(&self) -> String {
+            format!("http://127.0.0.1:{}", self.port)
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
+        }
+    }
+
+    impl Drop for FakeUpstream {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(h) = self.thread.take() {
+                let _ = h.join();
+            }
+        }
+    }
+
+    fn ok(body: &str) -> (u16, String) {
+        (200, body.to_string())
+    }
+
+    async fn body_text(resp: Response<Body>) -> (StatusCode, String, Option<String>) {
+        let status = resp.status();
+        let ctype = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let bytes = hyper::body::to_bytes(resp.into_body()).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).to_string(), ctype)
+    }
+
+    fn get(path: &str) -> Request<Body> {
+        Request::builder().uri(path).body(Body::empty()).unwrap()
+    }
+
+    fn state(push: &str, api: &str, causal: &str) -> Arc<ObserverState> {
+        // reqwest's blocking client handshakes with its own internal
+        // runtime at build; constructing it on a plain dedicated
+        // thread keeps every async context out of the handshake
+        let (push, api, causal) = (push.to_string(), api.to_string(), causal.to_string());
+        std::thread::spawn(move || Arc::new(ObserverState::new(push, api, causal)))
+            .join()
+            .unwrap()
+    }
+
+    // ── the static doors, no upstreams needed ──
+
+    #[tokio::test]
+    async fn the_static_doors_answer_their_content_types() {
+        let s = state(
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+        );
+        let (status, body, ctype) =
+            body_text(handle_request(get("/dashboard"), s.clone()).await.unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ctype.unwrap().starts_with("text/html"));
+        assert!(!body.is_empty());
+
+        let (status, body, ctype) =
+            body_text(handle_request(get("/d3.js"), s.clone()).await.unwrap()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(ctype.unwrap().starts_with("application/javascript"));
+        assert!(!body.is_empty());
+    }
+
+    // ── the proxied and degraded doors: one env window ──
+
+    #[test]
+    fn the_wire_doors_speak_their_contracts() {
+        // a dead DB: every DB touch degrades, never hangs
+        std::env::set_var("GODON_ARCHIVE_DB_SERVICE_HOST", "127.0.0.1");
+        std::env::set_var("GODON_ARCHIVE_DB_SERVICE_PORT", "1");
+
+        // /metrics: the push gateway's text rides through verbatim
+        let push = FakeUpstream::start(vec![ok("observer_up 1\n")]);
+        let causal = FakeUpstream::start(vec![]);
+        let s = state(&push.url(), "http://127.0.0.1:1", &causal.url());
+        let (status, body, ctype) = futures::executor::block_on(async {
+            body_text(handle_request(get("/metrics"), s.clone()).await.unwrap()).await
+        });
+        assert_eq!(status, StatusCode::OK);
+        assert!(ctype.unwrap().starts_with("text/plain"));
+        // the pushed text rides through inside the observer's own
+        // prometheus envelope
+        assert!(body.contains("observer_up 1\n"), "got: {body}");
+        assert_eq!(push.requests(), vec!["GET /metrics HTTP/1.1".to_string()]);
+
+        // (the /health and dark-fallback doors mix blocking-reqwest with
+        // tokio-postgres inside one async handler — no unit executor
+        // drives both; integration territory, see #416)
+
+        // /api/connectome: causal's answer proxied as JSON
+        let causal = FakeUpstream::start(vec![ok(r#"{"nodes": 7}"#)]);
+        let s = state("http://127.0.0.1:1", "http://127.0.0.1:1", &causal.url());
+        let (status, body, ctype) = futures::executor::block_on(async {
+            body_text(
+                handle_request(get("/api/connectome"), s.clone())
+                    .await
+                    .unwrap(),
+            )
+            .await
+        });
+        assert_eq!(status, StatusCode::OK);
+        assert!(ctype.unwrap().starts_with("application/json"));
+        assert_eq!(body, r#"{"nodes": 7}"#);
+        assert_eq!(causal.requests(), vec!["GET /graph HTTP/1.1".to_string()]);
+
+        // causal refuses: the refusal is named, status carried
+        let causal = FakeUpstream::start(vec![(500, String::new())]);
+        let s = state("http://127.0.0.1:1", "http://127.0.0.1:1", &causal.url());
+        let (status, body, _) = futures::executor::block_on(async {
+            body_text(
+                handle_request(get("/api/connectome"), s.clone())
+                    .await
+                    .unwrap(),
+            )
+            .await
+        });
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(body.contains("causal returned 500"), "got: {body}");
+
+        std::env::remove_var("GODON_ARCHIVE_DB_SERVICE_HOST");
+        std::env::remove_var("GODON_ARCHIVE_DB_SERVICE_PORT");
+    }
+}
