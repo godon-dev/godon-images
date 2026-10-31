@@ -1847,11 +1847,15 @@ fn promise_streak(events: &[wish_book::WalkEventRow], plan: Option<&serde_json::
     if bars <= 0.0 {
         return 0;
     }
+    // Evidence, not labels: the conviction is the judged MEDIAN versus
+    // the promise — the judge interleaves `missed`, `undecidable` and
+    // `replanned` (room 16: 109/48/116), so the streak counts judged
+    // events of ANY kind whose median broke the promise, skips events
+    // that carry no median (replans are not evidence of promise-
+    // keeping), and breaks only on a covered median: the world agreed
+    // with the map, conviction over.
     let mut streak = 0;
     for e in events.iter().rev() {
-        if e.event != "missed" {
-            break;
-        }
         let median = e
             .detail
             .as_ref()
@@ -1862,7 +1866,8 @@ fn promise_streak(events: &[wish_book::WalkEventRow], plan: Option<&serde_json::
             .and_then(|m| m.as_f64());
         match median {
             Some(m) if (m - predicted).abs() > bars => streak += 1,
-            _ => break,
+            Some(_) => break,
+            None => continue,
         }
     }
     streak
@@ -4426,6 +4431,16 @@ mod tests {
         serde_json::json!({ "claims": [{ "predicted": predicted, "bars": bars }] })
     }
 
+    fn undecidable_event(median: f64) -> wish_book::WalkEventRow {
+        wish_book::WalkEventRow {
+            tsz: 0.0,
+            event: "undecidable".to_string(),
+            detail: Some(serde_json::json!({
+                "judged": [{ "median": median, "bar": 0.01, "n": 3 }]
+            })),
+        }
+    }
+
     fn missed_event(median: f64) -> wish_book::WalkEventRow {
         wish_book::WalkEventRow {
             tsz: 0.0,
@@ -4441,11 +4456,17 @@ mod tests {
         // room 16's shape: predicted 0.808 with bars 0.012, delivered
         // 0.879/0.864/0.878 — every miss outside the plan's own ruler
         let plan = streak_plan(0.808, 0.012);
-        let evs = vec![
-            missed_event(0.879),
-            missed_event(0.864),
+        let mut evs = vec![
+            wish_book::WalkEventRow {
+                tsz: 0.0,
+                event: "replanned".to_string(),
+                detail: None,
+            },
+            undecidable_event(0.864),
             missed_event(0.878),
         ];
+        assert_eq!(promise_streak(&evs, Some(&plan)), 2);
+        evs.push(missed_event(0.879));
         assert_eq!(promise_streak(&evs, Some(&plan)), 3);
     }
 
@@ -4459,7 +4480,10 @@ mod tests {
             missed_event(0.878),
         ];
         assert_eq!(promise_streak(&evs, Some(&plan)), 1);
-        // and a non-missed event (a replan between misses) breaks the run
+        // a replan between misses carries no median — not evidence of
+        // promise-keeping; the conviction run continues through it
+        // (room 16's interleaving: the labels interleave, the
+        // evidence doesn't)
         let mut mixed = vec![
             missed_event(0.879),
             wish_book::WalkEventRow {
@@ -4469,9 +4493,9 @@ mod tests {
             },
             missed_event(0.878),
         ];
-        assert_eq!(promise_streak(&mixed, Some(&plan)), 1);
-        mixed.push(missed_event(0.9));
         assert_eq!(promise_streak(&mixed, Some(&plan)), 2);
+        mixed.push(missed_event(0.9));
+        assert_eq!(promise_streak(&mixed, Some(&plan)), 3);
     }
 
     #[test]
