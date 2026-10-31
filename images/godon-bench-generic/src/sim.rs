@@ -1589,4 +1589,342 @@ mod tests {
         assert!(sim.nodes["a"].live_drifts.is_empty());
         assert!(sim.drift_start("a", 1.0, None, None).unwrap().is_ok());
     }
+
+    // ── the golden trajectory: one committed run, replayed within tolerance ──
+    //
+    // The pointwise tests above pin single formulas; the golden pins
+    // SEQUENCES — coupling under edge drift across ticks, a morph's
+    // whole travel window, and the drift door's arithmetic at declared
+    // stamps. The committed artifact (tests/generic_trajectory.json)
+    // is written by an ignored regenerator and reviewed like a diff.
+    // Regenerate after a DELIBERATE physics change:
+    //   cargo test regenerate_the_golden_trajectory -- --ignored
+    // Floats compare at 1e-9 RELATIVE (the 1-ULP codegen drift lesson
+    // from the sister crates); structure and words compare exact.
+    // The artifact is READ AT RUNTIME, never include_str!'d.
+
+    fn golden_pair_config() -> BenchConfig {
+        let config = serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0]]},
+                {"id": "b", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[0.5]]}
+            ],
+            "edges": [
+                {"from": "a", "from_channel": 0, "to": "b", "to_channel": 0,
+                 "strength": 0.7, "drift_rate": 0.01}
+            ],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        });
+        serde_json::from_value(config).unwrap()
+    }
+
+    fn golden_morph_config() -> BenchConfig {
+        let config = serde_json::json!({
+            "nodes": [
+                {"id": "m", "params": 2, "objectives": 2, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 10.0,
+                 "weights": [[1.0, 0.0], [0.0, 1.0]],
+                 "morphs": [
+                     {"at_tick": 2, "travel_ticks": 4,
+                      "target_weights": [[2.0, 0.0], [0.0, 3.0]]}
+                 ]}
+            ],
+            "edges": [],
+            "noise": {"gaussian_sigma": 0.0, "colored_sigma": 0.0, "drift_rate": 0.0}
+        });
+        serde_json::from_value(config).unwrap()
+    }
+
+    fn truth_json(sim: &Simulator, node: &str) -> serde_json::Value {
+        serde_json::to_value(sim.truth(node).expect("node exists")).unwrap()
+    }
+
+    fn replay_pair_run() -> Vec<serde_json::Value> {
+        let mut sim = Simulator::from_config(golden_pair_config());
+        // the seed env is a process-global race; pin the rng by hand
+        sim.rng = rand::SeedableRng::seed_from_u64(42);
+        let mut segments = Vec::new();
+        for (tick, node, value) in [
+            (1u64, "a", 100.0f64),
+            (2, "b", 50.0),
+            (3, "a", 0.0),
+            (4, "b", 0.0),
+            (5, "a", 60.0),
+        ] {
+            let applied = sim.apply(node, &[value]);
+            assert_eq!(sim.total_ticks, tick, "one apply is one tick");
+            segments.push(serde_json::json!({
+                "apply": {"node": node, "value": value},
+                "returned": applied,
+                "truth_a": truth_json(&sim, "a"),
+                "truth_b": truth_json(&sim, "b"),
+            }));
+        }
+        segments
+    }
+
+    fn replay_morph_run() -> Vec<serde_json::Value> {
+        let mut sim = Simulator::from_config(golden_morph_config());
+        sim.rng = rand::SeedableRng::seed_from_u64(42);
+        let mut segments = Vec::new();
+        // six applies: before the morph window, through every quarter
+        // of the travel, and settled after it
+        for tick in 1..=6u64 {
+            let applied = sim.apply("m", &[3.0, 7.0]);
+            assert_eq!(sim.total_ticks, tick);
+            segments.push(serde_json::json!({
+                "tick": tick,
+                "applied": applied,
+                "truth_m": truth_json(&sim, "m"),
+            }));
+        }
+        segments
+    }
+
+    /// The drift door's pure arithmetic at declared stamps — the wall
+    /// clock never enters the answer key.
+    fn replay_drift_arithmetic() -> Vec<serde_json::Value> {
+        let mut cases = Vec::new();
+
+        let ramp = vec![LiveDrift {
+            name: Some("ramp".into()),
+            origin: "declared".into(),
+            rate_per_second: 0.5,
+            cap: None,
+            cued_uptime_secs: 10.0,
+            cued_tick: 4,
+        }];
+        for now in [10.0f64, 16.0, 34.0] {
+            cases.push(serde_json::json!({
+                "case": "uncapped_ramp", "now": now,
+                "offset": live_offset_at(&ramp, now),
+            }));
+        }
+
+        let capped = vec![LiveDrift {
+            name: Some("capped".into()),
+            origin: "declared".into(),
+            rate_per_second: 0.5,
+            cap: Some(3.0),
+            cued_uptime_secs: 10.0,
+            cued_tick: 4,
+        }];
+        cases.push(serde_json::json!({
+            "case": "cap_engages", "now": 20.0,
+            "offset": live_offset_at(&capped, 20.0),
+        }));
+
+        let falling = vec![LiveDrift {
+            name: Some("falling".into()),
+            origin: "declared".into(),
+            rate_per_second: -0.25,
+            cap: Some(2.0),
+            cued_uptime_secs: 0.0,
+            cued_tick: 0,
+        }];
+        cases.push(serde_json::json!({
+            "case": "negative_rate_signed_cap", "now": 20.0,
+            "offset": live_offset_at(&falling, 20.0),
+        }));
+        cases.push(serde_json::json!({
+            "case": "two_drifts_sum", "now": 20.0,
+            "offset": live_offset_at(
+                &[capped[0].clone(), falling[0].clone()],
+                20.0,
+            ),
+        }));
+        cases.push(serde_json::json!({
+            "case": "no_drifts", "now": 100.0,
+            "offset": live_offset_at(&[], 100.0),
+        }));
+        cases.push(serde_json::json!({
+            "case": "before_the_cue_clamps_to_zero", "now": 5.0,
+            "offset": live_offset_at(&ramp, 5.0),
+        }));
+
+        // the when-matrix: gates AND, param ops, unknowns refuse
+        let when = |json: serde_json::Value| -> DriftWhen { serde_json::from_value(json).unwrap() };
+        let params = vec![0.5, 2.0];
+        for (label, w, now, ticks) in [
+            ("empty_holds_always", when(serde_json::json!({})), 0.0, 0u64),
+            (
+                "seconds_gate",
+                when(serde_json::json!({"seconds": 30})),
+                29.9,
+                0,
+            ),
+            (
+                "seconds_gate_open",
+                when(serde_json::json!({"seconds": 30})),
+                30.0,
+                0,
+            ),
+            (
+                "ticks_gate",
+                when(serde_json::json!({"ticks": 5})),
+                100.0,
+                4,
+            ),
+            (
+                "both_gates_and",
+                when(serde_json::json!({"seconds": 10, "ticks": 5})),
+                20.0,
+                3,
+            ),
+        ] {
+            cases.push(serde_json::json!({
+                "case": label, "holds": when_holds(&w, now, ticks, &params),
+            }));
+        }
+        for (label, w) in [
+            (
+                "param_ge_holds",
+                when(serde_json::json!({"param": {"param": 1, "op": ">=", "value": 2.0}})),
+            ),
+            (
+                "param_le_refuses",
+                when(serde_json::json!({"param": {"param": 1, "op": "<=", "value": 1.0}})),
+            ),
+            (
+                "param_missing_index_refuses",
+                when(serde_json::json!({"param": {"param": 9, "op": ">=", "value": 0.0}})),
+            ),
+            (
+                "param_unknown_op_refuses",
+                when(serde_json::json!({"param": {"param": 1, "op": ">", "value": 0.0}})),
+            ),
+        ] {
+            cases.push(serde_json::json!({
+                "case": label, "holds": when_holds(&w, 0.0, 0, &params),
+            }));
+        }
+
+        // the door itself: first knock cues, second knock is refused
+        let mut sim = Simulator::from_config(golden_pair_config());
+        sim.rng = rand::SeedableRng::seed_from_u64(42);
+        let first = sim.drift_start("a", 0.5, Some(3.0), Some("golden".into()));
+        let second = sim.drift_start("a", 0.25, None, None);
+        let normalized = match first {
+            Some(Ok(mut d)) => {
+                d.cued_uptime_secs = 10.0; // the wall stamp normalized away
+                d
+            }
+            _ => panic!("first knock must cue"),
+        };
+        cases.push(serde_json::json!({
+            "case": "door_first_knock_cues",
+            "drift": serde_json::to_value(&normalized).unwrap(),
+            "second_knock_refused": matches!(second, Some(Err(()))),
+            "offset_at_16": live_offset_at(&[normalized], 16.0),
+        }));
+
+        cases
+    }
+
+    #[test]
+    #[ignore = "writes the committed artifact — run deliberately, review the diff"]
+    fn regenerate_the_golden_trajectory() {
+        let artifact = serde_json::json!({
+            "note": "the golden trajectory — regenerate via the ignored test, review like code",
+            "runs": [
+                {"label": "coupled_pair_edge_drift", "segments": replay_pair_run()},
+                {"label": "morph_travel_window", "segments": replay_morph_run()},
+                {"label": "drift_door_arithmetic", "cases": replay_drift_arithmetic()},
+            ],
+        });
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests");
+        std::fs::create_dir_all(dir).expect("tests dir");
+        let path = format!("{dir}/generic_trajectory.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&artifact).expect("pretty"))
+            .expect("write artifact");
+        println!("wrote {path}");
+    }
+
+    /// float leaves agree within 1e-9 RELATIVE; structure and strings
+    /// stay exact. (Same rule as the sister crates.)
+    fn first_float_drift(
+        path: &str,
+        a: &serde_json::Value,
+        b: &serde_json::Value,
+    ) -> Option<String> {
+        match (a, b) {
+            (serde_json::Value::Number(x), serde_json::Value::Number(y)) => {
+                let (fx, fy) = (x.as_f64()?, y.as_f64()?);
+                let both_nan = fx.is_nan() && fy.is_nan();
+                let scale = fx.abs().max(fy.abs().max(1.0));
+                if both_nan || (fx - fy).abs() <= 1e-9 * scale {
+                    None
+                } else {
+                    Some(format!("{path}: {fx} vs {fy}"))
+                }
+            }
+            (serde_json::Value::Array(xs), serde_json::Value::Array(ys)) => {
+                if xs.len() != ys.len() {
+                    return Some(format!("{path}: {} entries vs {}", xs.len(), ys.len()));
+                }
+                xs.iter()
+                    .zip(ys.iter())
+                    .enumerate()
+                    .find_map(|(i, (x, y))| first_float_drift(&format!("{path}[{i}]"), x, y))
+            }
+            (serde_json::Value::Object(xm), serde_json::Value::Object(ym)) => {
+                if xm.len() != ym.len() {
+                    return Some(format!("{path}: {} keys vs {}", xm.len(), ym.len()));
+                }
+                xm.iter().find_map(|(k, x)| {
+                    let y = ym.get(k)?;
+                    first_float_drift(&format!("{path}.{k}"), x, y)
+                })
+            }
+            _ => {
+                if a == b {
+                    None
+                } else {
+                    Some(format!("{path}: {a} vs {b}"))
+                }
+            }
+        }
+    }
+
+    fn assert_golden_segment_matches(
+        label: &str,
+        got: &serde_json::Value,
+        want: &serde_json::Value,
+    ) {
+        if let Some(drift) = first_float_drift(label, got, want) {
+            panic!("golden drift at {drift}");
+        }
+    }
+
+    #[test]
+    fn the_golden_trajectory_replays_within_tolerance() {
+        let path = format!(
+            "{}/tests/generic_trajectory.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let raw = std::fs::read_to_string(&path).expect("committed artifact present");
+        let artifact: serde_json::Value =
+            serde_json::from_str(&raw).expect("committed artifact parses");
+        let runs = artifact["runs"].as_array().expect("artifact carries runs");
+        assert_eq!(runs.len(), 3, "three golden runs");
+
+        let replayed = [
+            serde_json::json!({"label": "coupled_pair_edge_drift", "segments": replay_pair_run()}),
+            serde_json::json!({"label": "morph_travel_window", "segments": replay_morph_run()}),
+            serde_json::json!({"label": "drift_door_arithmetic", "cases": replay_drift_arithmetic()}),
+        ];
+        for (committed, now) in runs.iter().zip(replayed.iter()) {
+            let label = committed["label"].as_str().unwrap_or("?");
+            assert_eq!(
+                now["label"].as_str().unwrap_or("?"),
+                label,
+                "run order is part of the contract"
+            );
+            assert_golden_segment_matches(label, now, committed);
+        }
+    }
 }
