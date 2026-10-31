@@ -1,5 +1,7 @@
 mod auth;
 mod component;
+#[cfg(test)]
+mod testkit;
 
 use clap::Parser;
 use std::env;
