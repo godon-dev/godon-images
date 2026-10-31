@@ -942,4 +942,89 @@ mod tests {
         assert!(parse_timestamp_secs("garbage").is_none());
         assert!(parse_timestamp_secs("").is_none());
     }
+
+    // ── the parsers and stats: hand-computed, the numbers from the
+    // declared formulas — never from running the code under test ──
+
+    #[test]
+    fn round4_rounds_to_four_decimals_half_away_from_zero() {
+        assert_eq!(round4(0.123456), 0.1235);
+        assert_eq!(round4(2.00004), 2.0);
+        assert_eq!(round4(1234.56789), 1234.5679);
+        assert_eq!(round4(-2.00005), -2.0001);
+    }
+
+    #[test]
+    fn median_sorts_then_takes_the_middle() {
+        assert_eq!(median(&[]), 0.0);
+        assert_eq!(median(&[7.0]), 7.0);
+        assert_eq!(median(&[1.0, 3.0, 2.0]), 2.0); // odd: the middle
+        assert_eq!(median(&[4.0, 1.0, 3.0, 2.0]), 2.5); // even: mean of middles
+        assert_eq!(median(&[1.0, 2.0, 3.0, 4.0]), 2.5);
+    }
+
+    #[test]
+    fn mad_scales_the_median_deviation() {
+        assert_eq!(mad(&[]), 0.0);
+        assert_eq!(mad(&[10.0, 10.0, 10.0]), 0.0); // no spread, no mad
+                                                   // median 3, deviations [2,1,0,1,2], median deviation 1
+        assert_eq!(mad(&[1.0, 2.0, 3.0, 4.0, 5.0]), 1.4826);
+        // median 5, deviations [3,1,1,3], median deviation 2
+        assert_eq!(mad(&[2.0, 4.0, 6.0, 8.0]), 2.9652);
+    }
+
+    #[test]
+    fn tz_offsets_decode_both_spellings() {
+        assert_eq!(parse_tz_offset("+02:00"), Some(7200.0));
+        assert_eq!(parse_tz_offset("-05:30"), Some(-19800.0));
+        assert_eq!(parse_tz_offset("+0545"), Some(20700.0)); // compact form
+        assert_eq!(parse_tz_offset("+0000"), Some(0.0));
+        assert_eq!(parse_tz_offset(""), Some(0.0)); // absent means UTC here
+        assert_eq!(parse_tz_offset("+ab:00"), None); // not numbers
+        assert_eq!(parse_tz_offset("-1x:30"), None);
+    }
+
+    #[test]
+    fn timestamps_reduce_by_the_declared_calendar() {
+        // 26 * 365.25 = 9496.5 days from 2000; June adds 151 + 14;
+        // (9496.5 + 165) * 86400 = 834_753_600; +10h +23m +45s
+        assert_eq!(
+            parse_timestamp_secs("2026-06-14 10:23:45"),
+            Some(834_791_025.0)
+        );
+        // T separator, microseconds, and +00:00 all land on the same second
+        assert_eq!(
+            parse_timestamp_secs("2026-06-14T10:23:45.123456+00:00"),
+            Some(834_791_025.0)
+        );
+        // the year's first second: (9496.5 + 1) * 86400 = 820_584_000
+        assert_eq!(
+            parse_timestamp_secs("2026-01-01T00:00:00"),
+            Some(820_584_000.0)
+        );
+    }
+
+    #[test]
+    fn timestamp_offsets_add_under_the_current_convention() {
+        // The code ADDS the parsed offset to the epoch sum — recorded
+        // here as the current contract; whether UTC conversion should
+        // subtract is a holder ruling, not a test's to make.
+        assert_eq!(
+            parse_timestamp_secs("2026-06-14 10:23:45+02:00"),
+            Some(834_798_225.0) // 834_791_025 + 7200
+        );
+        assert_eq!(
+            parse_timestamp_secs("2026-06-14T10:23:45-03:00"),
+            Some(834_780_225.0) // 834_791_025 - 10800
+        );
+    }
+
+    #[test]
+    fn malformed_timestamps_refuse_instead_of_guessing() {
+        assert_eq!(parse_timestamp_secs("not-a-timestamp"), None);
+        assert_eq!(parse_timestamp_secs("2026-06-14"), None); // no time half
+        assert_eq!(parse_timestamp_secs("2026-06-14T10:23"), None); // no seconds
+        assert_eq!(parse_timestamp_secs("xx-yy-zzT10:23:45"), None); // not numbers
+        assert_eq!(parse_timestamp_secs(""), None);
+    }
 }
