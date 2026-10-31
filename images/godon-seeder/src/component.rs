@@ -241,6 +241,21 @@ impl WindmillDeployer {
         })
     }
 
+    /// A test seam: the same deployer pointed at a declared base url
+    /// with a standing token, instead of the environment. The wire
+    /// contract is the thing under test — the fakes speak real HTTP
+    /// against a local listener, never a mocked client.
+    #[cfg(test)]
+    fn with_base_url(base_url: &str, max_retries: u32, retry_delay: u64) -> Self {
+        Self {
+            client: Client::new(),
+            base_url: base_url.to_string(),
+            token: "test-token".to_string(),
+            max_retries,
+            retry_delay,
+        }
+    }
+
     fn auth_headers(&self) -> reqwest::header::HeaderMap {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
@@ -1431,5 +1446,602 @@ mod tests {
         cfg.target = String::new();
         cfg.schedules[0].script = "duty".into();
         assert_eq!(d.deploy_component_schedules("w", &cfg), 1);
+    }
+
+    // ── the fake windmill: one local listener, the wire's contracts ──
+    // The seeder's failures live on the HTTP path (90+ of the 118
+    // missed mutants of run 41067775364), so the oracle is a listener
+    // that answers with the declared contract and records every
+    // request for the asserts.
+
+    use std::collections::VecDeque;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    struct Recorded {
+        method: String,
+        path: String,
+        body: String,
+        bearer: Option<String>,
+    }
+
+    /// Script: one (status, body) per expected request, answered in
+    /// arrival order. When the script runs dry the listener answers
+    /// 404 — a mis-counted test fails loudly on its asserts instead
+    /// of hanging.
+    struct FakeWindmill {
+        port: u16,
+        log: Arc<Mutex<Vec<Recorded>>>,
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    fn write_response(stream: &mut TcpStream, status: u16, body: &str) {
+        let reason = match status {
+            200 => "OK",
+            201 => "Created",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            404 => "Not Found",
+            409 => "Conflict",
+            500 => "Internal Server Error",
+            _ => "OK",
+        };
+        let resp = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            status,
+            reason,
+            body.len(),
+            body
+        );
+        stream.write_all(resp.as_bytes()).ok();
+        stream.flush().ok();
+    }
+
+    fn read_request(stream: &mut TcpStream) -> Option<Recorded> {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                    if buf.len() > 1_048_576 {
+                        break;
+                    }
+                }
+                Err(_) => return None,
+            }
+        }
+        let head = String::from_utf8_lossy(&buf).to_string();
+        let mut lines = head.split("\r\n");
+        let request_line = lines.next()?.to_string();
+        let mut parts = request_line.split_whitespace();
+        let method = parts.next()?.to_string();
+        let path = parts.next()?.to_string();
+        let mut content_length = 0usize;
+        let mut bearer = None;
+        for line in lines {
+            if line.is_empty() {
+                break;
+            }
+            let lower = line.to_ascii_lowercase();
+            if let Some(v) = lower.strip_prefix("content-length:") {
+                content_length = v.trim().parse().unwrap_or(0);
+            } else if lower.strip_prefix("authorization:").is_some() {
+                bearer = line[15..]
+                    .trim()
+                    .strip_prefix("Bearer ")
+                    .map(str::to_string);
+            }
+        }
+        let header_end = head.find("\r\n\r\n").map(|i| i + 4).unwrap_or(buf.len());
+        let mut body = buf[header_end.min(buf.len())..].to_vec();
+        while body.len() < content_length {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => body.extend_from_slice(&chunk[..n]),
+                Err(_) => break,
+            }
+        }
+        if body.len() > content_length {
+            body.truncate(content_length);
+        }
+        Some(Recorded {
+            method,
+            path,
+            body: String::from_utf8_lossy(&body).to_string(),
+            bearer,
+        })
+    }
+
+    impl FakeWindmill {
+        fn start(script: Vec<(u16, String)>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            listener.set_nonblocking(true).unwrap();
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let queue = Arc::new(Mutex::new(script.into_iter().collect::<VecDeque<_>>()));
+
+            let srv_log = Arc::clone(&log);
+            let srv_stop = Arc::clone(&stop);
+            let srv_queue = Arc::clone(&queue);
+            let handle = std::thread::spawn(move || {
+                while !srv_stop.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+                            if let Some(recorded) = read_request(&mut stream) {
+                                log_push(&srv_log, recorded);
+                                let (status, body) = srv_queue
+                                    .lock()
+                                    .unwrap()
+                                    .pop_front()
+                                    .unwrap_or((404, String::new()));
+                                write_response(&mut stream, status, &body);
+                            }
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+
+            Self {
+                port,
+                log,
+                stop,
+                thread: Some(handle),
+            }
+        }
+
+        fn url(&self) -> String {
+            format!("http://127.0.0.1:{}", self.port)
+        }
+
+        fn deployer(&self) -> WindmillDeployer {
+            WindmillDeployer::with_base_url(&self.url(), 0, 0)
+        }
+
+        fn recorded(&self) -> Vec<(String, String)> {
+            self.log
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|r| (r.method.clone(), r.path.clone()))
+                .collect()
+        }
+
+        fn bodies(&self, fragment: &str) -> Vec<serde_json::Value> {
+            self.log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.path.contains(fragment))
+                .map(|r| serde_json::from_str(&r.body).unwrap_or(serde_json::Value::Null))
+                .collect()
+        }
+
+        fn bearers(&self) -> Vec<Option<String>> {
+            self.log
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|r| r.bearer.clone())
+                .collect()
+        }
+    }
+
+    fn log_push(log: &Mutex<Vec<Recorded>>, recorded: Recorded) {
+        log.lock().unwrap().push(recorded);
+    }
+
+    impl Drop for FakeWindmill {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(handle) = self.thread.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn ok(body: &str) -> (u16, String) {
+        (200, body.to_string())
+    }
+    fn created() -> (u16, String) {
+        (201, String::new())
+    }
+
+    #[test]
+    fn workspace_existence_reads_the_body_verbatim() {
+        let f = FakeWindmill::start(vec![ok("true")]);
+        let d = f.deployer();
+        assert!(d.workspace_exists("w1").unwrap());
+        assert_eq!(
+            f.recorded(),
+            vec![("POST".into(), "/api/workspaces/exists".into())]
+        );
+        assert_eq!(f.bearers(), vec![Some("test-token".into())]);
+
+        let f = FakeWindmill::start(vec![ok("false")]);
+        let d = f.deployer();
+        assert!(!d.workspace_exists("w1").unwrap());
+    }
+
+    #[test]
+    fn workspace_is_created_only_when_absent() {
+        // absent -> the create call goes out
+        let f = FakeWindmill::start(vec![ok("false"), created()]);
+        let d = f.deployer();
+        d.create_workspace("w1").unwrap();
+        assert_eq!(f.recorded()[1].1, "/api/workspaces/create");
+        let body = &f.bodies("/api/workspaces/create")[0];
+        assert_eq!(body["id"], json!("w1"));
+        assert_eq!(body["name"], json!("w1"));
+
+        // present -> no create traffic at all
+        let f = FakeWindmill::start(vec![ok("true")]);
+        let d = f.deployer();
+        d.create_workspace("w1").unwrap();
+        assert_eq!(f.recorded().len(), 1);
+
+        // a conflict is tolerated as already-created
+        let f = FakeWindmill::start(vec![ok("false"), (409, String::new())]);
+        let d = f.deployer();
+        assert!(d.create_workspace("w1").is_ok());
+
+        // a server error is refused
+        let f = FakeWindmill::start(vec![ok("false"), (500, String::new())]);
+        let d = f.deployer();
+        assert!(d.create_workspace("w1").is_err());
+    }
+
+    #[test]
+    fn folder_creation_posts_only_the_top_level() {
+        let f = FakeWindmill::start(vec![created()]);
+        let d = f.deployer();
+        d.create_folder("w1", "f/t1/sub/deep").unwrap();
+        assert_eq!(f.recorded()[0].1, "/api/w/w1/folders/create");
+        let body = &f.bodies("/folders/create")[0];
+        assert_eq!(body["name"], json!("t1"));
+    }
+
+    #[test]
+    fn existence_checks_follow_body_and_status() {
+        // script: 200 true, 200 false, and a non-200 answers false
+        let f = FakeWindmill::start(vec![ok("true")]);
+        assert!(f.deployer().script_exists("w1", "f/t1/run").unwrap());
+        let f = FakeWindmill::start(vec![ok("false")]);
+        assert!(!f.deployer().script_exists("w1", "f/t1/run").unwrap());
+        let f = FakeWindmill::start(vec![(404, String::new())]);
+        assert!(!f.deployer().script_exists("w1", "f/t1/run").unwrap());
+        assert_eq!(f.recorded()[0].0, "GET");
+
+        // the flow door answers the same grammar
+        let f = FakeWindmill::start(vec![ok("true"), ok("false")]);
+        assert!(f.deployer().flow_exists("w1", "f/t1/flow").unwrap());
+        assert!(!f.deployer().flow_exists("w1", "f/t1/flow").unwrap());
+
+        // and the schedule door
+        let f = FakeWindmill::start(vec![ok("true"), (404, String::new())]);
+        assert!(f
+            .deployer()
+            .schedule_exists("w1", "f/t1/run_schedule")
+            .unwrap());
+        assert!(!f
+            .deployer()
+            .schedule_exists("w1", "f/t1/run_schedule")
+            .unwrap());
+    }
+
+    #[test]
+    fn script_deployment_posts_the_declared_shape_and_demands_201() {
+        let f = FakeWindmill::start(vec![created()]);
+        let d = f.deployer();
+        d.deploy_script(
+            "w1",
+            "f/t1/run",
+            "print(42)",
+            &ScriptSettings {
+                summary: "s".into(),
+                description: "d".into(),
+                timeout: None,
+                tag: None,
+            },
+            "run.py",
+        )
+        .unwrap();
+        let body = &f.bodies("/scripts/create")[0];
+        assert_eq!(body["path"], json!("f/t1/run"));
+        assert_eq!(body["content"], json!("print(42)"));
+        assert_eq!(body["language"], json!("python3"));
+        assert_eq!(body["summary"], json!("s"));
+        assert_eq!(body["description"], json!("d"));
+        assert!(body.get("timeout").is_none());
+        assert!(body.get("tag").is_none());
+
+        // optional fields ride only when declared
+        let f = FakeWindmill::start(vec![created()]);
+        let d = f.deployer();
+        d.deploy_script(
+            "w1",
+            "f/t1/run",
+            "x",
+            &ScriptSettings {
+                summary: "s".into(),
+                description: "d".into(),
+                timeout: Some(30),
+                tag: Some("T".into()),
+            },
+            "run.ts",
+        )
+        .unwrap();
+        let body = &f.bodies("/scripts/create")[0];
+        assert_eq!(body["language"], json!("nativets"));
+        assert_eq!(body["timeout"], json!(30));
+        assert_eq!(body["tag"], json!("T"));
+
+        // 201 is the only success — a plain 200 is a refusal
+        let f = FakeWindmill::start(vec![ok("")]);
+        let d = f.deployer();
+        assert!(d
+            .deploy_script("w1", "f/t1/run", "x", &ScriptSettings::default(), "run.py")
+            .is_err());
+    }
+
+    #[test]
+    fn flow_deployment_merges_the_declared_settings_into_the_yaml() {
+        let yaml = "summary: original\ndescription: origdesc\nsteps: []\n";
+        let f = FakeWindmill::start(vec![created()]);
+        let d = f.deployer();
+        d.deploy_flow(
+            "w1",
+            "f/t1/flow",
+            yaml,
+            &FlowSettings {
+                summary: "S".into(),
+                description: "D".into(),
+                deployment_message: Some("M".into()),
+            },
+        )
+        .unwrap();
+        let body = &f.bodies("/flows/create")[0];
+        assert_eq!(body["path"], json!("f/t1/flow"));
+        assert_eq!(body["summary"], json!("S"));
+        assert_eq!(body["description"], json!("D"));
+        assert_eq!(body["deployment_message"], json!("M"));
+
+        // empty settings blank the fields and carry no message
+        let f = FakeWindmill::start(vec![created()]);
+        let d = f.deployer();
+        d.deploy_flow("w1", "f/t1/flow", yaml, &FlowSettings::default())
+            .unwrap();
+        let body = &f.bodies("/flows/create")[0];
+        assert_eq!(body["summary"], json!(""));
+        assert_eq!(body["description"], json!(""));
+        assert!(body.get("deployment_message").is_none());
+
+        // 201 or nothing
+        let f = FakeWindmill::start(vec![ok("")]);
+        assert!(f
+            .deployer()
+            .deploy_flow("w1", "f/t1/flow", yaml, &FlowSettings::default())
+            .is_err());
+    }
+
+    #[test]
+    fn schedule_deployment_posts_the_declared_trigger() {
+        let f = FakeWindmill::start(vec![created()]);
+        let d = f.deployer();
+        d.deploy_schedule(
+            "w1",
+            "f/t1/run_schedule",
+            "0 * * * * *",
+            "f/t1/run",
+            "the summary",
+        )
+        .unwrap();
+        let body = &f.bodies("/schedules/create")[0];
+        assert_eq!(body["path"], json!("f/t1/run_schedule"));
+        assert_eq!(body["schedule"], json!("0 * * * * *"));
+        assert_eq!(body["timezone"], json!("UTC"));
+        assert_eq!(body["script_path"], json!("f/t1/run"));
+        assert_eq!(body["is_flow"], json!(false));
+        assert_eq!(body["enabled"], json!(true));
+        assert_eq!(body["summary"], json!("the summary"));
+
+        // 200 or 201 carry it; anything else refuses
+        let f = FakeWindmill::start(vec![(500, "boom".into())]);
+        assert!(f
+            .deployer()
+            .deploy_schedule("w1", "p", "0 * * * * *", "f/t1/run", "s")
+            .is_err());
+    }
+
+    #[test]
+    fn retries_attempt_the_declared_count_and_no_more() {
+        // two refusals, then the door opens: three creates in total
+        let f = FakeWindmill::start(vec![
+            ok("false"),
+            (500, String::new()),
+            (500, String::new()),
+            created(),
+        ]);
+        let d = WindmillDeployer::with_base_url(&f.url(), 2, 0);
+        d.deploy_script_with_retry("w1", "f/t1/run", "x", &ScriptSettings::default(), "run.py")
+            .unwrap();
+        assert_eq!(f.recorded().len(), 4);
+        assert_eq!(
+            f.recorded()
+                .iter()
+                .filter(|(_, p)| p.contains("scripts/create"))
+                .count(),
+            3
+        );
+
+        // exhausted: exists + exactly max_retries+1 creates, then Err
+        let f = FakeWindmill::start(vec![
+            ok("false"),
+            (500, String::new()),
+            (500, String::new()),
+            (500, String::new()),
+        ]);
+        let d = WindmillDeployer::with_base_url(&f.url(), 2, 0);
+        assert!(d
+            .deploy_script_with_retry("w1", "f/t1/run", "x", &ScriptSettings::default(), "run.py")
+            .is_err());
+        assert_eq!(
+            f.recorded()
+                .iter()
+                .filter(|(_, p)| p.contains("scripts/create"))
+                .count(),
+            3
+        );
+
+        // already present: one exists check, zero creates
+        let f = FakeWindmill::start(vec![ok("true")]);
+        let d = WindmillDeployer::with_base_url(&f.url(), 2, 0);
+        d.deploy_script_with_retry("w1", "f/t1/run", "x", &ScriptSettings::default(), "run.py")
+            .unwrap();
+        assert_eq!(f.recorded().len(), 1);
+    }
+
+    #[test]
+    fn component_schedules_count_failures_exactly() {
+        // the happy path: planted script, absent schedule, one create
+        let f = FakeWindmill::start(vec![ok("true"), ok("false"), created()]);
+        let d = f.deployer();
+        let cfg = ComponentConfig {
+            name: "comp".into(),
+            target: "t1".into(),
+            schedules: vec![ScheduleSpec {
+                script: "duty".into(),
+                every_seconds: 60,
+            }],
+            ..Default::default()
+        };
+        assert_eq!(d.deploy_component_schedules("w1", &cfg), 0);
+        let body = &f.bodies("/schedules/create")[0];
+        assert_eq!(body["path"], json!("f/t1/duty_schedule"));
+        assert_eq!(body["schedule"], json!("0 * * * * *"));
+        assert_eq!(body["script_path"], json!("f/t1/duty"));
+
+        // a schedule whose script this run did not plant: one failure,
+        // and no schedule traffic
+        let f = FakeWindmill::start(vec![ok("false")]);
+        let d = f.deployer();
+        assert_eq!(d.deploy_component_schedules("w1", &cfg), 1);
+        assert!(f
+            .recorded()
+            .iter()
+            .all(|(_, p)| !p.contains("schedules/create")));
+
+        // mixed: a bad cadence refuses without traffic, a good one
+        // plants — exactly one failure. Both scripts answer planted
+        // (two exists checks); only the good one reaches the schedule
+        // door, because the cadence refusal spends no HTTP.
+        let f = FakeWindmill::start(vec![ok("true"), ok("true"), ok("false"), created()]);
+        let d = f.deployer();
+        let cfg = ComponentConfig {
+            name: "comp".into(),
+            target: "t1".into(),
+            schedules: vec![
+                ScheduleSpec {
+                    script: "odd".into(),
+                    every_seconds: 90, // neither whole seconds nor whole minutes
+                },
+                ScheduleSpec {
+                    script: "duty".into(),
+                    every_seconds: 60,
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(d.deploy_component_schedules("w1", &cfg), 1);
+        assert_eq!(f.bodies("/schedules/create").len(), 1);
+    }
+
+    #[test]
+    fn seed_workspace_walks_the_declared_component_end_to_end() {
+        // one env, two scenarios, one process: the env is global, so
+        // both rides share this test's single set_var window.
+        env::set_var("WM_TOKEN", "seed-token");
+
+        // ── the happy component: workspace, folder, script, schedule ──
+        let root = temp_root("seed-happy");
+        let comp = root.join("comp");
+        std::fs::create_dir_all(&comp).unwrap();
+        std::fs::write(
+            comp.join("component.yaml"),
+            "name: comp\ntarget: t1\nworkspace: w1\nscripts:\n  - pattern: \"*.py\"\nschedules:\n  - script: duty\n    every_seconds: 60\n",
+        )
+        .unwrap();
+        std::fs::write(comp.join("run.py"), "print(1)\n").unwrap();
+
+        let f = FakeWindmill::start(vec![
+            ok("false"), // workspace w1 does not exist
+            created(),   // create workspace
+            created(),   // create folder
+            ok("false"), // planted script does not exist
+            created(),   // create script
+            ok("true"),  // the scheduled script is planted
+            ok("false"), // the schedule does not exist
+            created(),   // create schedule
+        ]);
+        env::set_var("WINDMILL_BASE_URL", f.url());
+        let failures =
+            seed_workspace(&[comp.to_string_lossy().to_string()], "default_ws", 0, 0).unwrap();
+        assert_eq!(failures, 0, "the happy component seeds clean");
+        let schedule = &f.bodies("/schedules/create")[0];
+        assert_eq!(schedule["path"], json!("f/t1/duty_schedule"));
+        assert_eq!(schedule["script_path"], json!("f/t1/duty"));
+        // the workspace was asked before it was created
+        assert_eq!(f.recorded()[0].1, "/api/workspaces/exists");
+        assert_eq!(f.recorded()[1].1, "/api/workspaces/create");
+        // the script create carried the file's language
+        let script = &f.bodies("/scripts/create")[0];
+        assert_eq!(script["language"], json!("python3"));
+
+        // ── the cadence fault: everything plants, the schedule refuses ──
+        let root = temp_root("seed-cadence");
+        let comp = root.join("comp");
+        std::fs::create_dir_all(&comp).unwrap();
+        std::fs::write(
+            comp.join("component.yaml"),
+            "name: comp\ntarget: t1\nworkspace: w1\nscripts:\n  - pattern: \"*.py\"\nschedules:\n  - script: duty\n    every_seconds: 90\n",
+        )
+        .unwrap();
+        std::fs::write(comp.join("run.py"), "print(1)\n").unwrap();
+
+        let f = FakeWindmill::start(vec![
+            ok("false"),
+            created(),
+            created(),
+            ok("false"),
+            created(),
+            ok("true"), // planted, then the cadence refuses — no more traffic
+        ]);
+        env::set_var("WINDMILL_BASE_URL", f.url());
+        let failures =
+            seed_workspace(&[comp.to_string_lossy().to_string()], "default_ws", 0, 0).unwrap();
+        assert_eq!(
+            failures, 1,
+            "the unspeakable cadence is exactly one failure"
+        );
+        assert!(f
+            .recorded()
+            .iter()
+            .all(|(_, p)| !p.contains("schedules/create")));
+
+        env::remove_var("WINDMILL_BASE_URL");
+        env::remove_var("WM_TOKEN");
     }
 }
