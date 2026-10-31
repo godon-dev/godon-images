@@ -704,88 +704,29 @@ fn mad(v: &[f64]) -> f64 {
 /// Parse an ISO 8601 / RFC 3339 timestamp string to epoch seconds.
 /// Returns None if parsing fails. Used for cross-systemtender trial alignment.
 pub fn parse_timestamp_secs(ts: &str) -> Option<f64> {
-    // Optuna timestamps from YugaByte look like "2026-06-14 10:23:45.123456+00"
-    // or "2026-06-14T10:23:45.123456+00:00"
-    // Strategy: normalize to ISO 8601, then parse.
-    let normalized = ts.trim().replace(' ', "T");
-
-    // Try parsing with a simple manual parser (no chrono dependency).
-    // Format: YYYY-MM-DDTHH:MM:SS[.ffffff][+ZZ:ZZ]
-    let parts: Vec<&str> = normalized.split('T').collect();
-    if parts.len() != 2 {
-        return None;
-    }
-
-    let date_parts: Vec<&str> = parts[0].split('-').collect();
-    if date_parts.len() != 3 {
-        return None;
-    }
-    let year: f64 = date_parts[0].parse().ok()?;
-    let month: f64 = date_parts[1].parse().ok()?;
-    let day: f64 = date_parts[2].parse().ok()?;
-
-    // Split time from timezone offset
-    let time_part = parts[1];
-    let (time_str, tz_offset_secs) = if let Some(pos) = time_part.find(['+', '-']) {
-        // Don't split on the '-' in the date or the '.' in seconds
-        // Check that this + or - is after position 2 (HH:MM:SS minimum)
-        if pos >= 8 {
-            (&time_part[..pos], parse_tz_offset(&time_part[pos..]))
-        } else {
-            (time_part, Some(0.0))
+    let mut normalized = ts.trim().replace(' ', "T");
+    // the estate's YugaByte stamps sometimes carry a two-digit offset
+    // ("+00"); RFC 3339 wants "+00:00"
+    if let Some(pos) = normalized.rfind(['+', '-']) {
+        if pos >= 8 && normalized[pos..].len() == 3 {
+            normalized.push_str(":00");
         }
-    } else {
-        (time_part, Some(0.0))
-    };
-
-    let time_clean = time_str.split('.').next().unwrap_or(time_str);
-    let time_parts: Vec<&str> = time_clean.split(':').collect();
-    if time_parts.len() < 3 {
+    }
+    // seconds are not optional in this door: "T10:23" is not a
+    // trial stamp (jiff's civil parse would accept it)
+    let time_half = normalized.split_once('T')?.1;
+    if time_half.split(':').count() < 3 {
         return None;
     }
-    let hour: f64 = time_parts[0].parse().ok()?;
-    let minute: f64 = time_parts[1].parse().ok()?;
-    let second: f64 = time_parts[2].parse().ok()?;
-
-    // Convert to epoch seconds (simplified — assumes UTC, ignores leap years beyond standard)
-    // Days from year 2000 to given year
-    let days_from_2000 = (year - 2000.0) * 365.25;
-    // Month to day-of-year (approximate)
-    let month_days = [
-        0.0, 31.0, 59.0, 90.0, 120.0, 151.0, 181.0, 212.0, 243.0, 273.0, 304.0, 334.0,
-    ];
-    let day_of_year = month_days
-        .get((month as usize).saturating_sub(1).min(11))
-        .copied()
-        .unwrap_or(0.0)
-        + day;
-    let epoch = (days_from_2000 + day_of_year) * 86400.0
-        + hour * 3600.0
-        + minute * 60.0
-        + second
-        + tz_offset_secs.unwrap_or(0.0);
-    Some(epoch)
-}
-
-fn parse_tz_offset(s: &str) -> Option<f64> {
-    // Parse "+HH:MM" or "-HH:MM" or "+HHMM"
-    if s.is_empty() {
-        return Some(0.0);
-    }
-    let sign = if s.starts_with('-') { -1.0 } else { 1.0 };
-    let cleaned = s.trim_start_matches(['+', '-']);
-    let parts: Vec<&str> = cleaned.split(':').collect();
-    if parts.len() == 2 {
-        let h: f64 = parts[0].parse().ok()?;
-        let m: f64 = parts[1].parse().ok()?;
-        Some(sign * (h * 3600.0 + m * 60.0))
-    } else if cleaned.len() >= 4 {
-        let h: f64 = cleaned[..2].parse().ok()?;
-        let m: f64 = cleaned[2..4].parse().ok()?;
-        Some(sign * (h * 3600.0 + m * 60.0))
-    } else {
-        Some(0.0)
-    }
+    let t = match normalized.parse::<jiff::Timestamp>() {
+        Ok(t) => t,
+        Err(_) => {
+            // no offset in the stamp: civil time read as UTC
+            let dt = normalized.parse::<jiff::civil::DateTime>().ok()?;
+            dt.to_zoned(jiff::tz::TimeZone::UTC).ok()?.timestamp()
+        }
+    };
+    Some(t.as_second() as f64 + t.subsec_nanosecond() as f64 / 1e9)
 }
 
 #[cfg(test)]
@@ -974,48 +915,40 @@ mod tests {
     }
 
     #[test]
-    fn tz_offsets_decode_both_spellings() {
-        assert_eq!(parse_tz_offset("+02:00"), Some(7200.0));
-        assert_eq!(parse_tz_offset("-05:30"), Some(-19800.0));
-        assert_eq!(parse_tz_offset("+0545"), Some(20700.0)); // compact form
-        assert_eq!(parse_tz_offset("+0000"), Some(0.0));
-        assert_eq!(parse_tz_offset(""), Some(0.0)); // absent means UTC here
-        assert_eq!(parse_tz_offset("+ab:00"), None); // not numbers
-        assert_eq!(parse_tz_offset("-1x:30"), None);
-    }
-
-    #[test]
-    fn timestamps_reduce_by_the_declared_calendar() {
-        // 26 * 365.25 = 9496.5 days from 2000; June adds 151 + 14;
-        // (9496.5 + 165) * 86400 = 834_753_600; +10h +23m +45s
+    fn timestamps_are_true_unix_epoch() {
+        // values computed independently (python datetime, UTC):
+        // datetime(2026,6,14,10,23,45) -> 1_781_432_625
         assert_eq!(
             parse_timestamp_secs("2026-06-14 10:23:45"),
-            Some(834_791_025.0)
+            Some(1_781_432_625.0)
         );
-        // T separator, microseconds, and +00:00 all land on the same second
-        assert_eq!(
-            parse_timestamp_secs("2026-06-14T10:23:45.123456+00:00"),
-            Some(834_791_025.0)
-        );
-        // the year's first second: (9496.5 + 1) * 86400 = 820_584_000
+        // microseconds ride along as the fraction
+        let frac = parse_timestamp_secs("2026-06-14T10:23:45.123456+00:00").unwrap();
+        assert!((frac - 1_781_432_625.123_456).abs() < 1e-6, "got {frac}");
+        // the year's first second
         assert_eq!(
             parse_timestamp_secs("2026-01-01T00:00:00"),
-            Some(820_584_000.0)
+            Some(1_767_225_600.0)
+        );
+        // the estate's compact two-digit offset ("+00") parses as UTC
+        let compact = parse_timestamp_secs("2026-06-14 10:23:45.123456+00").unwrap();
+        assert!(
+            (compact - 1_781_432_625.123_456).abs() < 1e-6,
+            "got {compact}"
         );
     }
 
     #[test]
-    fn timestamp_offsets_add_under_the_current_convention() {
-        // The code ADDS the parsed offset to the epoch sum — recorded
-        // here as the current contract; whether UTC conversion should
-        // subtract is a holder ruling, not a test's to make.
+    fn timestamp_offsets_convert_per_the_spec() {
+        // RFC 3339: a +02:00 stamp is two hours EAST — its UTC instant
+        // is 7200s EARLIER than the same wall time read bare.
         assert_eq!(
             parse_timestamp_secs("2026-06-14 10:23:45+02:00"),
-            Some(834_798_225.0) // 834_791_025 + 7200
+            Some(1_781_425_425.0) // 1_781_432_625 - 7200
         );
         assert_eq!(
             parse_timestamp_secs("2026-06-14T10:23:45-03:00"),
-            Some(834_780_225.0) // 834_791_025 - 10800
+            Some(1_781_443_425.0) // 1_781_432_625 + 10800
         );
     }
 
@@ -1024,6 +957,7 @@ mod tests {
         assert_eq!(parse_timestamp_secs("not-a-timestamp"), None);
         assert_eq!(parse_timestamp_secs("2026-06-14"), None); // no time half
         assert_eq!(parse_timestamp_secs("2026-06-14T10:23"), None); // no seconds
+        assert_eq!(parse_timestamp_secs("2026-06-14T99:99:99"), None); // impossible clock
         assert_eq!(parse_timestamp_secs("xx-yy-zzT10:23:45"), None); // not numbers
         assert_eq!(parse_timestamp_secs(""), None);
     }
