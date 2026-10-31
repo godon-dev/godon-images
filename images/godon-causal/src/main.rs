@@ -1353,12 +1353,18 @@ async fn rewalk(
         journal.push(wish_book::WalkPoint::new(l, response, bar));
     }
 
-    // The owner's outer total: rounds already walked past the free one.
+    // The owner's outer total: rounds already walked past the free one,
+    // PLUS every judged miss (ruled 2026-10-31 midnight: failed attempts
+    // spend — the wallet tells the truth about failed work, and the
+    // treadmill is bounded by economics, not patience).
     if !opened {
         let walks_completed = wish_book::count_wish_events(client, wish_id, "walk_closed")
             .await
             .unwrap_or(0);
-        if wish_book::budget_exhausted(terms_req.budget, walks_completed) {
+        let misses_spent = wish_book::count_wish_events(client, wish_id, "missed")
+            .await
+            .unwrap_or(0);
+        if wish_book::budget_exhausted(terms_req.budget, walks_completed + misses_spent) {
             return release_wish(
                 client,
                 wish_id,
@@ -1815,6 +1821,58 @@ async fn build_seek_guards(
     guards
 }
 
+/// The broken-promise streak (ruled 2026-10-31 midnight, the (a)+(c)
+/// mixture): consecutive `missed` events whose judged median sits
+/// outside the served plan's OWN confidence — the map convicted by
+/// its own ruler, not by the wish's band. Room 16's receipt: predicted
+/// 0.808 with bars 0.012, delivered 0.879 — eight times the promised
+/// error. The plan may have been replanned between misses; each miss
+/// is tried against the current promise (under persistent drift every
+/// promise breaks alike — the count is the honest reading).
+fn promise_streak(events: &[wish_book::WalkEventRow], plan: Option<&serde_json::Value>) -> usize {
+    let Some(plan) = plan else { return 0 };
+    let Some(claim) = plan
+        .get("claims")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+    else {
+        return 0;
+    };
+    let (Some(predicted), Some(bars)) = (
+        claim.get("predicted").and_then(|p| p.as_f64()),
+        claim.get("bars").and_then(|b| b.as_f64()),
+    ) else {
+        return 0;
+    };
+    if bars <= 0.0 {
+        return 0;
+    }
+    let mut streak = 0;
+    for e in events.iter().rev() {
+        if e.event != "missed" {
+            break;
+        }
+        let median = e
+            .detail
+            .as_ref()
+            .and_then(|d| d.get("judged"))
+            .and_then(|j| j.as_array())
+            .and_then(|a| a.first())
+            .and_then(|j| j.get("median"))
+            .and_then(|m| m.as_f64());
+        match median {
+            Some(m) if (m - predicted).abs() > bars => streak += 1,
+            _ => break,
+        }
+    }
+    streak
+}
+
+/// Consecutive broken promises that arm the aimed remeasure regardless
+/// of fresh evidence (the treadmill breaker). Streak fires before the
+/// wallet concludes at the default budget 5 — the look gets its turn.
+const PROMISE_STREAK: usize = 3;
+
 async fn steer_plan_get(
     State(state): State<Arc<AppState>>,
     Path(wish_id): Path<String>,
@@ -2195,7 +2253,24 @@ async fn steer_plan_get(
             .and_then(|p| p.get("curve_fp"))
             .cloned()
             .unwrap_or(serde_json::Value::Null);
-        if fingerprint == served_fp {
+        // The broken-promise streak (the ruled treadmill breaker): when
+        // the plan's own confidence failed to cover the delivered
+        // reading PROMISE_STREAK times in a row, the aimed remeasure
+        // speaks regardless of fresh evidence — fresh points on a
+        // convicted map teach nothing until it is re-measured.
+        let streak = promise_streak(
+            &wish_book::list_wish_events(&client, &wish_id, 0.0)
+                .await
+                .unwrap_or_default(),
+            row.plan.as_ref(),
+        );
+        if fingerprint == served_fp || streak >= PROMISE_STREAK {
+            if streak >= PROMISE_STREAK {
+                info!(
+                    "REWALK {wish_id}: the promises broke {streak} times in a row — \
+                     the map is convicted by its own ruler; measuring"
+                );
+            }
             // The stall speaks: name the next level to re-measure on the
             // plan's own curve — the aimed remeasure. The worker arms its
             // probe override from this hint (one level per refresh), the
@@ -4343,6 +4418,69 @@ mod tests {
     #[test]
     fn test_parse_iso_garbage_fails() {
         assert!(parse_iso_to_epoch("not-a-date").is_err());
+    }
+
+    // ─── The broken-promise streak (ruled 2026-10-31 midnight) ──────
+
+    fn streak_plan(predicted: f64, bars: f64) -> serde_json::Value {
+        serde_json::json!({ "claims": [{ "predicted": predicted, "bars": bars }] })
+    }
+
+    fn missed_event(median: f64) -> wish_book::WalkEventRow {
+        wish_book::WalkEventRow {
+            tsz: 0.0,
+            event: "missed".to_string(),
+            detail: Some(serde_json::json!({
+                "judged": [{ "median": median, "bar": 0.01, "n": 3 }]
+            })),
+        }
+    }
+
+    #[test]
+    fn promise_streak_counts_consecutive_convictions() {
+        // room 16's shape: predicted 0.808 with bars 0.012, delivered
+        // 0.879/0.864/0.878 — every miss outside the plan's own ruler
+        let plan = streak_plan(0.808, 0.012);
+        let evs = vec![
+            missed_event(0.879),
+            missed_event(0.864),
+            missed_event(0.878),
+        ];
+        assert_eq!(promise_streak(&evs, Some(&plan)), 3);
+    }
+
+    #[test]
+    fn promise_streak_stops_at_the_first_honest_promise() {
+        let plan = streak_plan(0.808, 0.012);
+        // newest-first counting from the tail: a covered median ends it
+        let evs = vec![
+            missed_event(0.879),
+            missed_event(0.815), // inside the plan's own ±0.012
+            missed_event(0.878),
+        ];
+        assert_eq!(promise_streak(&evs, Some(&plan)), 1);
+        // and a non-missed event (a replan between misses) breaks the run
+        let mut mixed = vec![
+            missed_event(0.879),
+            wish_book::WalkEventRow {
+                tsz: 0.0,
+                event: "replanned".to_string(),
+                detail: None,
+            },
+            missed_event(0.878),
+        ];
+        assert_eq!(promise_streak(&mixed, Some(&plan)), 1);
+        mixed.push(missed_event(0.9));
+        assert_eq!(promise_streak(&mixed, Some(&plan)), 2);
+    }
+
+    #[test]
+    fn promise_streak_silent_without_a_promise() {
+        assert_eq!(promise_streak(&[], None), 0);
+        let evs = vec![missed_event(0.99)];
+        assert_eq!(promise_streak(&evs, None), 0);
+        // zero bars = no ruler, no conviction
+        assert_eq!(promise_streak(&evs, Some(&streak_plan(0.5, 0.0))), 0);
     }
 
     // ─── ProbeResultRequest deserialization ───────────────────────
