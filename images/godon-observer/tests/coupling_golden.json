@@ -1,0 +1,139 @@
+{
+  "note": "the detection core's golden — planted couplings, recorded verdicts",
+  "scenarios": [
+    {
+      "best_objective": 0,
+      "best_shift": 4.2,
+      "detected": true,
+      "method": "cfar_per_round",
+      "n_channels": 1,
+      "n_objectives": 1,
+      "per_objective": [
+        {
+          "detected": true,
+          "method": "cfar_per_round",
+          "objective_index": 0,
+          "pfa": 0.050000000000000044,
+          "rounds_detected": 2,
+          "rounds_total": 2,
+          "source": "objective",
+          "stacked_falling_edge": 4.0,
+          "stacked_rising_edge": 4.15
+        }
+      ],
+      "per_round_details": [
+        {
+          "baseline_mad": 0.001,
+          "baseline_median": 10.0,
+          "cfar_k": 3.8853,
+          "cfar_threshold": 0.0039,
+          "detected": true,
+          "falling_edge": 3.8,
+          "falling_snr": 3800.0,
+          "objective_index": 0,
+          "pause_median": 10.2,
+          "pause_samples": 8,
+          "pfa": 0.050000000000000044,
+          "push_median": 14.0,
+          "push_samples": 6,
+          "ref_cells": 6,
+          "rising_edge": 4.0,
+          "rising_snr": 4000.0,
+          "round": 0
+        },
+        {
+          "baseline_mad": 0.001,
+          "baseline_median": 10.0,
+          "cfar_k": 3.8853,
+          "cfar_threshold": 0.0039,
+          "detected": true,
+          "falling_edge": 4.2,
+          "falling_snr": 4200.0,
+          "objective_index": 0,
+          "pause_median": 10.1,
+          "pause_samples": 8,
+          "pfa": 0.050000000000000044,
+          "push_median": 14.3,
+          "push_samples": 7,
+          "ref_cells": 6,
+          "rising_edge": 4.3,
+          "rising_snr": 4300.0,
+          "round": 1
+        }
+      ],
+      "receiver_id": "receiver-y",
+      "receiver_trials": 39,
+      "rounds": 2,
+      "rounds_with_detection": 2,
+      "sender_id": "sender-x",
+      "sender_trials": 12
+    },
+    {
+      "best_objective": 0,
+      "best_shift": 0.0,
+      "detected": false,
+      "method": "cfar_per_round",
+      "n_channels": 1,
+      "n_objectives": 1,
+      "per_objective": [
+        {
+          "detected": false,
+          "method": "cfar_per_round",
+          "objective_index": 0,
+          "pfa": 0.050000000000000044,
+          "rounds_detected": 0,
+          "rounds_total": 2,
+          "source": "objective",
+          "stacked_falling_edge": 0.0,
+          "stacked_rising_edge": 0.0
+        }
+      ],
+      "per_round_details": [
+        {
+          "baseline_mad": 0.001,
+          "baseline_median": 10.0,
+          "cfar_k": 3.7389,
+          "cfar_threshold": 0.0037,
+          "detected": false,
+          "falling_edge": 0.0,
+          "falling_snr": 0.0,
+          "objective_index": 0,
+          "pause_median": 10.0,
+          "pause_samples": 8,
+          "pfa": 0.050000000000000044,
+          "push_median": 10.0,
+          "push_samples": 7,
+          "ref_cells": 7,
+          "rising_edge": 0.0,
+          "rising_snr": 0.0,
+          "round": 0
+        },
+        {
+          "baseline_mad": 0.001,
+          "baseline_median": 10.0,
+          "cfar_k": 3.7389,
+          "cfar_threshold": 0.0037,
+          "detected": false,
+          "falling_edge": 0.0,
+          "falling_snr": 0.0,
+          "objective_index": 0,
+          "pause_median": 10.0,
+          "pause_samples": 8,
+          "pfa": 0.050000000000000044,
+          "push_median": 10.0,
+          "push_samples": 7,
+          "ref_cells": 7,
+          "rising_edge": 0.0,
+          "rising_snr": 0.0,
+          "round": 1
+        }
+      ],
+      "receiver_id": "receiver-y",
+      "receiver_trials": 41,
+      "rounds": 2,
+      "rounds_with_detection": 0,
+      "sender_id": "sender-x",
+      "sender_trials": 12
+    }
+  ]
+}
