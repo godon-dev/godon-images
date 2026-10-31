@@ -1403,3 +1403,130 @@ mod create_wait_tests {
         assert_eq!(clamp_create_wait_timeout(Some(45)), 45);
     }
 }
+
+#[cfg(test)]
+mod handler_tests {
+    use super::*;
+    use crate::windmill_adapter::tests_support::FakeWindmill;
+    use axum::extract::{Query, State};
+
+    fn job() -> (u16, String) {
+        (200, "123e4567-e89b-12d3-a456-426614174000".into())
+    }
+    fn done(result: &str) -> (u16, String) {
+        (
+            200,
+            format!(r#"{{"completed":true,"success":true,"result":{}}}"#, result),
+        )
+    }
+    const SUMMARY: &str = r#"{"duplicate": false, "data": {"id":"st-1","name":"bench","status":"creating","createdAt":"t"}}"#;
+
+    fn env_at(f: &FakeWindmill) {
+        std::env::set_var("WINDMILL_BASE_URL", f.base_url());
+        std::env::set_var("BASE_INTERNAL_URL", f.base_url());
+        std::env::set_var("WM_TOKEN", "test-token");
+        std::env::set_var("WM_WORKSPACE", "ws");
+        std::env::set_var("WINDMILL_FOLDER", "controller");
+    }
+
+    fn create_body() -> SystemtenderCreate {
+        SystemtenderCreate {
+            name: "bench".into(),
+            config: serde_json::json!({"seed": 42}),
+        }
+    }
+
+    /// One env window, sequential scenarios — env is process-global.
+    #[tokio::test]
+    async fn the_systemtender_doors_speak_their_contracts() {
+        // create, async by default: enqueue + answer 202 with the summary
+        let f = FakeWindmill::start(vec![job(), done(SUMMARY)]);
+        env_at(&f);
+        let r = create_systemtender(
+            State(Config { port: 8080 }),
+            Query(CreateParams {
+                wait: None,
+                timeout: None,
+            }),
+            Json(create_body()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.0, StatusCode::ACCEPTED);
+        assert_eq!(r.1 .0["id"], serde_json::json!("st-1"));
+        assert_eq!(r.1 .0["name"], serde_json::json!("bench"));
+        let wire = &f.bodies("systemtender_create")[0];
+        assert_eq!(
+            wire["request_data"],
+            serde_json::json!({"name": "bench", "config": {"seed": 42}})
+        );
+
+        // a name clash answers 409 with the existing row
+        let f = FakeWindmill::start(vec![job(), done(&SUMMARY.replace("false", "true"))]);
+        env_at(&f);
+        let r = create_systemtender(
+            State(Config { port: 8080 }),
+            Query(CreateParams {
+                wait: None,
+                timeout: None,
+            }),
+            Json(create_body()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.0, StatusCode::CONFLICT);
+        assert_eq!(r.1 .0["id"], serde_json::json!("st-1"));
+
+        // delete: a malformed uuid refuses at the door, zero wire
+        let f = FakeWindmill::start(vec![]);
+        env_at(&f);
+        let r = delete_systemtender(
+            State(Config { port: 8080 }),
+            Path("not-a-uuid".into()),
+            Query(DeleteParams { force: None }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(r.0, StatusCode::BAD_REQUEST);
+        assert!(f.recorded().is_empty());
+
+        // delete happy: enqueue, answer 202 with the marker
+        let f = FakeWindmill::start(vec![job()]);
+        env_at(&f);
+        let r = delete_systemtender(
+            State(Config { port: 8080 }),
+            Path("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11".into()),
+            Query(DeleteParams { force: None }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.0, StatusCode::ACCEPTED);
+        assert_eq!(r.1 .0.status, "deleting");
+        assert_eq!(r.1 .0.job_id, "123e4567-e89b-12d3-a456-426614174000");
+        assert_eq!(r.1 .0.force, Some(false));
+        let wire = &f.bodies("systemtender_delete")[0];
+        assert!(
+            wire["request_data"].get("force").is_none(),
+            "force stays off the wire unless asked"
+        );
+
+        // force rides both the wire and the answer
+        let f = FakeWindmill::start(vec![job()]);
+        env_at(&f);
+        let r = delete_systemtender(
+            State(Config { port: 8080 }),
+            Path("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11".into()),
+            Query(DeleteParams {
+                force: Some("true".into()),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.1 .0.force, Some(true));
+        let wire = &f.bodies("systemtender_delete")[0];
+        assert_eq!(wire["request_data"]["force"], serde_json::json!(true));
+
+        std::env::remove_var("WINDMILL_BASE_URL");
+        std::env::remove_var("BASE_INTERNAL_URL");
+    }
+}

@@ -452,7 +452,7 @@ mod login_tests {
 }
 
 #[cfg(test)]
-mod tests_support {
+pub(crate) mod tests_support {
     // shared std-only listener: scripted (status, body) queue answered
     // in arrival order, requests recorded; dry script = 404 so a
     // mis-counted test fails loudly instead of hanging
