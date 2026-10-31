@@ -84,6 +84,60 @@ jobs:
           echo "crates with outcomes:"
           ls "$GITHUB_WORKSPACE/mutants.out" || true
 
+      - name: Ratchet — every crate above its declared floor
+        # The kill-rate floors: whole-percent minima per crate, set a
+        # few points UNDER each fresh measurement so run-to-run wobble
+        # never trips them (margin 3; microgrid 6, the one crate with
+        # a measured wobble band). Below floor = red, and red is a
+        # real regression, not noise. An incomplete measurement (a
+        # crate with no outcomes) is red too — a receipt that never
+        # arrived cannot pass.
+        if: always()
+        run: |
+          declare -A FLOORS=(
+            [godon-api]=21
+            [godon-bench-generic]=61
+            [godon-bench-greenhouse]=68
+            [godon-bench-microgrid]=85
+            [godon-causal]=32
+            [godon-mcp]=53
+            [godon-observer]=50
+            [godon-seeder]=50
+            [ledger-reader]=93
+          )
+          fail=0
+          for m in $CRATES; do
+            n=$(basename "$m")
+            o="$GITHUB_WORKSPACE/mutants.out/$n/outcomes.json"
+            if [ ! -f "$o" ]; then
+              echo "::error::$n has no outcomes — the measurement is incomplete"
+              fail=1
+              continue
+            fi
+            caught=$(jq -r '.caught' "$o" 2>/dev/null) || true
+            missed=$(jq -r '.missed' "$o" 2>/dev/null) || true
+            # fail closed: unreadable outcomes are red, never "no viable"
+            if ! [[ "$caught" =~ ^[0-9]+$ && "$missed" =~ ^[0-9]+$ ]]; then
+              echo "::error::$n outcomes unreadable — the measurement is broken"
+              fail=1
+              continue
+            fi
+            viable=$((caught + missed))
+            if [ "$viable" -eq 0 ]; then
+              echo "$n: no viable mutants — no floor applies"
+              continue
+            fi
+            pct=$(( 100 * caught / viable ))
+            floor=${FLOORS[$n]}
+            if [ "$pct" -lt "$floor" ]; then
+              echo "::error::$n kill-rate ${pct}% is BELOW its floor ${floor}%"
+              fail=1
+            else
+              echo "$n: ${pct}% (floor ${floor}%)"
+            fi
+          done
+          exit $fail
+
       - name: Upload outcomes
         if: always()
         uses: actions/upload-artifact@v4
