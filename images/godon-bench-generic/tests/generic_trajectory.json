@@ -1,0 +1,558 @@
+{
+  "note": "the golden trajectory — regenerate via the ignored test, review like code",
+  "runs": [
+    {
+      "label": "coupled_pair_edge_drift",
+      "segments": [
+        {
+          "apply": {
+            "node": "a",
+            "value": 100.0
+          },
+          "returned": [
+            1.0
+          ],
+          "truth_a": {
+            "base_from": "linear",
+            "base_progress": 1.0,
+            "base_to": "linear",
+            "edges": [
+              {
+                "from": "a",
+                "strength_effective": 0.707,
+                "to": "b",
+                "to_channel": 0
+              }
+            ],
+            "effective_weights": [
+              [
+                1.0
+              ]
+            ],
+            "node_id": "a",
+            "objectives": [
+              1.0
+            ],
+            "total_ticks": 1
+          },
+          "truth_b": {
+            "base_from": "linear",
+            "base_progress": 1.0,
+            "base_to": "linear",
+            "edges": [
+              {
+                "from": "a",
+                "strength_effective": 0.707,
+                "to": "b",
+                "to_channel": 0
+              }
+            ],
+            "effective_weights": [
+              [
+                0.5
+              ]
+            ],
+            "node_id": "b",
+            "objectives": [
+              0.707
+            ],
+            "total_ticks": 1
+          }
+        },
+        {
+          "apply": {
+            "node": "b",
+            "value": 50.0
+          },
+          "returned": [
+            0.964
+          ],
+          "truth_a": {
+            "base_from": "linear",
+            "base_progress": 1.0,
+            "base_to": "linear",
+            "edges": [
+              {
+                "from": "a",
+                "strength_effective": 0.714,
+                "to": "b",
+                "to_channel": 0
+              }
+            ],
+            "effective_weights": [
+              [
+                1.0
+              ]
+            ],
+            "node_id": "a",
+            "objectives": [
+              1.0
+            ],
+            "total_ticks": 2
+          },
+          "truth_b": {
+            "base_from": "linear",
+            "base_progress": 1.0,
+            "base_to": "linear",
+            "edges": [
+              {
+                "from": "a",
+                "strength_effective": 0.714,
+                "to": "b",
+                "to_channel": 0
+              }
+            ],
+            "effective_weights": [
+              [
+                0.5
+              ]
+            ],
+            "node_id": "b",
+            "objectives": [
+              0.964
+            ],
+            "total_ticks": 2
+          }
+        },
+        {
+          "apply": {
+            "node": "a",
+            "value": 0.0
+          },
+          "returned": [
+            0.0
+          ],
+          "truth_a": {
+            "base_from": "linear",
+            "base_progress": 1.0,
+            "base_to": "linear",
+            "edges": [
+              {
+                "from": "a",
+                "strength_effective": 0.721,
+                "to": "b",
+                "to_channel": 0
+              }
+            ],
+            "effective_weights": [
+              [
+                1.0
+              ]
+            ],
+            "node_id": "a",
+            "objectives": [
+              0.0
+            ],
+            "total_ticks": 3
+          },
+          "truth_b": {
+            "base_from": "linear",
+            "base_progress": 1.0,
+            "base_to": "linear",
+            "edges": [
+              {
+                "from": "a",
+                "strength_effective": 0.721,
+                "to": "b",
+                "to_channel": 0
+              }
+            ],
+            "effective_weights": [
+              [
+                0.5
+              ]
+            ],
+            "node_id": "b",
+            "objectives": [
+              0.25
+            ],
+            "total_ticks": 3
+          }
+        },
+        {
+          "apply": {
+            "node": "b",
+            "value": 0.0
+          },
+          "returned": [
+            0.0
+          ],
+          "truth_a": {
+            "base_from": "linear",
+            "base_progress": 1.0,
+            "base_to": "linear",
+            "edges": [
+              {
+                "from": "a",
+                "strength_effective": 0.728,
+                "to": "b",
+                "to_channel": 0
+              }
+            ],
+            "effective_weights": [
+              [
+                1.0
+              ]
+            ],
+            "node_id": "a",
+            "objectives": [
+              0.0
+            ],
+            "total_ticks": 4
+          },
+          "truth_b": {
+            "base_from": "linear",
+            "base_progress": 1.0,
+            "base_to": "linear",
+            "edges": [
+              {
+                "from": "a",
+                "strength_effective": 0.728,
+                "to": "b",
+                "to_channel": 0
+              }
+            ],
+            "effective_weights": [
+              [
+                0.5
+              ]
+            ],
+            "node_id": "b",
+            "objectives": [
+              0.0
+            ],
+            "total_ticks": 4
+          }
+        },
+        {
+          "apply": {
+            "node": "a",
+            "value": 60.0
+          },
+          "returned": [
+            0.6
+          ],
+          "truth_a": {
+            "base_from": "linear",
+            "base_progress": 1.0,
+            "base_to": "linear",
+            "edges": [
+              {
+                "from": "a",
+                "strength_effective": 0.735,
+                "to": "b",
+                "to_channel": 0
+              }
+            ],
+            "effective_weights": [
+              [
+                1.0
+              ]
+            ],
+            "node_id": "a",
+            "objectives": [
+              0.6
+            ],
+            "total_ticks": 5
+          },
+          "truth_b": {
+            "base_from": "linear",
+            "base_progress": 1.0,
+            "base_to": "linear",
+            "edges": [
+              {
+                "from": "a",
+                "strength_effective": 0.735,
+                "to": "b",
+                "to_channel": 0
+              }
+            ],
+            "effective_weights": [
+              [
+                0.5
+              ]
+            ],
+            "node_id": "b",
+            "objectives": [
+              0.441
+            ],
+            "total_ticks": 5
+          }
+        }
+      ]
+    },
+    {
+      "label": "morph_travel_window",
+      "segments": [
+        {
+          "applied": [
+            0.3,
+            0.7
+          ],
+          "tick": 1,
+          "truth_m": {
+            "base_from": "linear",
+            "base_progress": 1.0,
+            "base_to": "linear",
+            "edges": [],
+            "effective_weights": [
+              [
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0
+              ]
+            ],
+            "node_id": "m",
+            "objectives": [
+              0.3,
+              0.7
+            ],
+            "total_ticks": 1
+          }
+        },
+        {
+          "applied": [
+            0.3,
+            0.7
+          ],
+          "tick": 2,
+          "truth_m": {
+            "base_from": "linear",
+            "base_progress": 0.0,
+            "base_to": "linear",
+            "edges": [],
+            "effective_weights": [
+              [
+                1.0,
+                0.0
+              ],
+              [
+                0.0,
+                1.0
+              ]
+            ],
+            "node_id": "m",
+            "objectives": [
+              0.3,
+              0.7
+            ],
+            "total_ticks": 2
+          }
+        },
+        {
+          "applied": [
+            0.375,
+            1.0499999999999998
+          ],
+          "tick": 3,
+          "truth_m": {
+            "base_from": "linear",
+            "base_progress": 0.25,
+            "base_to": "linear",
+            "edges": [],
+            "effective_weights": [
+              [
+                1.25,
+                0.0
+              ],
+              [
+                0.0,
+                1.5
+              ]
+            ],
+            "node_id": "m",
+            "objectives": [
+              0.375,
+              1.0499999999999998
+            ],
+            "total_ticks": 3
+          }
+        },
+        {
+          "applied": [
+            0.44999999999999996,
+            1.4
+          ],
+          "tick": 4,
+          "truth_m": {
+            "base_from": "linear",
+            "base_progress": 0.5,
+            "base_to": "linear",
+            "edges": [],
+            "effective_weights": [
+              [
+                1.5,
+                0.0
+              ],
+              [
+                0.0,
+                2.0
+              ]
+            ],
+            "node_id": "m",
+            "objectives": [
+              0.44999999999999996,
+              1.4
+            ],
+            "total_ticks": 4
+          }
+        },
+        {
+          "applied": [
+            0.525,
+            1.75
+          ],
+          "tick": 5,
+          "truth_m": {
+            "base_from": "linear",
+            "base_progress": 0.75,
+            "base_to": "linear",
+            "edges": [],
+            "effective_weights": [
+              [
+                1.75,
+                0.0
+              ],
+              [
+                0.0,
+                2.5
+              ]
+            ],
+            "node_id": "m",
+            "objectives": [
+              0.525,
+              1.75
+            ],
+            "total_ticks": 5
+          }
+        },
+        {
+          "applied": [
+            0.6,
+            2.0999999999999996
+          ],
+          "tick": 6,
+          "truth_m": {
+            "base_from": "linear",
+            "base_progress": 1.0,
+            "base_to": "linear",
+            "edges": [],
+            "effective_weights": [
+              [
+                2.0,
+                0.0
+              ],
+              [
+                0.0,
+                3.0
+              ]
+            ],
+            "node_id": "m",
+            "objectives": [
+              0.6,
+              2.0999999999999996
+            ],
+            "total_ticks": 6
+          }
+        }
+      ]
+    },
+    {
+      "cases": [
+        {
+          "case": "uncapped_ramp",
+          "now": 10.0,
+          "offset": 0.0
+        },
+        {
+          "case": "uncapped_ramp",
+          "now": 16.0,
+          "offset": 3.0
+        },
+        {
+          "case": "uncapped_ramp",
+          "now": 34.0,
+          "offset": 12.0
+        },
+        {
+          "case": "cap_engages",
+          "now": 20.0,
+          "offset": 3.0
+        },
+        {
+          "case": "negative_rate_signed_cap",
+          "now": 20.0,
+          "offset": -2.0
+        },
+        {
+          "case": "two_drifts_sum",
+          "now": 20.0,
+          "offset": 1.0
+        },
+        {
+          "case": "no_drifts",
+          "now": 100.0,
+          "offset": -0.0
+        },
+        {
+          "case": "before_the_cue_clamps_to_zero",
+          "now": 5.0,
+          "offset": 0.0
+        },
+        {
+          "case": "empty_holds_always",
+          "holds": true
+        },
+        {
+          "case": "seconds_gate",
+          "holds": false
+        },
+        {
+          "case": "seconds_gate_open",
+          "holds": true
+        },
+        {
+          "case": "ticks_gate",
+          "holds": false
+        },
+        {
+          "case": "both_gates_and",
+          "holds": false
+        },
+        {
+          "case": "param_ge_holds",
+          "holds": true
+        },
+        {
+          "case": "param_le_refuses",
+          "holds": false
+        },
+        {
+          "case": "param_missing_index_refuses",
+          "holds": false
+        },
+        {
+          "case": "param_unknown_op_refuses",
+          "holds": false
+        },
+        {
+          "case": "door_first_knock_cues",
+          "drift": {
+            "cap": 3.0,
+            "cued_tick": 0,
+            "cued_uptime_secs": 10.0,
+            "name": "golden",
+            "origin": "door",
+            "rate_per_second": 0.5
+          },
+          "offset_at_16": 3.0,
+          "second_knock_refused": true
+        }
+      ],
+      "label": "drift_door_arithmetic"
+    }
+  ]
+}
