@@ -643,3 +643,409 @@ fn require_id(id: &str, field: &str) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    use crate::client::GodonClient;
+
+    // ── the wire oracle: a local listener plays godon-api and causal ──
+    // GodonClient already takes host:port — no seam needed, the real
+    // HTTP path runs against a std-only listener that answers the
+    // declared contract and records method, path, and body.
+
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    struct Recorded {
+        method: String,
+        path: String,
+        body: String,
+    }
+
+    /// One (status, body) per expected request, answered in arrival
+    /// order; dry script answers 404 so a mis-counted test fails
+    /// loudly instead of hanging.
+    struct FakeApi {
+        port: u16,
+        log: Arc<Mutex<Vec<Recorded>>>,
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    fn write_response(stream: &mut TcpStream, status: u16, body: &str) {
+        let reason = match status {
+            200 => "OK",
+            201 => "Created",
+            400 => "Bad Request",
+            404 => "Not Found",
+            500 => "Internal Server Error",
+            _ => "OK",
+        };
+        let resp = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            status,
+            reason,
+            body.len(),
+            body
+        );
+        stream.write_all(resp.as_bytes()).ok();
+        stream.flush().ok();
+    }
+
+    fn read_request(stream: &mut TcpStream) -> Option<Recorded> {
+        let mut buf: Vec<u8> = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                    if buf.len() > 1_048_576 {
+                        break;
+                    }
+                }
+                Err(_) => return None,
+            }
+        }
+        let head = String::from_utf8_lossy(&buf).to_string();
+        let mut lines = head.split("\r\n");
+        let request_line = lines.next()?.to_string();
+        let mut parts = request_line.split_whitespace();
+        let method = parts.next()?.to_string();
+        let path = parts.next()?.to_string();
+        let mut content_length = 0usize;
+        for line in lines {
+            if line.is_empty() {
+                break;
+            }
+            if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                content_length = v.trim().parse().unwrap_or(0);
+            }
+        }
+        let header_end = head.find("\r\n\r\n").map(|i| i + 4).unwrap_or(buf.len());
+        let mut body = buf[header_end.min(buf.len())..].to_vec();
+        while body.len() < content_length {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => body.extend_from_slice(&chunk[..n]),
+                Err(_) => break,
+            }
+        }
+        if body.len() > content_length {
+            body.truncate(content_length);
+        }
+        Some(Recorded {
+            method,
+            path,
+            body: String::from_utf8_lossy(&body).to_string(),
+        })
+    }
+
+    impl FakeApi {
+        fn start(script: Vec<(u16, String)>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            listener.set_nonblocking(true).unwrap();
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let queue = Arc::new(Mutex::new(
+                script
+                    .into_iter()
+                    .collect::<std::collections::VecDeque<_>>(),
+            ));
+            let srv_log = Arc::clone(&log);
+            let srv_stop = Arc::clone(&stop);
+            let srv_queue = Arc::clone(&queue);
+            let handle = std::thread::spawn(move || {
+                while !srv_stop.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((mut stream, _)) => {
+                            stream
+                                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                                .ok();
+                            if let Some(recorded) = read_request(&mut stream) {
+                                srv_log.lock().unwrap().push(recorded);
+                                let (status, body) = srv_queue
+                                    .lock()
+                                    .unwrap()
+                                    .pop_front()
+                                    .unwrap_or((404, String::new()));
+                                write_response(&mut stream, status, &body);
+                            }
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                port,
+                log,
+                stop,
+                thread: Some(handle),
+            }
+        }
+
+        fn client(&self) -> GodonClient {
+            GodonClient::new("127.0.0.1".into(), self.port, false)
+        }
+
+        fn registry(&self, causal: &FakeApi) -> ToolRegistry {
+            ToolRegistry::new(self.client(), causal.client())
+        }
+
+        fn recorded(&self) -> Vec<(String, String)> {
+            self.log
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|r| (r.method.clone(), r.path.clone()))
+                .collect()
+        }
+
+        fn bodies(&self, fragment: &str) -> Vec<serde_json::Value> {
+            self.log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r.path.contains(fragment))
+                .map(|r| serde_json::from_str(&r.body).unwrap_or(serde_json::Value::Null))
+                .collect()
+        }
+    }
+
+    impl Drop for FakeApi {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            if let Some(handle) = self.thread.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn ok_json(body: &str) -> (u16, String) {
+        (200, body.to_string())
+    }
+
+    // ── the dispatch: every tool walks its exact wire path ──
+
+    #[tokio::test]
+    async fn list_and_get_walk_the_declared_paths() {
+        let causal = FakeApi::start(vec![]);
+        let f = FakeApi::start(vec![ok_json(r#"[{"id":"st-1"}]"#)]);
+        let r = f.registry(&causal);
+        let out = r
+            .call_tool("systemtender_list", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(out, serde_json::json!([{"id":"st-1"}]));
+        assert_eq!(f.recorded(), vec![("GET".into(), "/systemtenders".into())]);
+
+        // the id rides the path, percent-encoded
+        let f = FakeApi::start(vec![ok_json("{}")]);
+        let causal = FakeApi::start(vec![]);
+        let r = f.registry(&causal);
+        r.call_tool(
+            "systemtender_get",
+            serde_json::json!({"systemtender_id": "st 9"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            f.recorded(),
+            vec![("GET".into(), "/systemtenders/st%209".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn create_posts_the_declared_body() {
+        let causal = FakeApi::start(vec![]);
+        let f = FakeApi::start(vec![ok_json("{}")]);
+        let r = f.registry(&causal);
+        r.call_tool(
+            "systemtender_create",
+            serde_json::json!({"name": "bench", "config": {"seed": 42}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(f.recorded()[0].0, "POST");
+        assert_eq!(f.recorded()[0].1, "/systemtenders");
+        assert_eq!(
+            f.bodies("/systemtenders")[0],
+            serde_json::json!({"name": "bench", "config": {"seed": 42}})
+        );
+
+        // create without a name refuses before any wire traffic
+        let f = FakeApi::start(vec![]);
+        let causal = FakeApi::start(vec![]);
+        let r = f.registry(&causal);
+        assert!(r
+            .call_tool("systemtender_create", serde_json::json!({"config": {}}))
+            .await
+            .is_err());
+        assert!(f.recorded().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stop_and_start_post_empty_to_their_doors() {
+        for (tool, door) in [
+            ("systemtender_stop", "stop"),
+            ("systemtender_start", "start"),
+        ] {
+            let causal = FakeApi::start(vec![]);
+            let f = FakeApi::start(vec![ok_json("{}")]);
+            let r = f.registry(&causal);
+            r.call_tool(tool, serde_json::json!({"systemtender_id": "x"}))
+                .await
+                .unwrap();
+            assert_eq!(
+                f.recorded(),
+                vec![("POST".into(), format!("/systemtenders/x/{}", door))],
+                "{}",
+                tool
+            );
+            assert_eq!(f.bodies("/systemtenders")[0], serde_json::Value::Null);
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_honors_the_force_flag() {
+        // absent force: the bare path
+        let causal = FakeApi::start(vec![]);
+        let f = FakeApi::start(vec![ok_json("{}")]);
+        let r = f.registry(&causal);
+        r.call_tool(
+            "systemtender_delete",
+            serde_json::json!({"systemtender_id": "x"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            f.recorded()[0],
+            ("DELETE".into(), "/systemtenders/x".into())
+        );
+
+        // force: the query rides
+        let causal = FakeApi::start(vec![]);
+        let f = FakeApi::start(vec![ok_json("{}")]);
+        let r = f.registry(&causal);
+        r.call_tool(
+            "systemtender_delete",
+            serde_json::json!({"systemtender_id": "x", "force": true}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            f.recorded()[0],
+            ("DELETE".into(), "/systemtenders/x?force=true".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn credentials_and_targets_pass_args_through() {
+        // credential_create posts the args verbatim — the server shapes them
+        let causal = FakeApi::start(vec![]);
+        let f = FakeApi::start(vec![ok_json("{}")]);
+        let r = f.registry(&causal);
+        let args = serde_json::json!({"kind": "api_key", "secret": "s"});
+        r.call_tool("credential_create", args.clone())
+            .await
+            .unwrap();
+        assert_eq!(f.recorded()[0], ("POST".into(), "/credentials".into()));
+        assert_eq!(f.bodies("/credentials")[0], args);
+
+        // target_get names its own id field
+        let causal = FakeApi::start(vec![]);
+        let f = FakeApi::start(vec![ok_json("{}")]);
+        let r = f.registry(&causal);
+        r.call_tool("target_get", serde_json::json!({"target_id": "t1"}))
+            .await
+            .unwrap();
+        assert_eq!(f.recorded(), vec![("GET".into(), "/targets/t1".into())]);
+    }
+
+    #[tokio::test]
+    async fn ids_are_required_at_the_door() {
+        let causal = FakeApi::start(vec![]);
+        let f = FakeApi::start(vec![]);
+        let r = f.registry(&causal);
+        let err = r
+            .call_tool("systemtender_get", serde_json::json!({}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("systemtender_id"), "got: {err}");
+        // nothing reached the wire
+        assert!(f.recorded().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_refuses() {
+        let causal = FakeApi::start(vec![]);
+        let f = FakeApi::start(vec![]);
+        let r = f.registry(&causal);
+        let err = r
+            .call_tool("not_a_tool", serde_json::json!({}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Unknown tool"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn causal_tools_ride_the_second_client_only() {
+        let causal = FakeApi::start(vec![ok_json(r#"{"nodes":[]}"#)]);
+        let f = FakeApi::start(vec![]);
+        let r = f.registry(&causal);
+        let out = r
+            .call_tool("connectome_get", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(out, serde_json::json!({"nodes":[]}));
+        assert_eq!(causal.recorded(), vec![("GET".into(), "/graph".into())]);
+        // the main client stayed unspoken to
+        assert!(f.recorded().is_empty());
+    }
+
+    #[tokio::test]
+    async fn health_rides_the_main_client() {
+        let causal = FakeApi::start(vec![]);
+        let f = FakeApi::start(vec![ok_json(r#"{"status":"ok"}"#)]);
+        let r = f.registry(&causal);
+        r.call_tool("health", serde_json::json!({})).await.unwrap();
+        assert_eq!(f.recorded(), vec![("GET".into(), "/health".into())]);
+    }
+
+    // ── the client's own contract: errors speak the server's words ──
+
+    #[tokio::test]
+    async fn client_errors_carry_the_servers_words() {
+        let f = FakeApi::start(vec![(400, r#"{"error":"boom"}"#.into())]);
+        let err = f.client().get("/x").await.unwrap_err().to_string();
+        assert!(err.contains("godon-api: boom"), "got: {err}");
+
+        let f = FakeApi::start(vec![(404, r#"{"message":"gone"}"#.into())]);
+        let err = f.client().get("/x").await.unwrap_err().to_string();
+        assert!(err.contains("godon-api: gone"), "got: {err}");
+
+        // a body with no words falls back to the bare status
+        let f = FakeApi::start(vec![(500, "teapot".into())]);
+        let err = f.client().get("/x").await.unwrap_err().to_string();
+        assert!(err.contains("500"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn empty_success_bodies_answer_empty_objects() {
+        let f = FakeApi::start(vec![(200, String::new())]);
+        let out = f.client().get("/x").await.unwrap();
+        assert_eq!(out, serde_json::json!({}));
+    }
+}
