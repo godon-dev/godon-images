@@ -246,7 +246,7 @@ impl WindmillDeployer {
     /// contract is the thing under test — the fakes speak real HTTP
     /// against a local listener, never a mocked client.
     #[cfg(test)]
-    fn with_base_url(base_url: &str, max_retries: u32, retry_delay: u64) -> Self {
+    pub(crate) fn with_base_url(base_url: &str, max_retries: u32, retry_delay: u64) -> Self {
         Self {
             client: Client::new(),
             base_url: base_url.to_string(),
@@ -1448,217 +1448,7 @@ mod tests {
         assert_eq!(d.deploy_component_schedules("w", &cfg), 1);
     }
 
-    // ── the fake windmill: one local listener, the wire's contracts ──
-    // The seeder's failures live on the HTTP path (90+ of the 118
-    // missed mutants of run 41067775364), so the oracle is a listener
-    // that answers with the declared contract and records every
-    // request for the asserts.
-
-    use std::collections::VecDeque;
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    struct Recorded {
-        method: String,
-        path: String,
-        body: String,
-        bearer: Option<String>,
-    }
-
-    /// Script: one (status, body) per expected request, answered in
-    /// arrival order. When the script runs dry the listener answers
-    /// 404 — a mis-counted test fails loudly on its asserts instead
-    /// of hanging.
-    struct FakeWindmill {
-        port: u16,
-        log: Arc<Mutex<Vec<Recorded>>>,
-        stop: Arc<AtomicBool>,
-        thread: Option<std::thread::JoinHandle<()>>,
-    }
-
-    fn write_response(stream: &mut TcpStream, status: u16, body: &str) {
-        let reason = match status {
-            200 => "OK",
-            201 => "Created",
-            400 => "Bad Request",
-            401 => "Unauthorized",
-            404 => "Not Found",
-            409 => "Conflict",
-            500 => "Internal Server Error",
-            _ => "OK",
-        };
-        let resp = format!(
-            "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            status,
-            reason,
-            body.len(),
-            body
-        );
-        stream.write_all(resp.as_bytes()).ok();
-        stream.flush().ok();
-    }
-
-    fn read_request(stream: &mut TcpStream) -> Option<Recorded> {
-        let mut buf: Vec<u8> = Vec::new();
-        let mut chunk = [0u8; 4096];
-        loop {
-            match stream.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => {
-                    buf.extend_from_slice(&chunk[..n]);
-                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                        break;
-                    }
-                    if buf.len() > 1_048_576 {
-                        break;
-                    }
-                }
-                Err(_) => return None,
-            }
-        }
-        let head = String::from_utf8_lossy(&buf).to_string();
-        let mut lines = head.split("\r\n");
-        let request_line = lines.next()?.to_string();
-        let mut parts = request_line.split_whitespace();
-        let method = parts.next()?.to_string();
-        let path = parts.next()?.to_string();
-        let mut content_length = 0usize;
-        let mut bearer = None;
-        for line in lines {
-            if line.is_empty() {
-                break;
-            }
-            let lower = line.to_ascii_lowercase();
-            if let Some(v) = lower.strip_prefix("content-length:") {
-                content_length = v.trim().parse().unwrap_or(0);
-            } else if lower.strip_prefix("authorization:").is_some() {
-                bearer = line[15..]
-                    .trim()
-                    .strip_prefix("Bearer ")
-                    .map(str::to_string);
-            }
-        }
-        let header_end = head.find("\r\n\r\n").map(|i| i + 4).unwrap_or(buf.len());
-        let mut body = buf[header_end.min(buf.len())..].to_vec();
-        while body.len() < content_length {
-            match stream.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => body.extend_from_slice(&chunk[..n]),
-                Err(_) => break,
-            }
-        }
-        if body.len() > content_length {
-            body.truncate(content_length);
-        }
-        Some(Recorded {
-            method,
-            path,
-            body: String::from_utf8_lossy(&body).to_string(),
-            bearer,
-        })
-    }
-
-    impl FakeWindmill {
-        fn start(script: Vec<(u16, String)>) -> Self {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = listener.local_addr().unwrap().port();
-            listener.set_nonblocking(true).unwrap();
-            let log = Arc::new(Mutex::new(Vec::new()));
-            let stop = Arc::new(AtomicBool::new(false));
-            let queue = Arc::new(Mutex::new(script.into_iter().collect::<VecDeque<_>>()));
-
-            let srv_log = Arc::clone(&log);
-            let srv_stop = Arc::clone(&stop);
-            let srv_queue = Arc::clone(&queue);
-            let handle = std::thread::spawn(move || {
-                while !srv_stop.load(Ordering::Relaxed) {
-                    match listener.accept() {
-                        Ok((mut stream, _)) => {
-                            stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
-                            if let Some(recorded) = read_request(&mut stream) {
-                                log_push(&srv_log, recorded);
-                                let (status, body) = srv_queue
-                                    .lock()
-                                    .unwrap()
-                                    .pop_front()
-                                    .unwrap_or((404, String::new()));
-                                write_response(&mut stream, status, &body);
-                            }
-                        }
-                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                        Err(_) => break,
-                    }
-                }
-            });
-
-            Self {
-                port,
-                log,
-                stop,
-                thread: Some(handle),
-            }
-        }
-
-        fn url(&self) -> String {
-            format!("http://127.0.0.1:{}", self.port)
-        }
-
-        fn deployer(&self) -> WindmillDeployer {
-            WindmillDeployer::with_base_url(&self.url(), 0, 0)
-        }
-
-        fn recorded(&self) -> Vec<(String, String)> {
-            self.log
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|r| (r.method.clone(), r.path.clone()))
-                .collect()
-        }
-
-        fn bodies(&self, fragment: &str) -> Vec<serde_json::Value> {
-            self.log
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|r| r.path.contains(fragment))
-                .map(|r| serde_json::from_str(&r.body).unwrap_or(serde_json::Value::Null))
-                .collect()
-        }
-
-        fn bearers(&self) -> Vec<Option<String>> {
-            self.log
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|r| r.bearer.clone())
-                .collect()
-        }
-    }
-
-    fn log_push(log: &Mutex<Vec<Recorded>>, recorded: Recorded) {
-        log.lock().unwrap().push(recorded);
-    }
-
-    impl Drop for FakeWindmill {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::Relaxed);
-            if let Some(handle) = self.thread.take() {
-                let _ = handle.join();
-            }
-        }
-    }
-
-    fn ok(body: &str) -> (u16, String) {
-        (200, body.to_string())
-    }
-    fn created() -> (u16, String) {
-        (201, String::new())
-    }
+    use crate::testkit::{capture_logs, created, drain_logs, ok, reset, FakeWindmill, ENV_LOCK};
 
     #[test]
     fn workspace_existence_reads_the_body_verbatim() {
@@ -1972,7 +1762,9 @@ mod tests {
     #[test]
     fn seed_workspace_walks_the_declared_component_end_to_end() {
         // one env, two scenarios, one process: the env is global, so
-        // both rides share this test's single set_var window.
+        // both rides share this test's single set_var window — and
+        // the lock keeps every other env-window test out of it.
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         env::set_var("WM_TOKEN", "seed-token");
 
         // ── the happy component: workspace, folder, script, schedule ──
@@ -2043,5 +1835,591 @@ mod tests {
 
         env::remove_var("WINDMILL_BASE_URL");
         env::remove_var("WM_TOKEN");
+    }
+
+    // ── the sandbox spec grammar: every guard on the declared-script path ──
+    // The declared-script door refuses every half-declared shape loud
+    // (a failure) and silent (zero HTTP) — an ambiguous spec must
+    // never reach the wire.
+
+    fn sb_spec(
+        script: Option<&str>,
+        pattern: &str,
+        sandbox: Option<&str>,
+        tag_env: Option<&str>,
+    ) -> ScriptSpec {
+        ScriptSpec {
+            pattern: pattern.into(),
+            path: None,
+            script: script.map(str::to_string),
+            sandbox: sandbox.map(str::to_string),
+            tag_env: tag_env.map(str::to_string),
+            settings: ScriptSettings::default(),
+        }
+    }
+
+    #[test]
+    fn sandbox_specs_refuse_every_half_declared_shape() {
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: "t1".into(),
+            ..Default::default()
+        };
+        std::env::set_var("GODON_SEEDER_TEST_TAG_A", "v1");
+
+        for (label, spec) in [
+            (
+                "no script name",
+                sb_spec(None, "", Some("img"), Some("GODON_SEEDER_TEST_TAG_A")),
+            ),
+            (
+                "empty script name",
+                sb_spec(Some(""), "", Some("img"), Some("GODON_SEEDER_TEST_TAG_A")),
+            ),
+            (
+                "script and pattern both set",
+                sb_spec(
+                    Some("run"),
+                    "p/*",
+                    Some("img"),
+                    Some("GODON_SEEDER_TEST_TAG_A"),
+                ),
+            ),
+            (
+                "no sandbox image",
+                sb_spec(Some("run"), "", None, Some("GODON_SEEDER_TEST_TAG_A")),
+            ),
+            (
+                "empty sandbox image",
+                sb_spec(Some("run"), "", Some(""), Some("GODON_SEEDER_TEST_TAG_A")),
+            ),
+            ("no tag env", sb_spec(Some("run"), "", Some("img"), None)),
+            (
+                "empty tag env",
+                sb_spec(Some("run"), "", Some("img"), Some("")),
+            ),
+            ("tag env unset in the process", {
+                std::env::remove_var("GODON_SEEDER_TEST_TAG_B");
+                sb_spec(
+                    Some("run"),
+                    "",
+                    Some("img"),
+                    Some("GODON_SEEDER_TEST_TAG_B"),
+                )
+            }),
+            ("tag env set to whitespace", {
+                std::env::set_var("GODON_SEEDER_TEST_TAG_C", "   ");
+                sb_spec(
+                    Some("run"),
+                    "",
+                    Some("img"),
+                    Some("GODON_SEEDER_TEST_TAG_C"),
+                )
+            }),
+        ] {
+            let f = FakeWindmill::start(vec![]);
+            assert_eq!(
+                f.deployer().deploy_sandbox_script("w1", &comp, &spec),
+                1,
+                "{label}"
+            );
+            assert_eq!(f.requests(), 0, "{label}: no HTTP may leave");
+        }
+
+        std::env::remove_var("GODON_SEEDER_TEST_TAG_A");
+        std::env::remove_var("GODON_SEEDER_TEST_TAG_C");
+    }
+
+    #[test]
+    fn a_declared_sandbox_script_pins_its_image_ref() {
+        std::env::set_var("GODON_SEEDER_TEST_TAG_D", "v1.2.3");
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: "t1".into(),
+            ..Default::default()
+        };
+        let spec = sb_spec(
+            Some("run"),
+            "",
+            Some("registry/godon-img"),
+            Some("GODON_SEEDER_TEST_TAG_D"),
+        );
+
+        let f = FakeWindmill::start(vec![ok("false"), created()]);
+        assert_eq!(f.deployer().deploy_sandbox_script("w1", &comp, &spec), 0);
+        let body = &f.bodies("/scripts/create")[0];
+        assert_eq!(body["path"], json!("f/t1/run"));
+        assert_eq!(
+            body["content"],
+            json!("# sandbox registry/godon-img:v1.2.3\n")
+        );
+        // the language hint is the stem with .sh — bash on the wire
+        assert_eq!(body["language"], json!("bash"));
+
+        // a sha256-prefixed env value pins the digest separator
+        std::env::set_var("GODON_SEEDER_TEST_TAG_D", "sha256:abc123");
+        let f = FakeWindmill::start(vec![ok("false"), created()]);
+        assert_eq!(f.deployer().deploy_sandbox_script("w1", &comp, &spec), 0);
+        assert_eq!(
+            f.bodies("/scripts/create")[0]["content"],
+            json!("# sandbox registry/godon-img@sha256:abc123\n")
+        );
+
+        std::env::remove_var("GODON_SEEDER_TEST_TAG_D");
+    }
+
+    #[test]
+    fn sandbox_routing_opens_on_any_declared_field() {
+        // any of the three declared fields routes the spec onto the
+        // sandbox path; a spec only pattern/path never touches it
+        let tag = "GODON_SEEDER_TEST_TAG_E";
+        std::env::set_var(tag, "v1");
+
+        for spec in [
+            sb_spec(Some("run"), "", None, None),
+            sb_spec(None, "", Some("img"), None),
+            sb_spec(None, "", None, Some(tag)),
+        ] {
+            let f = FakeWindmill::start(vec![]);
+            let comp = ComponentConfig {
+                name: "comp".into(),
+                target: String::new(), // no folder traffic: only the verdict counts
+                scripts: vec![spec],
+                ..Default::default()
+            };
+            assert_eq!(
+                f.deployer()
+                    .deploy_component_scripts("w1", &comp, Path::new("/nonexistent")),
+                1
+            );
+            assert_eq!(f.requests(), 0);
+        }
+
+        // and the fully-declared spec spends its deploy on the wire
+        let f = FakeWindmill::start(vec![ok("false"), created()]);
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: String::new(),
+            scripts: vec![sb_spec(Some("run"), "", Some("img"), Some(tag))],
+            ..Default::default()
+        };
+        assert_eq!(
+            f.deployer()
+                .deploy_component_scripts("w1", &comp, Path::new("/nonexistent")),
+            0
+        );
+        assert_eq!(f.bodies("/scripts/create").len(), 1);
+
+        std::env::remove_var(tag);
+    }
+
+    // ── the pattern/path grammar on the plain script side ──
+
+    #[test]
+    fn a_directory_named_by_a_pattern_is_not_a_file() {
+        let root = temp_root("pat-dir");
+        std::fs::create_dir_all(root.join("d")).unwrap();
+        std::fs::write(root.join("run.py"), "print(1)\n").unwrap();
+
+        // the finder itself: a pattern naming a directory matches nothing
+        assert!(find_files_by_pattern(&root, "d").is_empty());
+
+        // and through the component door: zero failures, zero traffic
+        let f = FakeWindmill::start(vec![]);
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: String::new(),
+            scripts: vec![sb_spec(None, "d", None, None)],
+            ..Default::default()
+        };
+        assert_eq!(f.deployer().deploy_component_scripts("w1", &comp, &root), 0);
+        assert_eq!(f.requests(), 0);
+    }
+
+    #[test]
+    fn an_empty_path_falls_back_to_the_base_dir_search() {
+        let root = temp_root("pat-emptypath");
+        std::fs::write(root.join("run.py"), "print(1)\n").unwrap();
+
+        // pattern + empty path: the base-dir search still finds the file
+        let f = FakeWindmill::start(vec![ok("false"), created()]);
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: String::new(),
+            scripts: vec![ScriptSpec {
+                pattern: "*.py".into(),
+                path: Some(String::new()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(f.deployer().deploy_component_scripts("w1", &comp, &root), 0);
+        assert_eq!(f.bodies("/scripts/create").len(), 1);
+
+        // a path of only the empty string plants nothing and fails nothing
+        let f = FakeWindmill::start(vec![]);
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: String::new(),
+            scripts: vec![ScriptSpec {
+                path: Some(String::new()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(f.deployer().deploy_component_scripts("w1", &comp, &root), 0);
+        assert_eq!(f.requests(), 0);
+    }
+
+    // ── the flows side of the same grammar ──
+
+    #[test]
+    fn flows_pin_their_pattern_and_path_edges() {
+        let root = temp_root("flows-edges");
+        std::fs::create_dir_all(root.join("d")).unwrap();
+        std::fs::write(root.join("flow.yaml"), "summary: s\nsteps: []\n").unwrap();
+
+        // happy: a declared path deploys with the folder spoken for
+        let f = FakeWindmill::start(vec![created(), ok("false"), created()]);
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: "t1".into(),
+            flows: Some(vec![FlowSpec {
+                path: Some("flow.yaml".into()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(f.deployer().deploy_component_flows("w1", &comp, &root), 0);
+        assert_eq!(f.bodies("/flows/create").len(), 1);
+        assert_eq!(f.recorded()[0].1, "/api/w/w1/folders/create");
+
+        // no target: the folder door stays closed, the flow still plants
+        let f = FakeWindmill::start(vec![ok("false"), created()]);
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: String::new(),
+            flows: Some(vec![FlowSpec {
+                path: Some("flow.yaml".into()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(f.deployer().deploy_component_flows("w1", &comp, &root), 0);
+        assert!(f
+            .recorded()
+            .iter()
+            .all(|(_, p)| !p.contains("folders/create")));
+
+        // empty pattern + declared path: the path branch carries it
+        let f = FakeWindmill::start(vec![ok("false"), created()]);
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: String::new(),
+            flows: Some(vec![FlowSpec {
+                pattern: String::new(),
+                path: Some("flow.yaml".into()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(f.deployer().deploy_component_flows("w1", &comp, &root), 0);
+        assert_eq!(f.bodies("/flows/create").len(), 1);
+
+        // a pattern naming a directory plants nothing, fails nothing
+        let f = FakeWindmill::start(vec![]);
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: String::new(),
+            flows: Some(vec![FlowSpec {
+                pattern: "d".into(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(f.deployer().deploy_component_flows("w1", &comp, &root), 0);
+        assert_eq!(f.requests(), 0);
+
+        // pattern + empty path: no fallthrough on the flows side —
+        // an empty path with a pattern plants NOTHING here
+        let f = FakeWindmill::start(vec![]);
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: String::new(),
+            flows: Some(vec![FlowSpec {
+                pattern: "*.yaml".into(),
+                path: Some(String::new()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(f.deployer().deploy_component_flows("w1", &comp, &root), 0);
+        assert_eq!(f.requests(), 0);
+
+        // a path of only the empty string: nothing to read, no failure
+        let f = FakeWindmill::start(vec![]);
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: String::new(),
+            flows: Some(vec![FlowSpec {
+                path: Some(String::new()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(f.deployer().deploy_component_flows("w1", &comp, &root), 0);
+        assert_eq!(f.requests(), 0);
+    }
+
+    #[test]
+    fn flow_failures_count_exactly_one_each() {
+        let root = temp_root("flows-fail");
+        std::fs::write(root.join("flow.yaml"), "summary: s\nsteps: []\n").unwrap();
+
+        // the create door refusing: one failure for the flow
+        let f = FakeWindmill::start(vec![ok("false"), (500, String::new())]);
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: String::new(),
+            flows: Some(vec![FlowSpec {
+                path: Some("flow.yaml".into()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(f.deployer().deploy_component_flows("w1", &comp, &root), 1);
+
+        // a path naming a directory: the read fails, one failure
+        std::fs::create_dir_all(root.join("adir")).unwrap();
+        let f = FakeWindmill::start(vec![]);
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: String::new(),
+            flows: Some(vec![FlowSpec {
+                path: Some("adir".into()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(f.deployer().deploy_component_flows("w1", &comp, &root), 1);
+    }
+
+    // ── the retry doors' attempt arithmetic ──
+
+    #[test]
+    fn retry_doors_spend_attempts_on_the_wire_then_stop() {
+        // flow: absent, refused once, then planted — two create attempts
+        let f = FakeWindmill::start(vec![ok("false"), (500, String::new()), created()]);
+        let d = WindmillDeployer::with_base_url(&f.url(), 1, 0);
+        d.deploy_flow_with_retry("w1", "f/t1/flow", "summary: s\n", &FlowSettings::default())
+            .unwrap();
+        assert_eq!(
+            f.recorded()
+                .iter()
+                .filter(|(_, p)| p.contains("flows/create"))
+                .count(),
+            2
+        );
+
+        // a flow already present: one check, zero creates
+        let f = FakeWindmill::start(vec![ok("true")]);
+        let d = WindmillDeployer::with_base_url(&f.url(), 1, 0);
+        d.deploy_flow_with_retry("w1", "f/t1/flow", "summary: s\n", &FlowSettings::default())
+            .unwrap();
+        assert_eq!(f.requests(), 1);
+
+        // schedule: the same grammar on its own door
+        let f = FakeWindmill::start(vec![ok("false"), (500, String::new()), created()]);
+        let d = WindmillDeployer::with_base_url(&f.url(), 1, 0);
+        d.deploy_schedule_with_retry("w1", "f/t1/run_schedule", "0 * * * * *", "f/t1/run", "s")
+            .unwrap();
+        assert_eq!(
+            f.recorded()
+                .iter()
+                .filter(|(_, p)| p.contains("schedules/create"))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn schedule_counters_spend_exactly_one_on_each_error_branch() {
+        let comp = ComponentConfig {
+            name: "comp".into(),
+            target: "t1".into(),
+            schedules: vec![ScheduleSpec {
+                script: "duty".into(),
+                every_seconds: 60,
+            }],
+            ..Default::default()
+        };
+
+        // the existence check itself failing (connection reset): one failure
+        let f = FakeWindmill::start(vec![reset()]);
+        assert_eq!(f.deployer().deploy_component_schedules("w1", &comp), 1);
+
+        // the schedule create door refusing: one failure
+        let f = FakeWindmill::start(vec![ok("true"), ok("false"), (500, String::new())]);
+        assert_eq!(f.deployer().deploy_component_schedules("w1", &comp), 1);
+    }
+
+    // ── seed_workspace's override and counting paths ──
+
+    fn write_component(root: &std::path::Path, yaml: &str, files: &[(&str, &str)]) {
+        let comp = root.join("comp");
+        std::fs::create_dir_all(&comp).unwrap();
+        std::fs::write(comp.join("component.yaml"), yaml).unwrap();
+        for (name, body) in files {
+            std::fs::write(comp.join(name), body).unwrap();
+        }
+    }
+
+    #[test]
+    fn seed_workspace_counts_its_verdicts_and_honors_the_default() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        env::set_var("WM_TOKEN", "seed-token2");
+        capture_logs();
+
+        // no workspace declared: the DEFAULT workspace is the one created
+        let root = temp_root("seed-default");
+        write_component(
+            &root,
+            "name: comp\ntarget: t1\nscripts:\n  - pattern: \"*.py\"\n",
+            &[("run.py", "print(1)\n")],
+        );
+        let f = FakeWindmill::start(vec![
+            ok("false"), // default_ws does not exist
+            created(),   // create default_ws
+            created(),   // create folder t1
+            ok("false"), // script absent
+            created(),   // create script
+        ]);
+        env::set_var("WINDMILL_BASE_URL", f.url());
+        let failures = seed_workspace(
+            &[root.join("comp").to_string_lossy().to_string()],
+            "default_ws",
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(failures, 0);
+        assert_eq!(
+            f.bodies("/api/workspaces/create")[0]["id"],
+            json!("default_ws")
+        );
+        let lines = drain_logs();
+        assert!(
+            lines.iter().any(|l| l.contains("completed successfully")),
+            "the clean verdict speaks its line"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("completed with")),
+            "no failure verdict on a clean run"
+        );
+
+        // a script create refusing: exactly one failure, said aloud
+        let root = temp_root("seed-scriptfail");
+        write_component(
+            &root,
+            "name: comp\ntarget: t1\nscripts:\n  - pattern: \"*.py\"\n",
+            &[("run.py", "print(1)\n")],
+        );
+        let f = FakeWindmill::start(vec![
+            ok("false"),
+            created(),
+            created(),
+            ok("false"),
+            (500, String::new()),
+        ]);
+        env::set_var("WINDMILL_BASE_URL", f.url());
+        let failures = seed_workspace(
+            &[root.join("comp").to_string_lossy().to_string()],
+            "default_ws",
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(failures, 1);
+        let lines = drain_logs();
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("completed with 1 failures")));
+
+        // empty flows: no flow walk, no folder traffic beyond the script's
+        let root = temp_root("seed-emptyflows");
+        write_component(&root, "name: comp\ntarget: t1\nflows: []\n", &[]);
+        let f = FakeWindmill::start(vec![ok("false"), created()]);
+        env::set_var("WINDMILL_BASE_URL", f.url());
+        let failures = seed_workspace(
+            &[root.join("comp").to_string_lossy().to_string()],
+            "default_ws",
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(failures, 0);
+        assert!(f
+            .recorded()
+            .iter()
+            .all(|(_, p)| !p.contains("folders/create")));
+
+        // a flow create refusing: exactly one failure
+        let root = temp_root("seed-flowfail");
+        write_component(
+            &root,
+            "name: comp\ntarget: t1\nflows:\n  - path: flow.yaml\n",
+            &[("flow.yaml", "summary: s\nsteps: []\n")],
+        );
+        let f = FakeWindmill::start(vec![
+            ok("false"), // workspace
+            created(),
+            created(),   // folder
+            ok("false"), // flow absent
+            (500, String::new()),
+        ]);
+        env::set_var("WINDMILL_BASE_URL", f.url());
+        let failures = seed_workspace(
+            &[root.join("comp").to_string_lossy().to_string()],
+            "default_ws",
+            0,
+            0,
+        )
+        .unwrap();
+        assert_eq!(failures, 1);
+
+        env::remove_var("WINDMILL_BASE_URL");
+        env::remove_var("WM_TOKEN");
+    }
+
+    // ── create_folder's status arms speak only in log lines ──
+
+    #[test]
+    fn folder_statuses_speak_their_own_lines() {
+        capture_logs();
+
+        let f = FakeWindmill::start(vec![created()]);
+        drain_logs();
+        f.deployer().create_folder("w1", "f/t1/sub").unwrap();
+        let lines = drain_logs();
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("Successfully created folder")));
+
+        let f = FakeWindmill::start(vec![(409, String::new())]);
+        drain_logs();
+        f.deployer().create_folder("w1", "f/t1/sub").unwrap();
+        let lines = drain_logs();
+        assert!(lines.iter().any(|l| l.contains("Folder already exists")));
+
+        // any other status: neither line — the door stays Ok-silent
+        let f = FakeWindmill::start(vec![(500, String::new())]);
+        drain_logs();
+        f.deployer().create_folder("w1", "f/t1/sub").unwrap();
+        let lines = drain_logs();
+        assert!(
+            !lines.iter().any(|l| l.contains("Folder already exists")
+                || l.contains("Successfully created folder")),
+            "a server error speaks neither of those lines: {lines:?}"
+        );
     }
 }
