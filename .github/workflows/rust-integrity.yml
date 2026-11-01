@@ -95,14 +95,14 @@ jobs:
         if: always()
         run: |
           declare -A FLOORS=(
-            [godon-api]=21
+            [godon-api]=36
             [godon-bench-generic]=61
             [godon-bench-greenhouse]=68
             [godon-bench-microgrid]=85
             [godon-causal]=32
             [godon-mcp]=53
-            [godon-observer]=50
-            [godon-seeder]=50
+            [godon-observer]=60
+            [godon-seeder]=93
             [ledger-reader]=93
           )
           fail=0
