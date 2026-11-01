@@ -108,7 +108,7 @@ jobs:
           fail=0
           for m in $CRATES; do
             n=$(basename "$m")
-            o="$GITHUB_WORKSPACE/mutants.out/$n/outcomes.json"
+            o="$GITHUB_WORKSPACE/mutants.out/$n/mutants.out/outcomes.json"
             if [ ! -f "$o" ]; then
               echo "::error::$n has no outcomes — the measurement is incomplete"
               fail=1
