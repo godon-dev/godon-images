@@ -4507,6 +4507,32 @@ mod tests {
         assert_eq!(promise_streak(&evs, Some(&streak_plan(0.5, 0.0))), 0);
     }
 
+    #[test]
+    fn promise_streak_breaks_exactly_at_the_rulers_edge() {
+        // The ruler's own edge: |median - predicted| == bars is COVERED —
+        // the world agreed with the map, the conviction run ends there.
+        // Dyadic values throughout, so the edge is exact in f64.
+        let plan = streak_plan(0.5, 0.25);
+
+        // one hair outside the ruler: a conviction
+        assert_eq!(promise_streak(&[missed_event(0.751)], Some(&plan)), 1);
+
+        // exactly ON the edge: covered, not a conviction — the run
+        // breaks at it, and alone it counts nothing
+        assert_eq!(promise_streak(&[missed_event(0.75)], Some(&plan)), 0);
+        assert_eq!(
+            promise_streak(&[missed_event(0.75), missed_event(0.751)], Some(&plan)),
+            1,
+            "a conviction then a covered reading: the streak stops at the edge"
+        );
+
+        // one hair inside: covered likewise
+        assert_eq!(
+            promise_streak(&[missed_event(0.749), missed_event(0.751)], Some(&plan)),
+            1
+        );
+    }
+
     // ─── ProbeResultRequest deserialization ───────────────────────
 
     #[test]
