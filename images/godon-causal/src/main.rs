@@ -1001,8 +1001,38 @@ async fn steer_plan(
                     })
                 })
                 .collect();
+            // Assignment completeness (godon#434 follow-up, found live
+            // 2026-11-02 in the S1v2a re-flight): every outcome THIS wish
+            // names gets its tender a tending role — a move's senders hold
+            // dials; every OTHER claim/term tender parks as receiver so its
+            // line witnesses. Without this the compose plan assigned only
+            // its movers and the mid-path claim tender never judged (3 of 4
+            // lines). The zero-move hold branch has carried the same list
+            // since 2026-10-22; the move branch now matches it. The wish's
+            // OWN lines only — positions' synthetic terms are not this
+            // wish's business.
+            let senders: std::collections::BTreeSet<&str> = moves
+                .iter()
+                .map(|m| m.sender.as_str())
+                .collect();
+            let mut receivers: Vec<String> = Vec::new();
+            for name in req
+                .claims
+                .iter()
+                .map(|c| c.outcome.as_str())
+                .chain(req.terms.iter().map(|t| t.outcome.as_str()))
+            {
+                if let Ok((receiver, _)) = planner::resolve_outcome(&entries, name) {
+                    if !senders.contains(receiver.as_str())
+                        && !receivers.iter().any(|r| r == &receiver)
+                    {
+                        receivers.push(receiver.clone());
+                    }
+                }
+            }
             let plan_json = serde_json::json!({
                 "moves": moves_json,
+                "receivers": receivers,
                 "predicted": { "value": predicted_value, "bars": predicted_bars },
                 "claims": claims_json,
                 "range_used": range_used,
@@ -1028,6 +1058,7 @@ async fn steer_plan(
                 "status": "planned",
                 "wish_id": req.wish_id,
                 "moves": plan_json["moves"],
+                "receivers": plan_json["receivers"],
                 "predicted": plan_json["predicted"],
                 "claims": plan_json["claims"],
                 "range_used": plan_json["range_used"],
