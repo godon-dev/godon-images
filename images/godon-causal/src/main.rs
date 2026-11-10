@@ -1011,10 +1011,8 @@ async fn steer_plan(
             // since 2026-10-22; the move branch now matches it. The wish's
             // OWN lines only — positions' synthetic terms are not this
             // wish's business.
-            let senders: std::collections::BTreeSet<&str> = moves
-                .iter()
-                .map(|m| m.sender.as_str())
-                .collect();
+            let senders: std::collections::BTreeSet<&str> =
+                moves.iter().map(|m| m.sender.as_str()).collect();
             let mut receivers: Vec<String> = Vec::new();
             for name in req
                 .claims
@@ -1395,7 +1393,10 @@ async fn rewalk(
         let misses_spent = wish_book::count_wish_events(client, wish_id, "missed")
             .await
             .unwrap_or(0);
-        if wish_book::budget_exhausted(terms_req.budget, walks_completed + misses_spent) {
+        if wish_book::budget_exhausted(
+            terms_req.budget,
+            wish_book::effort_spent(walks_completed, misses_spent),
+        ) {
             return release_wish(
                 client,
                 wish_id,
@@ -1909,6 +1910,25 @@ fn promise_streak(events: &[wish_book::WalkEventRow], plan: Option<&serde_json::
 /// wallet concludes at the default budget 5 — the look gets its turn.
 const PROMISE_STREAK: usize = 3;
 
+/// The streak's own arming edge: PROMISE_STREAK in a row convicts the
+/// map. Pure on purpose — the DB pulls (list_wish_events, row.plan)
+/// live at the steer_plan_get call site; the edge lives here where a
+/// test can reach it.
+fn promise_broke(streak: usize) -> bool {
+    streak >= PROMISE_STREAK
+}
+
+/// The remeasure arming: a re-serve only when the map went stale (the
+/// curve fingerprint moved off the served one) OR the plan's promises
+/// broke PROMISE_STREAK times in row. Pure on purpose, same seam.
+fn remeasure_armed(
+    fingerprint: &serde_json::Value,
+    served_fp: &serde_json::Value,
+    streak: usize,
+) -> bool {
+    fingerprint == served_fp || promise_broke(streak)
+}
+
 async fn steer_plan_get(
     State(state): State<Arc<AppState>>,
     Path(wish_id): Path<String>,
@@ -2300,8 +2320,8 @@ async fn steer_plan_get(
                 .unwrap_or_default(),
             row.plan.as_ref(),
         );
-        if fingerprint == served_fp || streak >= PROMISE_STREAK {
-            if streak >= PROMISE_STREAK {
+        if remeasure_armed(&fingerprint, &served_fp, streak) {
+            if promise_broke(streak) {
                 info!(
                     "REWALK {wish_id}: the promises broke {streak} times in a row — \
                      the map is convicted by its own ruler; measuring"
@@ -4536,6 +4556,32 @@ mod tests {
         assert_eq!(promise_streak(&evs, None), 0);
         // zero bars = no ruler, no conviction
         assert_eq!(promise_streak(&evs, Some(&streak_plan(0.5, 0.0))), 0);
+    }
+
+    /// The streak's arming edge, planted exactly at the ruler's line:
+    /// two breaks do not convict, three do, four still do.
+    #[test]
+    fn promise_broke_fires_at_three_in_a_row() {
+        assert!(!promise_broke(0));
+        assert!(!promise_broke(2));
+        assert!(promise_broke(3));
+        assert!(promise_broke(4));
+    }
+
+    /// The remeasure arming: stale map (served fingerprint matches) OR a
+    /// convicted streak. A moved fingerprint with a short streak stays
+    /// quiet; the streak alone arms at the edge; a Null served
+    /// fingerprint is a moved map (nothing served yet).
+    #[test]
+    fn remeasure_arms_on_stale_map_or_convicted_streak() {
+        let fp = serde_json::json!({ "curve": "abc" });
+        let same = serde_json::json!({ "curve": "abc" });
+        let moved = serde_json::json!({ "curve": "def" });
+        assert!(remeasure_armed(&fp, &same, 0));
+        assert!(!remeasure_armed(&fp, &moved, 2));
+        assert!(remeasure_armed(&fp, &moved, 3));
+        assert!(remeasure_armed(&fp, &moved, 5));
+        assert!(!remeasure_armed(&fp, &serde_json::Value::Null, 0));
     }
 
     #[test]
