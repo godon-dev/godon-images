@@ -689,6 +689,16 @@ pub fn budget_exhausted(budget: Option<u32>, walks_completed: usize) -> bool {
     }
 }
 
+/// The owner's outer total: rounds already walked past the free one,
+/// PLUS every judged miss — failed attempts spend (ruled 2026-10-31
+/// midnight: the wallet tells the truth about failed work, and the
+/// treadmill is bounded by economics, not patience). Pure on purpose:
+/// the DB pulls (count_wish_events ×2) live at the rewalk call site,
+/// the arithmetic lives here where a test can reach it.
+pub fn effort_spent(walks_completed: usize, misses_spent: usize) -> usize {
+    walks_completed + misses_spent
+}
+
 // ─── Book reads the walk needs ──────────────────────────────────────
 
 /// One book event as written, detail parsed when present.
@@ -792,6 +802,17 @@ pub async fn read_dial_points(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The wallet's arithmetic: rounds walked plus misses spent (failed
+    /// attempts spend — ruled 2026-10-31). 5+2 hand-summed: the owner
+    /// spent seven.
+    #[test]
+    fn effort_spent_sums_walks_and_misses() {
+        assert_eq!(effort_spent(5, 2), 7);
+        assert_eq!(effort_spent(0, 0), 0);
+        assert_eq!(effort_spent(0, 4), 4);
+        assert_eq!(effort_spent(3, 0), 3);
+    }
 
     #[test]
     fn verdict_dead_center_is_landed() {
