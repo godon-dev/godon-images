@@ -1011,10 +1011,8 @@ async fn steer_plan(
             // since 2026-10-22; the move branch now matches it. The wish's
             // OWN lines only — positions' synthetic terms are not this
             // wish's business.
-            let senders: std::collections::BTreeSet<&str> = moves
-                .iter()
-                .map(|m| m.sender.as_str())
-                .collect();
+            let senders: std::collections::BTreeSet<&str> =
+                moves.iter().map(|m| m.sender.as_str()).collect();
             let mut receivers: Vec<String> = Vec::new();
             for name in req
                 .claims
@@ -4269,6 +4267,78 @@ mod tests {
         assert_eq!(res.0["range_used"]["p"][1], 100.0);
         assert_eq!(res.0["path"][0], "a");
         assert_eq!(res.0["path"][1], "R");
+    }
+
+    /// Assignment completeness (godon#434): the receivers list parks each
+    /// claim/term tender exactly once and never parks a move's sender.
+    /// Fixture: the planner steers the claim Q (path x->Q, move sender
+    /// "x"); x->a and w->x are measured bystanders so "a" and "x" resolve
+    /// as receiver names. The request claims Q once and terms Q again
+    /// (duplicate), "a" (a bystander), and "x" (the move's sender).
+    /// Truth: receivers == ["Q", "a"] — the sender arm drops "x", the dup
+    /// arm drops the second "Q". Each guard-arm mutant admits a different
+    /// wrong list, so the exact assert kills all four sites.
+    #[tokio::test]
+    async fn test_steer_plan_receivers_park_once_and_skip_senders() {
+        let state = seeded_plan_state().await;
+        {
+            let mut curves = state.curves.write().await;
+            // measured bystander: x -> Q reads 10 at rest, 20 at full dial
+            // (slope 0.1 — direction for the compile, band still wide)
+            curves.probe("x", "Q", "q", "objective_0", 0.0, 10.0, 0.02, 0.01, None);
+            curves.probe("x", "Q", "q", "objective_0", 100.0, 20.0, 0.02, 0.01, None);
+            // measured bystander: x -> a reads 5 at rest, 15 at full dial
+            curves.probe("x", "a", "p2", "objective_0", 0.0, 5.0, 0.02, 0.01, None);
+            curves.probe("x", "a", "p2", "objective_0", 100.0, 15.0, 0.02, 0.01, None);
+            // measured bystander: w -> x reads 3 at rest, 7 at full dial —
+            // makes "x" resolvable as a receiver name (it is the sender)
+            curves.probe("w", "x", "p3", "objective_0", 0.0, 3.0, 0.02, 0.01, None);
+            curves.probe("w", "x", "p3", "objective_0", 100.0, 7.0, 0.02, 0.01, None);
+        }
+        let wide = |target: f64| planner::Band {
+            lo: 0.0,
+            hi: 100.0,
+            target: Some(target),
+        };
+        let mut req = plan_req("R", 25.0);
+        req.claims = vec![planner::ClaimSpec {
+            outcome: "Q".to_string(),
+            band: wide(10.0),
+        }];
+        req.terms = vec![
+            planner::ClaimSpec {
+                outcome: "Q".to_string(),
+                band: wide(10.0),
+            },
+            planner::ClaimSpec {
+                outcome: "a".to_string(),
+                band: wide(5.0),
+            },
+            planner::ClaimSpec {
+                outcome: "x".to_string(),
+                band: wide(3.0),
+            },
+        ];
+        let res = steer_plan(State(state), Json(serde_json::to_value(&req).unwrap()))
+            .await
+            .expect("wide bands on measured curves keep the plan admitted");
+        assert_eq!(res.0["status"], "planned", "body: {}", res.0);
+        // the plan steers the claim: one move, sender x, dial q (as-found)
+        assert_eq!(
+            res.0["moves"].as_array().unwrap().len(),
+            1,
+            "body: {}",
+            res.0
+        );
+        assert_eq!(res.0["moves"][0]["sender"], "x", "body: {}", res.0);
+        // the receivers verdict — exact, order included: Q parked once
+        // (dup term dropped), a parked, x dropped as the move's sender
+        assert_eq!(
+            res.0["receivers"],
+            serde_json::json!(["Q", "a"]),
+            "body: {}",
+            res.0
+        );
     }
 
     #[tokio::test]
