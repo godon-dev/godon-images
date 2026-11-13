@@ -1,5 +1,6 @@
 mod causal;
 mod config;
+mod convergence_guard;
 mod handlers;
 mod types;
 mod windmill_adapter;
