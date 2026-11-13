@@ -122,6 +122,16 @@ pub async fn create_systemtender(
             .config
             .get("convergence_threshold")
             .and_then(|v| v.as_f64());
+        // The group is the unit of comparability — bars compare only
+        // within the same interference-detection group (holder
+        // correction 2026-11-13: the knob lives at the group level;
+        // disjoint studies never compare).
+        let new_group = payload
+            .config
+            .get("interference_detection")
+            .and_then(|d| d.get("group"))
+            .and_then(|g| g.as_str())
+            .map(|s| s.to_string());
         let guard_client = get_client()?;
         let peers = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<PeerBar>> {
             let mut peers = Vec::new();
@@ -129,6 +139,12 @@ pub async fn create_systemtender(
                 let full = guard_client.get_systemtender(&s.id)?;
                 peers.push(PeerBar {
                     name: full.name,
+                    group: full
+                        .config
+                        .get("interference_detection")
+                        .and_then(|d| d.get("group"))
+                        .and_then(|g| g.as_str())
+                        .map(|s| s.to_string()),
                     declared: full
                         .config
                         .get("convergence_threshold")
@@ -157,7 +173,7 @@ pub async fn create_systemtender(
             )
         })?;
 
-        if let Some(c) = detect_mixed_bar(new_declared, &peers) {
+        if let Some(c) = detect_mixed_bar(new_declared, new_group.as_deref(), &peers) {
             return Err((
                 StatusCode::CONFLICT,
                 Json(ErrorResponse::new(
@@ -1553,11 +1569,12 @@ mod handler_tests {
         // the create at the door, naming the constraint — zero create
         // wire (guard: list run + one get run per peer)
         let group = r#"[{"id":"st-9","name":"node-1","status":"active","createdAt":"t"}]"#;
-        let peer = r#"{"id":"st-9","name":"node-1","status":"active","createdAt":"t","config":{"convergence_threshold":0.05}}"#;
+        let peer = r#"{"id":"st-9","name":"node-1","status":"active","createdAt":"t","config":{"convergence_threshold":0.05,"interference_detection":{"group":"bench-microgrid-6"}}}"#;
         let f = FakeWindmill::start(vec![job(), done(group), job(), done(peer)]);
         env_at(&f);
         let mut body = create_body();
         body.config["convergence_threshold"] = serde_json::json!(0.02);
+        body.config["interference_detection"] = serde_json::json!({"group": "bench-microgrid-6"});
         let r = create_systemtender(
             State(Config { port: 8080 }),
             Query(CreateParams {
