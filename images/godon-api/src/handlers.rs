@@ -10,6 +10,7 @@ use serde_json::json;
 use serde_json::Value;
 
 use crate::config::Config;
+use crate::convergence_guard::{detect_mixed_bar, PeerBar};
 use crate::types::{
     Credential, CredentialCreate, DeleteResponse, DeletedResponse, ErrorResponse, Systemtender,
     SystemtenderCreate, SystemtenderSummary, SystemtenderUpdate, Target, TargetCreate, Wish,
@@ -109,6 +110,66 @@ pub async fn create_systemtender(
     Json(payload): Json<SystemtenderCreate>,
 ) -> Result<(StatusCode, Json<Value>), (StatusCode, Json<ErrorResponse>)> {
     let client = get_client()?;
+
+    // Precision-contract guard (2026-10-31): the create door refuses
+    // mixed EFFECTIVE bars (det > estate env GODON_CONVERGENCE_THRESHOLD
+    // > 0.02 — the exact precedence the engine runs) within the live
+    // group; the UPDATE door stays the runtime lever by design. A
+    // windmill read failure fails the create loudly — the guard never
+    // silently sleeps.
+    {
+        let new_declared = payload
+            .config
+            .get("convergence_threshold")
+            .and_then(|v| v.as_f64());
+        let guard_client = get_client()?;
+        let peers = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<PeerBar>> {
+            let mut peers = Vec::new();
+            for s in guard_client.list_systemtenders()? {
+                let full = guard_client.get_systemtender(&s.id)?;
+                peers.push(PeerBar {
+                    name: full.name,
+                    declared: full
+                        .config
+                        .get("convergence_threshold")
+                        .and_then(|v| v.as_f64()),
+                });
+            }
+            Ok(peers)
+        })
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(
+                    format!("Guard task join error: {}", e),
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(
+                    format!("Failed to read peers for the convergence guard: {}", e),
+                    "INTERNAL_SERVER_ERROR",
+                )),
+            )
+        })?;
+
+        if let Some(c) = detect_mixed_bar(new_declared, &peers) {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ErrorResponse::new(
+                    format!(
+                        "mixed convergence bars refused: peer '{}' runs effective bar {} but this create would run at {} — the study group must be bar-uniform (precision contract, 2026-10-31); redeclare with convergence_threshold {} or move the whole group first via the UPDATE door",
+                        c.peer_name, c.peer_bar, c.new_bar, c.peer_bar
+                    ),
+                    "MIXED_CONVERGENCE_BARS",
+                )),
+            ));
+        }
+    }
 
     let systemtender_config = json!({
         "name": payload.name,
@@ -1438,9 +1499,14 @@ mod handler_tests {
 
     /// One env window, sequential scenarios — env is process-global.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn the_systemtender_doors_speak_their_contracts() {
+        let _env = crate::windmill_adapter::tests_support::ENV_MUTEX
+            .lock()
+            .unwrap();
         // create, async by default: enqueue + answer 202 with the summary
-        let f = FakeWindmill::start(vec![job(), done(SUMMARY)]);
+        // (guard first: one systemtenders_get run — empty group, allow)
+        let f = FakeWindmill::start(vec![job(), done("[]"), job(), done(SUMMARY)]);
         env_at(&f);
         let r = create_systemtender(
             State(Config { port: 8080 }),
@@ -1462,7 +1528,13 @@ mod handler_tests {
         );
 
         // a name clash answers 409 with the existing row
-        let f = FakeWindmill::start(vec![job(), done(&SUMMARY.replace("false", "true"))]);
+        // (guard first: one systemtenders_get run — empty group, allow)
+        let f = FakeWindmill::start(vec![
+            job(),
+            done("[]"),
+            job(),
+            done(&SUMMARY.replace("false", "true")),
+        ]);
         env_at(&f);
         let r = create_systemtender(
             State(Config { port: 8080 }),
@@ -1476,6 +1548,29 @@ mod handler_tests {
         .unwrap();
         assert_eq!(r.0, StatusCode::CONFLICT);
         assert_eq!(r.1 .0["id"], serde_json::json!("st-1"));
+
+        // the precision-contract guard: a peer at another bar refuses
+        // the create at the door, naming the constraint — zero create
+        // wire (guard: list run + one get run per peer)
+        let group = r#"[{"id":"st-9","name":"node-1","status":"active","createdAt":"t"}]"#;
+        let peer = r#"{"id":"st-9","name":"node-1","status":"active","createdAt":"t","config":{"convergence_threshold":0.05}}"#;
+        let f = FakeWindmill::start(vec![job(), done(group), job(), done(peer)]);
+        env_at(&f);
+        let mut body = create_body();
+        body.config["convergence_threshold"] = serde_json::json!(0.02);
+        let r = create_systemtender(
+            State(Config { port: 8080 }),
+            Query(CreateParams {
+                wait: None,
+                timeout: None,
+            }),
+            Json(body),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(r.0, StatusCode::CONFLICT);
+        assert_eq!(r.1 .0.code, "MIXED_CONVERGENCE_BARS");
+        assert!(f.bodies("systemtender_create").is_empty());
 
         // delete: a malformed uuid refuses at the door, zero wire
         let f = FakeWindmill::start(vec![]);
