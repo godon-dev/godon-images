@@ -34,7 +34,7 @@ fn login_to_windmill(base_url: &str, email: &str, password: &str) -> Result<Stri
 }
 
 pub struct WindmillClient {
-    client: Windmill,
+    pub(crate) client: Windmill,
     folder: String,
 }
 
@@ -460,6 +460,12 @@ pub(crate) mod tests_support {
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
+
+    /// Env-mutating tests serialize: env is process-global and two
+    /// FakeWindmill windows racing cross the wires (the ENV_MUTEX
+    /// lesson, 2026-11-13). Sync wrapper holds the guard around
+    /// block_on — never across an await.
+    pub static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     pub struct Recorded {
         pub method: String,

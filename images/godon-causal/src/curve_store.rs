@@ -22,7 +22,7 @@ pub struct CurvePointRow {
     pub probe_level: f64,
     pub shift: f64,
     pub bar: f64,
-    pub convergence_threshold: f64,
+    pub convergence_fraction: f64,
 }
 
 pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), Error> {
@@ -37,7 +37,7 @@ pub async fn ensure_curve_table(client: &tokio_postgres::Client) -> Result<(), E
                  shift DOUBLE PRECISION NOT NULL, \
                  bar DOUBLE PRECISION NOT NULL DEFAULT 0, \
              channel TEXT NOT NULL DEFAULT 'objective_0', \
-                 convergence_threshold DOUBLE PRECISION NOT NULL, \
+                 convergence_fraction DOUBLE PRECISION NOT NULL, \
                  written_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
             &[],
         )
@@ -112,13 +112,13 @@ pub async fn insert_curve_point(
     probe_level: f64,
     shift: f64,
     bar: f64,
-    convergence_threshold: f64,
+    convergence_fraction: f64,
     ambience: Option<&str>,
 ) -> Result<(), Error> {
     client
         .execute(
             "INSERT INTO curve_points \
-             (group_id, sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, convergence_threshold, ambience) \
+             (group_id, sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, convergence_fraction, ambience) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, ($10::text)::jsonb)",
             &[
                 &group_id,
@@ -129,7 +129,7 @@ pub async fn insert_curve_point(
                 &probe_level,
                 &shift,
                 &bar,
-                &convergence_threshold,
+                &convergence_fraction,
                 &ambience,
             ],
         )
@@ -143,7 +143,7 @@ pub async fn load_curve_points(
     let rows = client
         .query(
             "SELECT sender_id, receiver_id, probe_param, channel, probe_level, shift, bar, \
-             convergence_threshold FROM curve_points ORDER BY id",
+             convergence_fraction FROM curve_points ORDER BY id",
             &[],
         )
         .await?;
@@ -158,7 +158,7 @@ pub async fn load_curve_points(
             probe_level: row.get(4),
             shift: row.get(5),
             bar: row.get(6),
-            convergence_threshold: row.get(7),
+            convergence_fraction: row.get(7),
         })
         .collect())
 }
@@ -176,7 +176,7 @@ pub async fn persist_point(
     probe_level: f64,
     shift: f64,
     bar: f64,
-    convergence_threshold: f64,
+    convergence_fraction: f64,
     ambience: Option<&str>,
 ) {
     if let Err(e) = insert_curve_point(
@@ -189,7 +189,7 @@ pub async fn persist_point(
         probe_level,
         shift,
         bar,
-        convergence_threshold,
+        convergence_fraction,
         ambience,
     )
     .await
@@ -214,7 +214,7 @@ pub async fn persist_point(
             probe_level,
             shift,
             bar,
-            convergence_threshold,
+            convergence_fraction,
             ambience,
         )
         .await
