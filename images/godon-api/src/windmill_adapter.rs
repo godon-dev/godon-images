@@ -474,6 +474,13 @@ pub(crate) mod tests_support {
         thread: Option<std::thread::JoinHandle<()>>,
     }
 
+    /// Env is process-global and tests run in parallel: every test that
+    /// points WINDMILL_BASE_URL at its own fake holds this lock for its
+    /// whole body, so two fakes never serve each other's clients. (The
+    /// convergence guard's extra script run widened this pre-existing
+    /// window; the lock cures the class, receipt 2026-11-13.)
+    pub static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
     fn write_response(stream: &mut TcpStream, status: u16, body: &str) {
         let resp = format!(
             "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -641,6 +648,7 @@ mod wire_tests {
     /// One env window, sequential scenarios — env is process-global.
     #[test]
     fn the_client_rides_the_declared_scripts() {
+        let _env = super::tests_support::ENV_MUTEX.lock().unwrap();
         let causal = FakeWindmill::start(vec![]);
         std::env::set_var("WINDMILL_BASE_URL", causal.base_url());
         std::env::set_var("WM_TOKEN", "test-token");
