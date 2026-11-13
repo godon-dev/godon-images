@@ -25,9 +25,15 @@ pub(crate) fn effective_bar(declared: Option<f64>) -> f64 {
     declared.unwrap_or_else(estate_default_bar)
 }
 
-/// One live peer's declared bar (None = det silent, rides the default).
+/// One live peer's declared bar (None = det silent, rides the default)
+/// and its interference-detection group — the unit of comparability.
+/// The precision contract binds bars WITHIN a group; different groups
+/// (disjoint studies) may legitimately carry different bars and never
+/// compare (holder correction 2026-11-13: the group is where the knob
+/// lives — the guard must not assume one-room-equals-all-tenders).
 pub(crate) struct PeerBar {
     pub name: String,
+    pub group: Option<String>,
     pub declared: Option<f64>,
 }
 
@@ -39,22 +45,30 @@ pub(crate) struct BarConflict {
 }
 
 /// Pure decision: the new tender's EFFECTIVE bar against every live
-/// peer's. First disagreement wins; None = uniform, allow. Comparison
-/// is exact — declared bars are decimal literals, and the default
-/// composes from a single deterministic parse.
+/// peer's — but only peers in the SAME interference group. First
+/// disagreement wins; None = uniform (or no peers in this group),
+/// allow. Comparison is exact — declared bars are decimal literals,
+/// and the default composes from a single deterministic parse.
 pub(crate) fn detect_mixed_bar(
     new_declared: Option<f64>,
+    new_group: Option<&str>,
     peers: &[PeerBar],
 ) -> Option<BarConflict> {
     let new_bar = effective_bar(new_declared);
-    peers.iter().find_map(|peer| {
-        let peer_bar = effective_bar(peer.declared);
-        (peer_bar != new_bar).then(|| BarConflict {
-            peer_name: peer.name.clone(),
-            peer_bar,
-            new_bar,
+    peers
+        .iter()
+        .filter(|p| match (new_group, p.group.as_deref()) {
+            (Some(g), Some(pg)) => g == pg,
+            _ => false,
         })
-    })
+        .find_map(|peer| {
+            let peer_bar = effective_bar(peer.declared);
+            (peer_bar != new_bar).then(|| BarConflict {
+                peer_name: peer.name.clone(),
+                peer_bar,
+                new_bar,
+            })
+        })
 }
 
 #[cfg(test)]
@@ -64,6 +78,7 @@ mod tests {
     fn peer(name: &str, declared: Option<f64>) -> PeerBar {
         PeerBar {
             name: name.to_string(),
+            group: Some("study-a".to_string()),
             declared,
         }
     }
@@ -78,24 +93,47 @@ mod tests {
     fn uniform_declared_bars_allow() {
         clean_env();
         let peers = vec![peer("node-1", Some(0.05)), peer("node-2", Some(0.05))];
-        assert!(detect_mixed_bar(Some(0.05), &peers).is_none());
+        assert!(detect_mixed_bar(Some(0.05), Some("study-a"), &peers).is_none());
     }
 
     #[test]
     fn mixed_declared_bars_refuse_and_name_the_peer() {
         clean_env();
         let peers = vec![peer("node-1", Some(0.02)), peer("node-2", Some(0.05))];
-        let c = detect_mixed_bar(Some(0.05), &peers).unwrap();
+        let c = detect_mixed_bar(Some(0.05), Some("study-a"), &peers).unwrap();
         assert_eq!(c.peer_name, "node-1");
         assert_eq!(c.peer_bar, 0.02);
         assert_eq!(c.new_bar, 0.05);
     }
 
     #[test]
+    fn different_groups_never_compare() {
+        // The holder's architecture: the knob lives at the group level —
+        // disjoint studies may carry different bars and never compare.
+        clean_env();
+        let mut other = peer("solo-1", Some(0.05));
+        other.group = Some("study-b".to_string());
+        let peers = vec![other];
+        assert!(detect_mixed_bar(Some(0.02), Some("study-a"), &peers).is_none());
+    }
+
+    #[test]
+    fn tender_without_group_is_not_guarded() {
+        // No declared group = nothing to compare against; comparability
+        // lives in the group.
+        clean_env();
+        let mut ungrouped = peer("loose", Some(0.05));
+        ungrouped.group = None;
+        let peers = vec![ungrouped];
+        assert!(detect_mixed_bar(Some(0.02), None, &peers).is_none());
+        assert!(detect_mixed_bar(Some(0.02), Some("study-a"), &peers).is_none());
+    }
+
+    #[test]
     fn undeclared_rides_the_estate_default_uniformly() {
         clean_env();
         let peers = vec![peer("node-1", None), peer("node-2", None)];
-        assert!(detect_mixed_bar(None, &peers).is_none());
+        assert!(detect_mixed_bar(None, Some("study-a"), &peers).is_none());
     }
 
     #[test]
@@ -103,7 +141,7 @@ mod tests {
         clean_env();
         // Peer det silent → effective 0.02; new declares exactly that.
         let peers = vec![peer("node-1", None)];
-        assert!(detect_mixed_bar(Some(0.02), &peers).is_none());
+        assert!(detect_mixed_bar(Some(0.02), Some("study-a"), &peers).is_none());
     }
 
     #[test]
@@ -113,7 +151,7 @@ mod tests {
         // peer (effective 0.02) and a new 0.05 tender would mix bars
         // without a single explicit conflict to point at.
         let peers = vec![peer("node-1", None)];
-        let c = detect_mixed_bar(Some(0.05), &peers).unwrap();
+        let c = detect_mixed_bar(Some(0.05), Some("study-a"), &peers).unwrap();
         assert_eq!(c.peer_bar, 0.02);
         assert_eq!(c.new_bar, 0.05);
     }
@@ -121,6 +159,6 @@ mod tests {
     #[test]
     fn empty_group_allows_anything() {
         clean_env();
-        assert!(detect_mixed_bar(Some(0.05), &[]).is_none());
+        assert!(detect_mixed_bar(Some(0.05), Some("study-a"), &[]).is_none());
     }
 }
