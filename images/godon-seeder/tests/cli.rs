@@ -125,6 +125,11 @@ fn the_binarys_exit_code_is_the_seed_verdict() {
         (200, "true".into()),  // the scheduled script is planted
         (200, "false".into()), // the schedule is absent
         (201, String::new()),  // create schedule
+        (200, "false".into()), // settings seed: workspace absent
+        (201, String::new()),  // settings seed: workspace created
+        (201, String::new()),  // settings seed: folder settings
+        (201, String::new()),  // settings seed: folder settings/policy
+        (201, String::new()),  // settings seed: policy/convergence_fraction
     ]);
     let comp = fixture("happy");
     let out = run_seeder(&comp, &mini.url());

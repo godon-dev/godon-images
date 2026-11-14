@@ -12,7 +12,7 @@ let
 
     src = ./.;
 
-    cargoHash = "sha256-FUt51XAlCbXzPOvq4yV8/osOZmiCIi+6g4V+XEa6LJY=";
+    cargoHash = "sha256-LjUyjc0+7XfaagBWa9DkwBZk8kk3p+ILK1d/7pgI52A=";
 
     nativeBuildInputs = with pkgs; [ cacert pkg-config ];
 

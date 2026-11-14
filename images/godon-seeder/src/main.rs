@@ -98,4 +98,34 @@ fn main() {
             std::process::exit(1);
         }
     }
+
+    // The estate's settings namespace (settled 2026-11-13): seed the
+    // leaves at install — charts hands the values, the platform's
+    // variable store holds them, the api serves them, nothing else
+    // ever writes. A clean-slate reinstall re-seeds defaults.
+    if let Err(e) = seed_settings(&windmill_workspace, args.max_retries, args.retry_delay) {
+        log::error!("Settings seed failed: {}", e);
+        std::process::exit(1);
+    }
+}
+
+/// Plant the settings tree's leaves with their install-time SEED
+/// values (env-driven; charts carries only the seed, never read
+/// again). GODON_SEED_CONVERGENCE_FRACTION defaults to 0.02 — what
+/// every room ever flew.
+fn seed_settings(workspace: &str, max_retries: u32, retry_delay: u64) -> Result<(), String> {
+    let fraction = std::env::var("GODON_SEED_CONVERGENCE_FRACTION")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.02);
+    if !fraction.is_finite() || fraction <= 0.0 || fraction >= 1.0 {
+        return Err(format!(
+            "GODON_SEED_CONVERGENCE_FRACTION out of range (0,1): {fraction}"
+        ));
+    }
+    let deployer =
+        component::WindmillDeployer::new(max_retries, retry_delay).map_err(|e| e.to_string())?;
+    deployer
+        .seed_setting(workspace, "policy/convergence_fraction", fraction)
+        .map_err(|e| e.to_string())
 }

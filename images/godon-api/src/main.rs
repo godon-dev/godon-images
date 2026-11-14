@@ -1,6 +1,7 @@
 mod causal;
 mod config;
 mod handlers;
+mod settings;
 mod types;
 mod windmill_adapter;
 
@@ -69,6 +70,11 @@ async fn main() {
             get(handlers::connectome_causes),
         )
         .route("/positions", get(handlers::get_positions))
+        .route("/settings", get(settings::get_tree))
+        .route(
+            "/settings/{*path}",
+            get(settings::get_leaf).put(settings::put_leaf),
+        )
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)

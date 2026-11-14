@@ -28,7 +28,7 @@ static UUID_REGEX: Lazy<Regex> = Lazy::new(|| {
 
 static NAME_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[a-zA-Z0-9_-]+$").unwrap());
 
-fn get_client() -> Result<WindmillClient, (StatusCode, Json<ErrorResponse>)> {
+pub(crate) fn get_client() -> Result<WindmillClient, (StatusCode, Json<ErrorResponse>)> {
     WindmillClient::new().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1436,9 +1436,21 @@ mod handler_tests {
         }
     }
 
-    /// One env window, sequential scenarios — env is process-global.
-    #[tokio::test]
-    async fn the_systemtender_doors_speak_their_contracts() {
+    /// One env window, sequential scenarios — env is process-global
+    /// (serialized against the settings doors' window by ENV_MUTEX).
+    #[test]
+    fn the_systemtender_doors_speak_their_contracts() {
+        let _env = crate::windmill_adapter::tests_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async { the_systemtender_doors_scenarios().await });
+    }
+
+    async fn the_systemtender_doors_scenarios() {
         // create, async by default: enqueue + answer 202 with the summary
         let f = FakeWindmill::start(vec![job(), done(SUMMARY)]);
         env_at(&f);

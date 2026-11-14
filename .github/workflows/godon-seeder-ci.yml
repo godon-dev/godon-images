@@ -101,7 +101,7 @@ jobs:
         set -o pipefail
         docker run --rm --network godon-seeder-test_default \
           -e WINDMILL_BASE_URL=http://windmill_server:8000/api \
-          -e WINDMILL_WORKSPACE=seeder-test \
+          -e WINDMILL_WORKSPACE=godon \
           -e WINDMILL_EMAIL=admin@windmill.dev \
           -e WINDMILL_PASSWORD=changeme \
           -e CONTROLLER_VERSION=0.20.0 \
@@ -143,7 +143,7 @@ jobs:
         docker run --rm --network godon-seeder-test_default \
           -v "$(pwd)/shared/tests/sandbox-spec:/fixture:ro" \
           -e WINDMILL_BASE_URL=http://windmill_server:8000/api \
-          -e WINDMILL_WORKSPACE=sandbox-spec-test \
+          -e WINDMILL_WORKSPACE=godon \
           -e WINDMILL_EMAIL=admin@windmill.dev \
           -e WINDMILL_PASSWORD=changeme \
           -e SANDBOX_TEST_VERSION=9.9.9 \
@@ -175,7 +175,7 @@ jobs:
         cd ../../images/godon-seeder
         docker run -d --name seeder-retry-test --network godon-seeder-test_default \
           -e WINDMILL_BASE_URL=http://windmill_server:8000/api \
-          -e WINDMILL_WORKSPACE=retry-test \
+          -e WINDMILL_WORKSPACE=godon \
           -e WINDMILL_EMAIL=admin@windmill.dev \
           -e WINDMILL_PASSWORD=changeme \
           -e CONTROLLER_VERSION=0.20.0 \

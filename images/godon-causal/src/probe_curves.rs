@@ -108,16 +108,20 @@ fn parse_k(raw: Option<&str>) -> f64 {
 }
 
 pub struct ResponseCurve {
-    /// Run provenance only — no longer a stop rule. Kept because it
-    /// flows through the characterize payload and the persisted
-    /// curve_points column (what the operator asked for that run).
-    convergence_threshold: f64,
+    /// The declared precision as a DIMENSIONLESS FRACTION of the
+    /// curve's own measured response scale (#309 cure, 2026-11-13
+    /// settlement) — frozen at the curve's birth from the tender's
+    /// spawn-frozen policy/convergence_fraction. Doubles as run
+    /// provenance: it flows through the characterize payload and the
+    /// persisted curve_points column (what the operator asked for
+    /// that run). Below, the DEMAND side of retirement key one.
+    convergence_fraction: f64,
     min_points: usize,
     points: Vec<Point>,
     prev_grid: Option<Vec<(f64, f64)>>,
     delta_history: Vec<f64>,
     /// Freshest blur on this curve: the (blended) bar of the last
-    /// probed point. The scale is_converged() compares against.
+    /// probed point. The COST side of retirement key one.
     last_bar: f64,
     /// Declared parameter range (upper - lower) from the systemtender, used
     /// to scale gap ignorance. None → observed level span.
@@ -125,9 +129,9 @@ pub struct ResponseCurve {
 }
 
 impl ResponseCurve {
-    pub fn new(convergence_threshold: f64) -> Self {
+    pub fn new(convergence_fraction: f64) -> Self {
         Self {
-            convergence_threshold,
+            convergence_fraction,
             min_points: 2,
             points: Vec::new(),
             prev_grid: None,
@@ -137,10 +141,38 @@ impl ResponseCurve {
         }
     }
 
-    /// The run-provenance threshold this curve was born with. The wish
+    /// The run-provenance fraction this curve was born with. The wish
     /// serve's hold-receipt banking reuses it when persisting a point.
-    pub fn provenance_threshold(&self) -> f64 {
-        self.convergence_threshold
+    pub fn provenance_fraction(&self) -> f64 {
+        self.convergence_fraction
+    }
+
+    /// The curve's own measured response scale — max−min of the
+    /// responses measured so far (#309's denominator: "the
+    /// per-objective scale it already measures"). 0.0 while fewer
+    /// than two points or an exactly flat surface.
+    pub fn response_scale(&self) -> f64 {
+        let mut min = f64::INFINITY;
+        let mut max = f64::NEG_INFINITY;
+        for p in &self.points {
+            if p.response < min {
+                min = p.response;
+            }
+            if p.response > max {
+                max = p.response;
+            }
+        }
+        if min.is_finite() && max.is_finite() {
+            max - min
+        } else {
+            0.0
+        }
+    }
+
+    /// The declared demand in the objective's own units: the fraction
+    /// of the curve's measured scale.
+    pub fn demand_bar(&self) -> f64 {
+        self.convergence_fraction * self.response_scale()
     }
 
     /// Adjacent-point gaps with priced ignorance (sorted by level).
@@ -281,27 +313,32 @@ impl ResponseCurve {
         ProbeOutcome { delta, z, drift }
     }
 
-    /// Scale-relative retirement: the surface stops moving by less
-    /// than the declared tolerance (k_retire()) times the curve's
-    /// own freshest blur. Replaces the absolute
-    /// `delta < convergence_threshold` rule — a fixed 0.005 that
-    /// meant different things on quiet and loud substrates and had
-    /// to be hand-tuned per regime. The threshold field remains run
-    /// provenance only.
+    /// Retirement key one, composed (the #309 cure, 2026-11-13):
+    /// the surface stops moving by less than the LARGER of —
     ///
-    /// Consequences (by design): a curve whose readings are exactly
-    /// repeatable (delta 0.0) still retires; a curve that moved more
-    /// than its own fuzz does not, however small the absolute
-    /// movement — and a noise-dominated curve retires at no blur,
-    /// which is the refusal the criterion exists to produce. Walks
-    /// that keep learning run to their budgets, ending as cost
-    /// ceilings rather than truth claims.
+    /// - the COST side: the declared tolerance (k_retire()) times
+    ///   the curve's own freshest blur — noise-relative, unchanged
+    ///   (a noisy objective does not dilute the request, it raises
+    ///   its cost; the per-gap bars_sum pricing arbitrates at key
+    ///   two, exactly as designed); and
+    /// - the DEMAND side: the declared convergence_fraction of the
+    ///   curve's own measured response scale — honest units, the
+    ///   same declared precision meaning the same thing on a ~1.2
+    ///   throughput objective and a ~3700 energy objective.
+    ///
+    /// Strictly additive: retires earlier only where the declared
+    /// demand says so, never later. A curve whose readings are
+    /// exactly repeatable (delta 0.0) still retires (bars are
+    /// floored at probe() entry); a curve that moved more than its
+    /// own fuzz AND more than the demanded fraction of its scale
+    /// does not — walks that keep learning run to their budgets,
+    /// ending as cost ceilings rather than truth claims.
     pub fn is_converged(&self) -> bool {
         if self.delta_history.is_empty() || self.points.len() < self.min_points {
             return false;
         }
         let delta = self.delta_history.last().copied().unwrap_or(f64::INFINITY);
-        delta < k_retire() * self.last_bar
+        delta < (k_retire() * self.last_bar).max(self.demand_bar())
     }
 
     pub fn last_delta(&self) -> f64 {
@@ -418,7 +455,7 @@ impl CurveRegistry {
         channel: &str,
         level: f64,
         shift: f64,
-        threshold: f64,
+        convergence_fraction: f64,
     ) -> f64 {
         let key = (
             sender_id.to_string(),
@@ -429,7 +466,7 @@ impl CurveRegistry {
         let curve = self
             .curves
             .entry(key)
-            .or_insert_with(|| ResponseCurve::new(threshold));
+            .or_insert_with(|| ResponseCurve::new(convergence_fraction));
         curve.add_point(level, shift)
     }
 
@@ -444,7 +481,7 @@ impl CurveRegistry {
         level: f64,
         shift: f64,
         bar: f64,
-        threshold: f64,
+        convergence_fraction: f64,
         param_range: Option<f64>,
     ) -> ProbeOutcome {
         let key = (
@@ -456,7 +493,7 @@ impl CurveRegistry {
         let curve = self
             .curves
             .entry(key)
-            .or_insert_with(|| ResponseCurve::new(threshold));
+            .or_insert_with(|| ResponseCurve::new(convergence_fraction));
         if param_range.is_some() {
             curve.param_range = param_range;
         }
@@ -924,23 +961,162 @@ mod tests {
     }
 
     #[test]
-    fn scale_relative_refuses_old_false_done() {
-        // The receipt behind the rule: absolute movement tiny (would
-        // pass any hand-tuned threshold) but far beyond the curve's
-        // own blur. delta is the MEAN surface movement over the
-        // grid, so a single point must move ~gridsize x tolerance
-        // before the refusal trips — that dilution is the metric's
+    fn demand_floor_retires_beneath_the_promise() {
+        // The #309 settlement's demand side (2026-11-13): 0.002 of
+        // movement on a ~1.0-scale curve is 0.2% of scale — beneath
+        // a 2% declared promise — so it retires EVEN THOUGH it sits
+        // ~20x beyond the curve's own blur: the promise never asked
+        // to resolve it. (The pre-#309 receipt inverted this: the
+        // threshold was provenance-only, noise alone decided. With
+        // the declared fraction, sub-promise movement is beneath the
+        // contract.) delta is the MEAN surface movement over the
+        // grid — a single point moves ~gridsize x the local jump
+        // before the bar trips; that dilution is the metric's
         // semantics, not a bug.
         let mut c = ResponseCurve::new(0.02);
         c.probe(0.0, 0.0, 0.0001);
         c.probe(100.0, 1.0, 0.0001);
         c.probe(50.0, 0.5, 0.0001);
-        // relocate the midpoint beyond agreement: 0.002 off = 20x
-        // the 1e-4 blur, ~6.7x even after 3-point grid averaging
+        // relocate the midpoint 0.002 off = 20x the 1e-4 blur, but
+        // 0.2% of the curve's own scale — beneath the promise
         c.probe(50.0, 0.502, 0.0001);
         assert!(
+            c.is_converged(),
+            "sub-promise movement retires: delta {:.4} under demand bar {:.4}",
+            c.last_delta(),
+            c.demand_bar()
+        );
+    }
+
+    #[test]
+    fn beyond_demand_and_beyond_blur_still_refuses() {
+        // The refusal that survives the composition: movement above
+        // the declared fraction of the curve's scale AND above its
+        // own fuzz retires never — the walk keeps learning, its
+        // budget is the honest ceiling.
+        let mut c = ResponseCurve::new(0.02);
+        c.probe(0.0, 0.0, 0.0001);
+        c.probe(100.0, 1.0, 0.0001);
+        c.probe(50.0, 0.5, 0.0001);
+        // 0.12 off = ~12% of scale >> the 2% promise, ~1200x the blur
+        c.probe(50.0, 0.62, 0.0001);
+        assert!(
             !c.is_converged(),
-            "movement beyond own blur must not retire, however small absolutely"
+            "movement beyond the promise AND the fuzz must refuse: delta {:.4} vs demand {:.4}",
+            c.last_delta(),
+            c.demand_bar()
+        );
+    }
+
+    // THE #309 receipt as a test: same declared fraction, two
+    // objectives of wildly different scale in one room — the energy
+    // twin (~3700) retires at movement the pre-#309 absolute era
+    // ground on forever; the throughput twin (~1.2) stays honest.
+    #[test]
+    fn demand_bar_scales_with_the_objective() {
+        let mut reg = CurveRegistry::new();
+        // throughput twin: quiet curve (blur 1e-4), scale ~1.2 — a
+        // 0.24 movement is 20% of scale: far above the 2% bar
+        reg.probe(
+            "A",
+            "B",
+            "param_1",
+            "objective_0",
+            0.0,
+            0.0,
+            0.0001,
+            0.02,
+            None,
+        );
+        reg.probe(
+            "A",
+            "B",
+            "param_1",
+            "objective_0",
+            100.0,
+            1.2,
+            0.0001,
+            0.02,
+            None,
+        );
+        reg.probe(
+            "A",
+            "B",
+            "param_1",
+            "objective_0",
+            50.0,
+            0.6,
+            0.0001,
+            0.02,
+            None,
+        );
+        reg.probe(
+            "A",
+            "B",
+            "param_1",
+            "objective_0",
+            50.0,
+            0.84,
+            0.0001,
+            0.02,
+            None,
+        );
+        assert!(
+            !reg.is_converged("A", "B", "param_1", "objective_0"),
+            "20%-of-scale movement must refuse on a ~1.2-scale objective"
+        );
+
+        // energy twin: same quiet blur, scale ~3700 — a 0.24
+        // movement is 0.0065% of scale: far beneath the 2% bar. The
+        // pre-#309 absolute era (0.02 fixed) ground this forever.
+        let mut reg = CurveRegistry::new();
+        reg.probe(
+            "A",
+            "B",
+            "param_1",
+            "objective_1",
+            0.0,
+            0.0,
+            0.0001,
+            0.02,
+            None,
+        );
+        reg.probe(
+            "A",
+            "B",
+            "param_1",
+            "objective_1",
+            100.0,
+            3700.0,
+            0.0001,
+            0.02,
+            None,
+        );
+        reg.probe(
+            "A",
+            "B",
+            "param_1",
+            "objective_1",
+            50.0,
+            1850.0,
+            0.0001,
+            0.02,
+            None,
+        );
+        reg.probe(
+            "A",
+            "B",
+            "param_1",
+            "objective_1",
+            50.0,
+            1850.24,
+            0.0001,
+            0.02,
+            None,
+        );
+        assert!(
+            reg.is_converged("A", "B", "param_1", "objective_1"),
+            "sub-promise movement on a ~3700-scale objective retires: the #309 energy disease cured"
         );
     }
 

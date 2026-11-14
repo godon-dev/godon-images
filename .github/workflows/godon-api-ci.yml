@@ -629,6 +629,59 @@ jobs:
         echo "Root endpoint:"
         curl -s http://localhost:9090/ | jq .
 
+    - name: Test settings endpoints (the config namespace) against real Windmill
+      run: |
+        echo "⚙️ Settings doors against the real platform variable store..."
+        set -e
+        API=http://localhost:9090
+        WM=http://localhost:9101
+        WS=test
+        LEAF=$API/settings/policy/convergence_fraction
+
+        # the unset leaf: this stack never seeded — origin unset, no value
+        curl -sf $API/settings | jq -e '.policy.convergence_fraction.origin == "unset" and (.policy.convergence_fraction.value == null)' >/dev/null
+        echo "✅ unseeded tree answers origin unset"
+        curl -sf $LEAF | jq -e '.origin == "unset"' >/dev/null
+        echo "✅ unseeded leaf answers origin unset"
+
+        # unknown leaves are refused — the grammar is declared, never free-form
+        CODE=$(curl -s -o /dev/null -w '%{http_code}' $API/settings/policy/nonsense)
+        [ "$CODE" = "404" ] || { echo "❌ unknown leaf answered $CODE, expected 404"; exit 1; }
+        echo "✅ unknown leaf refused 404"
+
+        # values are validated at the door
+        CODE=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' -d '{"value":1.5}' $LEAF)
+        [ "$CODE" = "422" ] || { echo "❌ out-of-range answered $CODE, expected 422"; exit 1; }
+        echo "✅ out-of-range refused 422"
+
+        # the mid-room forbid: the stub tender reports active — the
+        # policy move must 409 naming it
+        RESP=$(curl -s -w '\n%{http_code}' -X PUT -H 'Content-Type: application/json' -d '{"value":0.03}' $LEAF)
+        CODE=$(echo "$RESP" | tail -1)
+        echo "$RESP" | head -n -1 | jq -e '.code == "POLICY_MOVE_MID_ROOM"' >/dev/null
+        [ "$CODE" = "409" ] || { echo "❌ live-estate policy move answered $CODE, expected 409"; exit 1; }
+        echo "✅ policy move refused 409 while the tender is live"
+
+        # plant the leaf exactly as the seeder does (b64 envelope via
+        # windmill's own REST door), then read it back THROUGH the api —
+        # the full carrier round-trip on the real platform
+        TOKEN=$(curl -s -X POST $WM/api/auth/login -H 'Content-Type: application/json' \
+          -d '{"email":"admin@windmill.dev","password":"changeme"}' | tr -d '"')
+        [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ] || { echo "❌ windmill auth failed"; exit 1; }
+        for FOLDER in settings settings/policy; do
+          curl -s -o /dev/null -X POST "$WM/api/w/$WS/folders/create" \
+            -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+            -d "{\"name\":\"$FOLDER\"}"
+        done
+        CARRIER=$(printf '{"value":0.02,"origin":"seed","movedAt":"2026-11-13T00:00:00Z","movedBy":"seeder"}' | base64 -w0)
+        curl -sf -X POST "$WM/api/w/$WS/variables/create" \
+          -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+          -d "{\"path\":\"f/settings/policy/convergence_fraction\",\"value\":\"$CARRIER\",\"is_secret\":false,\"description\":\"ci settings seed\"}" >/dev/null
+        echo "✅ leaf planted as the seeder plants it"
+
+        curl -sf $LEAF | jq -e '.value == 0.02 and .origin == "seed" and .movedBy == "seeder"' >/dev/null
+        echo "✅ seeded leaf round-trips through the api (carrier intact)"
+
     - name: Show container logs on failure
       if: failure()
       run: |
