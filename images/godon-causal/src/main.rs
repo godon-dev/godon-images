@@ -2188,7 +2188,7 @@ async fn steer_plan_get(
                                             channel.clone(),
                                             *shift,
                                             *bar,
-                                            curve.provenance_threshold(),
+                                            curve.provenance_fraction(),
                                         ));
                                     }
                                 }
@@ -2963,7 +2963,7 @@ struct ProbeResultRequest {
     probe_level: f64,
     push_start: String,
     pause_end: String,
-    convergence_threshold: f64,
+    convergence_fraction: f64,
     /// Declared parameter range (upper - lower) from the systemtender.
     /// Scales gap ignorance; absent → observed level span.
     param_range: Option<f64>,
@@ -3166,7 +3166,7 @@ async fn probe_result(
                     req.probe_level,
                     shift,
                     shift_bar,
-                    req.convergence_threshold,
+                    req.convergence_fraction,
                     req.param_range,
                 )
             };
@@ -3334,7 +3334,7 @@ async fn probe_result(
                 req.probe_level,
                 shift,
                 bar,
-                req.convergence_threshold,
+                req.convergence_fraction,
                 req.param_range,
             );
             self_channels.push((ch, shift, bar));
@@ -3380,7 +3380,7 @@ async fn probe_result(
                     req.probe_level,
                     c.shift,
                     c.shift_bar,
-                    req.convergence_threshold,
+                    req.convergence_fraction,
                     ambience.as_deref(),
                 )
                 .await;
@@ -3397,7 +3397,7 @@ async fn probe_result(
                 req.probe_level,
                 *shift,
                 *bar,
-                req.convergence_threshold,
+                req.convergence_fraction,
                 ambience.as_deref(),
             )
             .await;
@@ -4084,7 +4084,7 @@ async fn main() {
                         r.probe_level,
                         r.shift,
                         r.bar,
-                        r.convergence_threshold,
+                        r.convergence_fraction,
                         None,
                     );
                 }
@@ -4694,7 +4694,7 @@ mod tests {
             "probe_level": 50.0,
             "push_start": "2026-08-11T12:00:00.123456",
             "pause_end": "2026-08-11T12:05:00.654321",
-            "convergence_threshold": 0.02
+            "convergence_fraction": 0.02
         }"#;
         let req: ProbeResultRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.probe_param, "param_0");
@@ -4713,7 +4713,7 @@ mod tests {
             "probe_level": 50.0,
             "push_start": 1723387200.0,
             "pause_end": 1723387500.0,
-            "convergence_threshold": 0.02
+            "convergence_fraction": 0.02
         }"#;
         let result: Result<ProbeResultRequest, _> = serde_json::from_str(json);
         assert!(result.is_err(), "float timestamps must be rejected");

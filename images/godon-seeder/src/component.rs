@@ -226,6 +226,21 @@ pub struct WindmillDeployer {
     retry_delay: u64,
 }
 
+/// Percent-encode a path the way windmill's API addresses nested
+/// variables (slashes included, f%2Fsettings%2F...).
+use base64::Engine as _;
+
+fn percent_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 impl WindmillDeployer {
     pub fn new(max_retries: u32, retry_delay: u64) -> Result<Self> {
         let client = Client::new();
@@ -301,11 +316,114 @@ impl WindmillDeployer {
             .send()
             .context("Failed to create workspace")?;
 
-        if response.status().is_success() || response.status().as_u16() == 409 {
+        let status = response.status();
+        if status.is_success() || status.as_u16() == 409 {
             log::info!("Successfully created workspace: {}", workspace);
             Ok(())
         } else {
-            anyhow::bail!("Failed to create workspace: {}", response.status())
+            let body = response.text().unwrap_or_default();
+            anyhow::bail!("Failed to create workspace: {status} — body: {body}")
+        }
+    }
+
+    /// Plant one settings leaf at install (the config namespace,
+    /// settled 2026-11-13): charts hands the SEED value via env —
+    /// written once at install, never read again by charts. The
+    /// content is the base64 carrier of the envelope JSON (grammar
+    /// home: godon-api/src/settings.rs; the wmill SDK's read door
+    /// mangles quoted content — receipts there). A clean-slate
+    /// reinstall re-seeds defaults; on a non-clean slate the update
+    /// door keeps it idempotent.
+    pub fn seed_setting(&self, workspace: &str, leaf_path: &str, value: f64) -> Result<()> {
+        let variable = format!("f/settings/{leaf_path}");
+        let envelope = json!({
+            "value": value,
+            "origin": "seed",
+            "movedAt": chrono::Utc::now().to_rfc3339(),
+            "movedBy": "seeder",
+        });
+        let carrier = base64::engine::general_purpose::STANDARD.encode(envelope.to_string());
+        let body = json!({
+            "path": variable,
+            "value": carrier,
+            "is_secret": false,
+            "description": "estate settings leaf (config namespace, 2026-11-13)",
+        });
+
+        // A variable's row carries a workspace foreign key — the
+        // workspace must EXIST before anything plants into it (CI
+        // receipt 2026-11-13: SqlErr variable_workspace_id_fkey on a
+        // fresh stack whose seeder-test workspace was never created;
+        // the estate hid this because its workspace has always been
+        // there). The deployer's own idempotent doors ensure it.
+        self.create_workspace(workspace)?;
+
+        // Parent folders, best-effort (409 already-exists is fine;
+        // outcomes logged so the next refusal names itself).
+        for folder in ["settings", "settings/policy"] {
+            let folder_url = format!("{}/api/w/{workspace}/folders/create", self.base_url);
+            match self
+                .client
+                .post(&folder_url)
+                .headers(self.auth_headers())
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .json(&json!({ "name": folder }))
+                .send()
+            {
+                Ok(r) if r.status().is_success() => {}
+                Ok(r) => log::info!(
+                    "settings seed: folder {folder} answered {} (best-effort, continuing)",
+                    r.status()
+                ),
+                Err(e) => {
+                    log::info!("settings seed: folder {folder} unreachable (best-effort): {e}")
+                }
+            }
+        }
+
+        let create_url = format!("{}/api/w/{workspace}/variables/create", self.base_url);
+        let created = self
+            .client
+            .post(&create_url)
+            .headers(self.auth_headers())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&body)
+            .send()
+            .context("settings seed request failed")?;
+
+        if created.status().is_success() {
+            log::info!("+ settings seed {leaf_path}={value} ({variable})");
+            return Ok(());
+        }
+        let create_status = created.status();
+        let create_body = created.text().unwrap_or_default();
+        log::info!("settings seed: create refused {create_status} — body: {create_body}");
+
+        // already present (a non-clean slate): move it through the
+        // update door so the seed is idempotent
+        let encoded = percent_encode(&variable);
+        let update_url = format!(
+            "{}/api/w/{workspace}/variables/update/{encoded}",
+            self.base_url
+        );
+        let updated = self
+            .client
+            .post(&update_url)
+            .headers(self.auth_headers())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .json(&json!({ "value": carrier }))
+            .send()
+            .context("settings seed update request failed")?;
+
+        if updated.status().is_success() {
+            log::info!("+ settings seed {leaf_path}={value} ({variable}, updated)");
+            Ok(())
+        } else {
+            let update_status = updated.status();
+            let update_body = updated.text().unwrap_or_default();
+            anyhow::bail!(
+                "settings seed failed ({variable}): create {create_status} [{create_body}], update {update_status} [{update_body}]"
+            )
         }
     }
 
@@ -2421,5 +2539,89 @@ mod tests {
                 || l.contains("Successfully created folder")),
             "a server error speaks neither of those lines: {lines:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod settings_seed_tests {
+    use super::*;
+    use crate::testkit::FakeWindmill;
+
+    fn ok() -> (u16, String) {
+        (200, String::new())
+    }
+
+    #[test]
+    fn settings_seed_plants_the_b64_envelope_on_the_create_door() {
+        let f = FakeWindmill::start(vec![
+            (200, "false".into()),
+            (201, String::new()),
+            ok(),
+            ok(),
+            ok(),
+        ]);
+        let d = WindmillDeployer::with_base_url(&f.url(), 1, 0);
+        d.seed_setting("godon", "policy/convergence_fraction", 0.02)
+            .unwrap();
+        let folder_calls = f
+            .recorded()
+            .iter()
+            .filter(|(_, p)| p.contains("folders/create"))
+            .count();
+        assert_eq!(folder_calls, 2, "both parent folders planted first");
+        let bodies = f.bodies("variables/create");
+        assert_eq!(bodies.len(), 1);
+        let b = &bodies[0];
+        assert_eq!(b["path"], json!("f/settings/policy/convergence_fraction"));
+        assert_eq!(b["is_secret"], json!(false));
+        // the value is the b64 carrier; the envelope inside carries
+        // the seed's origin
+        use base64::Engine as _;
+        let decoded: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::STANDARD
+                .decode(b["value"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded["value"], json!(0.02));
+        assert_eq!(decoded["origin"], json!("seed"));
+        assert_eq!(decoded["movedBy"], json!("seeder"));
+    }
+
+    #[test]
+    fn settings_seed_is_idempotent_through_the_update_door() {
+        // create refuses (leaf already present on a non-clean slate)
+        // -> the update door carries the same carrier
+        let f = FakeWindmill::start(vec![
+            (200, "false".into()),
+            (201, String::new()),
+            ok(),
+            ok(),
+            (400, String::new()),
+            ok(),
+        ]);
+        let d = WindmillDeployer::with_base_url(&f.url(), 1, 0);
+        d.seed_setting("godon", "policy/convergence_fraction", 0.02)
+            .unwrap();
+        let recorded = f.recorded();
+        assert!(
+            recorded.iter().any(|(_, p)| p
+                .contains("variables/update/f%2Fsettings%2Fpolicy%2Fconvergence_fraction")),
+            "the update door addresses the leaf percent-encoded: {recorded:?}"
+        );
+    }
+
+    #[test]
+    fn settings_seed_fails_loud_when_both_doors_refuse() {
+        let f = FakeWindmill::start(vec![
+            (500, String::new()),
+            (500, String::new()),
+            (500, String::new()),
+            (500, String::new()),
+        ]);
+        let d = WindmillDeployer::with_base_url(&f.url(), 1, 0);
+        assert!(d
+            .seed_setting("godon", "policy/convergence_fraction", 0.02)
+            .is_err());
     }
 }
