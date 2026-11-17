@@ -34,7 +34,10 @@ fn login_to_windmill(base_url: &str, email: &str, password: &str) -> Result<Stri
 }
 
 pub struct WindmillClient {
-    pub(crate) client: Windmill,
+    /// RwLock so healthy calls run concurrently (read) while the rare
+    /// re-login rebuilds the client (write).
+    pub(crate) client: std::sync::RwLock<Windmill>,
+    base_url: String,
     folder: String,
 }
 
@@ -45,16 +48,7 @@ impl WindmillClient {
         let base_url = base_url.trim_end_matches("/api").to_string();
 
         if env::var("WM_TOKEN").is_err() {
-            let token = if let Ok(token) = env::var("WINDMILL_TOKEN") {
-                token
-            } else {
-                let email =
-                    env::var("WINDMILL_EMAIL").unwrap_or_else(|_| "admin@windmill.dev".to_string());
-                let password =
-                    env::var("WINDMILL_PASSWORD").unwrap_or_else(|_| "changeme".to_string());
-
-                login_to_windmill(&base_url, &email, &password)?
-            };
+            let token = Self::mint_token(&base_url)?;
             env::set_var("WM_TOKEN", &token);
         }
 
@@ -73,7 +67,46 @@ impl WindmillClient {
         let client =
             Windmill::default().context("Failed to initialize Windmill client from environment")?;
 
-        Ok(Self { client, folder })
+        Ok(Self {
+            client: std::sync::RwLock::new(client),
+            base_url,
+            folder,
+        })
+    }
+
+    /// The token source, boot and re-login alike: a declared static
+    /// token (WINDMILL_TOKEN) or a fresh login with the fixed
+    /// email/password pair.
+    fn mint_token(base_url: &str) -> Result<String> {
+        if let Ok(token) = env::var("WINDMILL_TOKEN") {
+            return Ok(token);
+        }
+        let email = env::var("WINDMILL_EMAIL").unwrap_or_else(|_| "admin@windmill.dev".to_string());
+        let password = env::var("WINDMILL_PASSWORD").unwrap_or_else(|_| "changeme".to_string());
+        login_to_windmill(base_url, &email, &password)
+    }
+
+    /// The cached windmill token can die under a long-lived pod
+    /// (receipt 2026-11-17: every script call 401 NotAuthorized, api pod
+    /// three days old; a pod restart cured it because boot re-logins).
+    /// This is boot's login, available at runtime: mint a fresh token,
+    /// rebuild the client. Called only when a call came back
+    /// unauthorized, at most once per call.
+    fn relogin(&self) -> Result<()> {
+        let token = Self::mint_token(&self.base_url)?;
+        env::set_var("WM_TOKEN", &token);
+        let client =
+            Windmill::default().context("Failed to rebuild Windmill client after re-login")?;
+        *self.client.write().unwrap() = client;
+        Ok(())
+    }
+
+    /// Does an error carry windmill's refusal signature? The wmill
+    /// client surfaces non-2xx as status errors ("401 Unauthorized"),
+    /// sometimes with the body text ("Not authorized: Unauthorized").
+    fn is_auth_failure(msg: &str) -> bool {
+        let m = msg.to_ascii_lowercase();
+        m.contains("unauthorized") || m.contains("not authorized") || m.contains("status 401")
     }
 
     fn script_path(&self, name: &str) -> String {
@@ -95,10 +128,28 @@ impl WindmillClient {
         timeout_secs: Option<u64>,
     ) -> Result<serde_json::Value> {
         let script_path = self.script_path(script_name);
-        let result = self
-            .client
-            .run_script_sync(&script_path, false, args, None, timeout_secs, true, false)
-            .context(format!("Failed to run Windmill script: {}", script_path))?;
+        let attempt = |args: serde_json::Value| -> Result<serde_json::Value> {
+            self.client
+                .read()
+                .unwrap()
+                .run_script_sync(&script_path, false, args, None, timeout_secs, true, false)
+                .context(format!("Failed to run Windmill script: {}", script_path))
+        };
+
+        let result = match attempt(args.clone()) {
+            Ok(r) => r,
+            Err(e) if Self::is_auth_failure(&format!("{:#}", e)) => {
+                // the cached token died (long-lived pod class, 2026-11-17):
+                // re-login once with the fixed credentials, retry once
+                log::warn!(
+                    "windmill refused the cached token for {} — re-logging in, one retry",
+                    script_path
+                );
+                self.relogin()?;
+                attempt(args)?
+            }
+            Err(e) => return Err(e),
+        };
 
         if let Some(result_str) = result.get("result").and_then(|r| r.as_str()) {
             if result_str == "FAILURE" {
@@ -167,6 +218,38 @@ impl WindmillClient {
         Ok(systemtender)
     }
 
+    /// The async half of the re-login discipline: same refusal check,
+    /// same single retry, for the two enqueue paths.
+    fn run_async_with_relogin(
+        &self,
+        script_name: &str,
+        args: serde_json::Value,
+    ) -> Result<uuid::Uuid> {
+        let script_path = self.script_path(script_name);
+        let attempt = |args: serde_json::Value| -> Result<uuid::Uuid> {
+            self.client
+                .read()
+                .unwrap()
+                .run_script_async(&script_path, false, args, None)
+                .context(format!(
+                    "Failed to enqueue Windmill script: {}",
+                    script_path
+                ))
+        };
+        match attempt(args.clone()) {
+            Ok(id) => Ok(id),
+            Err(e) if Self::is_auth_failure(&format!("{:#}", e)) => {
+                log::warn!(
+                    "windmill refused the cached token for {} — re-logging in, one retry",
+                    script_path
+                );
+                self.relogin()?;
+                attempt(args)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// DELETE is a marker, not a wait (designs/2026-10-03): enqueue the
     /// deletion executor and return its windmill job id. The client
     /// polls GET until 404. Inside the executor: one cancel (windmill
@@ -184,13 +267,7 @@ impl WindmillClient {
         }
 
         let args = json!({ "request_data": request_data });
-        let script_path = self.script_path("systemtender_delete");
-        self.client
-            .run_script_async(&script_path, false, args, None)
-            .context(format!(
-                "Failed to enqueue Windmill script: {}",
-                script_path
-            ))
+        self.run_async_with_relogin("systemtender_delete", args)
     }
 
     pub fn stop_systemtender(&self, systemtender_id: &str) -> Result<serde_json::Value> {
@@ -233,6 +310,45 @@ impl WindmillClient {
         }
     }
 
+    /// Variable reads/writes ride the same client and the same
+    /// re-login discipline as script runs (a dead token would otherwise
+    /// block settings reads — the tender-spawn freeze among them).
+    pub(crate) fn variable_raw(&self, path: &str) -> Result<String> {
+        let attempt = || -> Result<String> {
+            self.client
+                .read()
+                .unwrap()
+                .get_variable_raw(path)
+                .context("Failed to get Windmill variable")
+        };
+        match attempt() {
+            Ok(v) => Ok(v),
+            Err(e) if Self::is_auth_failure(&format!("{:#}", e)) => {
+                self.relogin()?;
+                attempt()
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    pub(crate) fn variable_set(&self, content: String, path: &str, overwrite: bool) -> Result<()> {
+        let attempt = || -> Result<()> {
+            self.client
+                .read()
+                .unwrap()
+                .set_variable(content.clone(), path, overwrite)
+                .context("Failed to set Windmill variable")
+        };
+        match attempt() {
+            Ok(()) => Ok(()),
+            Err(e) if Self::is_auth_failure(&format!("{:#}", e)) => {
+                self.relogin()?;
+                attempt()
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn create_credential(&self, credential_data: serde_json::Value) -> Result<Credential> {
         let name = credential_data
             .get("name")
@@ -246,9 +362,7 @@ impl WindmillClient {
 
         let windmill_variable_path = format!("f/vars/{}", name);
 
-        self.client
-            .set_variable(content.to_string(), &windmill_variable_path, true)
-            .context("Failed to create Windmill variable")?;
+        self.variable_set(content.to_string(), &windmill_variable_path, true)?;
 
         let catalog_data = json!({
             "name": name,
@@ -272,10 +386,7 @@ impl WindmillClient {
         let credential: Credential =
             serde_json::from_value(data).context("Failed to parse credential")?;
 
-        let content = self
-            .client
-            .get_variable_raw(&credential.windmill_variable)
-            .context("Failed to get credential content from Windmill variable")?;
+        let content = self.variable_raw(&credential.windmill_variable)?;
 
         Ok(Credential {
             content: Some(content),
@@ -291,9 +402,7 @@ impl WindmillClient {
         let credential: Credential =
             serde_json::from_value(data).context("Failed to parse credential for deletion")?;
 
-        let _ = self
-            .client
-            .set_variable(String::new(), &credential.windmill_variable, false);
+        let _ = self.variable_set(String::new(), &credential.windmill_variable, false);
 
         let args = json!({ "request_data": { "credentialId": credential_id } });
         self.run_script("credential_delete", args)?;
@@ -407,13 +516,7 @@ impl WindmillClient {
     /// flags deletion-failed, registry rows removed last.
     pub fn enqueue_wish_delete(&self, wish_id: &str) -> Result<uuid::Uuid> {
         let args = json!({ "request_data": { "wish_id": wish_id } });
-        let script_path = self.script_path("steerwish_delete");
-        self.client
-            .run_script_async(&script_path, false, args, None)
-            .context(format!(
-                "Failed to enqueue Windmill script: {}",
-                script_path
-            ))
+        self.run_async_with_relogin("steerwish_delete", args)
     }
 }
 
@@ -625,6 +728,68 @@ pub(crate) mod tests_support {
 }
 
 #[cfg(test)]
+mod auth_refresh_tests {
+    use super::tests_support::FakeWindmill;
+    use super::*;
+
+    /// The 2026-11-17 estate wedge, replayed on the wire: the run POST
+    /// is answered 401, the client re-logins with the fixed password,
+    /// retries once, and the retry lands. Two logins, two run attempts.
+    #[test]
+    fn a_refused_token_relogs_in_and_the_retry_lands() {
+        let _g = tests_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        std::env::remove_var("WINDMILL_TOKEN");
+        std::env::remove_var("WM_TOKEN");
+        let f = FakeWindmill::start(vec![
+            (200, "\"tok-1\"".to_string()),                    // new()'s login
+            (401, "Not authorized: Unauthorized".to_string()), // the refused run
+            (200, "\"tok-2\"".to_string()),                    // the re-login
+            (200, "123e4567-e89b-12d3-a456-426614174000".to_string()), // retried run -> job uuid
+            (
+                200,
+                "{\"completed\":true,\"success\":true,\"result\":{\"wrapped\": 9}}".to_string(),
+            ), // the poll
+        ]);
+        std::env::set_var("WINDMILL_BASE_URL", f.base_url());
+        std::env::set_var("BASE_INTERNAL_URL", f.base_url());
+        std::env::set_var("WM_WORKSPACE", "ws");
+        std::env::set_var("WINDMILL_FOLDER", "controller");
+
+        let client = WindmillClient::new().unwrap();
+        let out = client
+            .run_script("discover", serde_json::json!({"a": 1}))
+            .unwrap();
+        assert_eq!(out, serde_json::json!({"wrapped": 9}));
+
+        let logins = f.bodies("/api/auth/login");
+        assert_eq!(logins.len(), 2, "boot login + exactly one re-login");
+        let runs = f
+            .recorded()
+            .iter()
+            .filter(|r| r.1.contains("jobs/run"))
+            .count();
+        assert_eq!(runs, 2, "the refused attempt + the retry");
+    }
+
+    /// The matcher names windmill's refusals and nothing else.
+    #[test]
+    fn the_auth_matcher_is_precise() {
+        assert!(WindmillClient::is_auth_failure(
+            "HTTP status client error (401 Unauthorized) for url (x)"
+        ));
+        assert!(WindmillClient::is_auth_failure(
+            "Not authorized: Unauthorized"
+        ));
+        assert!(!WindmillClient::is_auth_failure(
+            "Failed to run Windmill script: f/controller/x"
+        ));
+        assert!(!WindmillClient::is_auth_failure("connection refused"));
+    }
+}
+
+#[cfg(test)]
 mod wire_tests {
     use super::tests_support::FakeWindmill;
     use super::*;
@@ -647,6 +812,9 @@ mod wire_tests {
     /// One env window, sequential scenarios — env is process-global.
     #[test]
     fn the_client_rides_the_declared_scripts() {
+        let _g = tests_support::ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let causal = FakeWindmill::start(vec![]);
         std::env::set_var("WINDMILL_BASE_URL", causal.base_url());
         std::env::set_var("WM_TOKEN", "test-token");

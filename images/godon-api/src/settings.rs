@@ -124,13 +124,14 @@ impl WindmillClient {
     /// defect slept until now. Base64 rides the platform's own door
     /// with zero hand-rolling and no quotes to mangle.
     pub fn get_setting(&self, leaf_path: &str) -> anyhow::Result<Option<Envelope>> {
-        let raw = match self.client.get_variable_raw(&variable_path(leaf_path)) {
+        let raw = match self.variable_raw(&variable_path(leaf_path)) {
             Ok(raw) => raw,
             // wmill-1.659 seam: a missing variable surfaces as
             // ApiError carrying the 404 text (the SDK flattens the
             // status into a string). Absence is the UNSET leaf, not
-            // an error — everything else fails loud.
-            Err(e @ wmill::SdkError::ApiError(_)) if e.to_string().contains("404") => {
+            // an error — everything else fails loud. The wrapper's
+            // context rides along; the 404 substring still names it.
+            Err(e) if format!("{:#}", e).contains("404") => {
                 return Ok(None);
             }
             Err(e) => {
@@ -151,8 +152,7 @@ impl WindmillClient {
     pub fn set_setting(&self, leaf_path: &str, envelope: &Envelope) -> anyhow::Result<()> {
         let carrier = base64::engine::general_purpose::STANDARD
             .encode(serde_json::to_string(envelope).unwrap_or_default());
-        self.client
-            .set_variable(carrier, &variable_path(leaf_path), false)
+        self.variable_set(carrier, &variable_path(leaf_path), false)
             .map_err(|e| anyhow::anyhow!("settings write failed at {leaf_path}: {e}"))?;
         Ok(())
     }
