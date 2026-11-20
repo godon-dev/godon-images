@@ -74,6 +74,82 @@ pub struct NodeConfig {
     /// engine is the subject — story cues come from outside).
     #[serde(default)]
     pub drifts: Vec<DriftConfig>,
+    /// Exogenous pushes: declared outside signals entering this node's
+    /// world — load spikes, weather-like forcing nobody controls and no
+    /// agent owns. Bounded by declaration: a step ramps to its level and
+    /// HOLDS (a destination); a sine oscillates within ±amplitude (a
+    /// bounded orbit — its destination is a region, not a point).
+    /// Additive per objective, like interaction terms. Pure in the
+    /// clocks; truth reports the current value.
+    #[serde(default)]
+    pub exogenous: Vec<ExoConfig>,
+}
+
+/// One declared outside push.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExoConfig {
+    pub name: Option<String>,
+    /// "step" (ramp to amplitude, then hold) or "sine" (oscillate
+    /// ±amplitude with the travel window as period — boot fails loud
+    /// on unknown kinds, unknown clocks, or a windowless sine, which
+    /// would read as zero).
+    pub kind: String,
+    pub amplitude: f64,
+    /// Objective index the push feeds.
+    #[serde(default)]
+    pub objective: usize,
+    #[serde(default)]
+    pub clock: Option<String>,
+    #[serde(default)]
+    pub at_tick: u64,
+    #[serde(default)]
+    pub at_secs: Option<f64>,
+    /// step: the ramp window; sine: the period. On the declared clock.
+    #[serde(default)]
+    pub travel_ticks: u64,
+    #[serde(default)]
+    pub travel_secs: Option<f64>,
+}
+
+/// The push's value at one instant — pure in the clocks.
+fn exogenous_at(cfg: &ExoConfig, uptime_secs: f64, total_ticks: u64) -> f64 {
+    let wall = cfg.clock.as_deref() == Some("wall");
+    let (elapsed, window) = if wall {
+        let at = cfg.at_secs.unwrap_or(0.0);
+        ((uptime_secs - at).max(0.0), cfg.travel_secs.unwrap_or(0.0))
+    } else {
+        (
+            total_ticks.saturating_sub(cfg.at_tick) as f64,
+            cfg.travel_ticks as f64,
+        )
+    };
+    if elapsed <= 0.0 {
+        return 0.0;
+    }
+    match cfg.kind.as_str() {
+        "sine" => {
+            let period = if window > 0.0 { window } else { 1.0 };
+            cfg.amplitude * (2.0 * std::f64::consts::PI * elapsed / period).sin()
+        }
+        _ => {
+            if window <= 0.0 {
+                cfg.amplitude
+            } else {
+                cfg.amplitude * (elapsed / window).min(1.0)
+            }
+        }
+    }
+}
+
+/// Per-objective sum of a node's outside pushes at one instant.
+fn exogenous_sum(nc: &NodeConfig, uptime_secs: f64, total_ticks: u64) -> Vec<f64> {
+    let mut out = vec![0.0; nc.objectives];
+    for exo in &nc.exogenous {
+        if let Some(slot) = out.get_mut(exo.objective) {
+            *slot += exogenous_at(exo, uptime_secs, total_ticks);
+        }
+    }
+    out
 }
 
 /// One declared drift. When `when` first holds, the drift is cued:
@@ -121,13 +197,33 @@ pub struct DriftParamWhen {
 /// settled shape to the target over that many ticks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MorphConfig {
+    /// Cue tick (tick clock) — for clock = "wall" it doubles as the ORDER
+    /// slot among the node's morphs; the cue itself is `at_secs`.
+    #[serde(default)]
     pub at_tick: u64,
+    /// Wall-clock cue in seconds of bench uptime. Used when clock = "wall".
+    #[serde(default)]
+    pub at_secs: Option<f64>,
     #[serde(default)]
     pub travel_ticks: u64,
     #[serde(default)]
     pub target_weights: Option<Vec<Vec<f64>>>,
     #[serde(default)]
     pub target_base: Option<String>,
+    /// Trajectory clock for this event: "tick" (default — travel advances
+    /// with global ticks, activity-paced) or "wall" (travel advances with
+    /// bench uptime, agent-independent). Only the TRAVEL changes clock:
+    /// the morph still enters the chain once ticks reach `at_tick` (keep
+    /// it 0 for wall events), and the cue instant is `at_secs`. Receipts
+    /// convert between clocks via the room's measured cadence (declared
+    /// term).
+    #[serde(default)]
+    pub clock: Option<String>,
+    /// Wall-clock travel window in seconds, when clock = "wall". Defaults
+    /// to 0 — an instant step at the cue, the same shape travel_ticks = 0
+    /// gives on the tick clock.
+    #[serde(default)]
+    pub travel_secs: Option<f64>,
 }
 
 fn default_base() -> String {
@@ -152,8 +248,31 @@ pub struct EdgeConfig {
     pub to: String,
     pub to_channel: usize,
     pub strength: f64,
+    /// LEGACY unbounded linear edge ramp: strength × (1 + drift_rate ×
+    /// total_ticks). Runs away by design; kept only for old configs.
     #[serde(default)]
     pub drift_rate: f64,
+    /// Destination semantics: the coupling travels from `strength` to
+    /// `target_strength` over the travel window, then HOLDS — the world
+    /// settles. A negative target passes through zero and settles
+    /// inverted. Mutually exclusive with `drift_rate` (boot fails loud
+    /// if both are set).
+    #[serde(default)]
+    pub target_strength: Option<f64>,
+    /// Cue tick for the destination travel — tick clock only. When
+    /// clock = "wall" this field is ignored: the cue is `at_secs`
+    /// (default 0.0, travel starts at boot).
+    #[serde(default)]
+    pub at_tick: Option<u64>,
+    /// Wall-clock cue (seconds of uptime) when clock = "wall".
+    #[serde(default)]
+    pub at_secs: Option<f64>,
+    #[serde(default)]
+    pub travel_ticks: Option<u64>,
+    #[serde(default)]
+    pub clock: Option<String>,
+    #[serde(default)]
+    pub travel_secs: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +291,41 @@ pub struct NoiseConfig {
     pub sigma: Option<f64>,
     #[serde(default)]
     pub noise_type: Option<String>,
+    /// Destination semantics for the Gaussian width: sigma travels from
+    /// `gaussian_sigma` to `target_gaussian_sigma` over the window on
+    /// the declared clock, then HOLDS — the world's readings get
+    /// fuzzier (or tighter) and settle. The legacy `drift_rate` growth
+    /// above is the unbounded form; this is the settling form.
+    #[serde(default)]
+    pub target_gaussian_sigma: Option<f64>,
+    #[serde(default)]
+    pub sigma_at_tick: Option<u64>,
+    #[serde(default)]
+    pub sigma_at_secs: Option<f64>,
+    #[serde(default)]
+    pub sigma_travel_ticks: Option<u64>,
+    #[serde(default)]
+    pub sigma_travel_secs: Option<f64>,
+    #[serde(default)]
+    pub sigma_clock: Option<String>,
+}
+
+/// The effective Gaussian width at one instant — pure in the clocks.
+fn effective_gaussian_sigma(n: &NoiseConfig, uptime_secs: f64, total_ticks: u64) -> f64 {
+    if let Some(target) = n.target_gaussian_sigma {
+        let p = travel_progress(
+            &n.sigma_clock,
+            n.sigma_at_tick.unwrap_or(0),
+            n.sigma_at_secs,
+            n.sigma_travel_ticks.unwrap_or(0),
+            n.sigma_travel_secs,
+            uptime_secs,
+            total_ticks,
+        );
+        n.gaussian_sigma + (target - n.gaussian_sigma) * p
+    } else {
+        n.gaussian_sigma
+    }
 }
 
 fn default_gaussian() -> f64 {
@@ -186,6 +340,12 @@ impl Default for NoiseConfig {
             drift_rate: 0.0,
             sigma: None,
             noise_type: None,
+            target_gaussian_sigma: None,
+            sigma_at_tick: None,
+            sigma_at_secs: None,
+            sigma_travel_ticks: None,
+            sigma_travel_secs: None,
+            sigma_clock: None,
         }
     }
 }
@@ -470,12 +630,51 @@ pub struct EdgeTruth {
 pub struct TruthReport {
     pub node_id: String,
     pub total_ticks: u64,
+    /// Bench uptime at the report — the wall clock, for converting
+    /// between tick-clocked and wall-clocked events (a declared term).
+    pub uptime_secs: f64,
     pub objectives: Vec<f64>,
     pub effective_weights: Vec<Vec<f64>>,
     pub base_from: String,
     pub base_to: String,
     pub base_progress: f64,
+    /// Total readout offset in force at the report (scheduled + live).
+    pub offset_effective: f64,
+    /// The Gaussian width in force at the report.
+    pub noise_effective: f64,
+    /// Per-objective sum of outside pushes in force at the report.
+    pub exogenous_effective: Vec<f64>,
     pub edges: Vec<EdgeTruth>,
+}
+
+/// The event grammar's one clock rule. Cue and travel each run on the
+/// declared clock — "tick" (global ticks, activity-paced: the world
+/// advances with use) or "wall" (bench uptime, agent-independent: the
+/// world advances on its own). Returns travel progress in [0, 1]:
+/// 0 before the cue, 1 once the window has fully elapsed. Pure in
+/// (uptime, ticks) — the world stays a function of its clocks.
+fn travel_progress(
+    clock: &Option<String>,
+    at_tick: u64,
+    at_secs: Option<f64>,
+    travel_ticks: u64,
+    travel_secs: Option<f64>,
+    uptime_secs: f64,
+    total_ticks: u64,
+) -> f64 {
+    if clock.as_deref() == Some("wall") {
+        let at = at_secs.unwrap_or(0.0);
+        let travel = travel_secs.unwrap_or(0.0);
+        if travel <= 0.0 {
+            return if uptime_secs >= at { 1.0 } else { 0.0 };
+        }
+        ((uptime_secs - at) / travel).clamp(0.0, 1.0)
+    } else {
+        if travel_ticks == 0 {
+            return if total_ticks >= at_tick { 1.0 } else { 0.0 };
+        }
+        ((total_ticks.saturating_sub(at_tick)) as f64 / travel_ticks as f64).clamp(0.0, 1.0)
+    }
 }
 
 fn lerp_weights(a: &[Vec<f64>], b: &[Vec<f64>], p: f64) -> Vec<Vec<f64>> {
@@ -518,6 +717,48 @@ impl Simulator {
                         nc.id,
                         nc.objectives,
                         nc.params
+                    );
+                }
+            }
+        }
+
+        // Fail loud at boot: an edge declaring BOTH a destination and the
+        // legacy ramp would run two competing edge changes — declare one.
+        for e in &config.edges {
+            assert!(
+                !(e.target_strength.is_some() && e.drift_rate != 0.0),
+                "edge {}->{} declares target_strength AND drift_rate — one edge change form per edge",
+                e.from, e.to
+            );
+        }
+
+        // Fail loud at boot: a push declares its kind and clock, and a
+        // sine carries a travel window (its period) — a windowless sine
+        // would sample its own whole periods and read as exactly zero.
+        for nc in &config.nodes {
+            for exo in &nc.exogenous {
+                assert!(
+                    matches!(exo.kind.as_str(), "step" | "sine"),
+                    "node {} exogenous kind '{}' unknown — step or sine",
+                    nc.id,
+                    exo.kind
+                );
+                assert!(
+                    matches!(exo.clock.as_deref(), None | Some("tick") | Some("wall")),
+                    "node {} exogenous clock '{:?}' unknown — tick or wall",
+                    nc.id,
+                    exo.clock
+                );
+                if exo.kind == "sine" {
+                    let windowed = if exo.clock.as_deref() == Some("wall") {
+                        exo.travel_secs.unwrap_or(0.0) > 0.0
+                    } else {
+                        exo.travel_ticks > 0
+                    };
+                    assert!(
+                        windowed,
+                        "node {} sine push needs a travel window (its period) — travel_secs on wall, travel_ticks on tick",
+                        nc.id
                     );
                 }
             }
@@ -646,6 +887,12 @@ impl Simulator {
     /// traveling leaves a blend in flight (progress < 1); a completed
     /// morph settles into its target.
     fn effective_shape(&self, nc: &NodeConfig) -> EffShape {
+        self.shape_at(nc, self.uptime_secs(), self.total_ticks)
+    }
+
+    /// The node's effective shape as a pure function of the two clocks —
+    /// the replay property in miniature: same clocks in, same world out.
+    fn shape_at(&self, nc: &NodeConfig, uptime_secs: f64, total_ticks: u64) -> EffShape {
         let mut sorted = nc.morphs.clone();
         sorted.sort_by_key(|m| m.at_tick);
 
@@ -654,16 +901,20 @@ impl Simulator {
         let mut inflight: Option<EffShape> = None;
 
         for m in &sorted {
-            if m.at_tick > self.total_ticks {
+            if m.at_tick > total_ticks {
                 break;
             }
             let target_w = m.target_weights.clone().unwrap_or_else(|| weights.clone());
             let target_b = m.target_base.clone().unwrap_or_else(|| base.clone());
-            let progress = if m.travel_ticks == 0 {
-                1.0
-            } else {
-                ((self.total_ticks - m.at_tick) as f64 / m.travel_ticks as f64).clamp(0.0, 1.0)
-            };
+            let progress = travel_progress(
+                &m.clock,
+                m.at_tick,
+                m.at_secs,
+                m.travel_ticks,
+                m.travel_secs,
+                uptime_secs,
+                total_ticks,
+            );
             if progress >= 1.0 {
                 weights = target_w;
                 base = target_b;
@@ -689,9 +940,30 @@ impl Simulator {
     }
 
     /// Signed edge drift: the coupling travels through zero and can
-    /// invert. Deterministic in the global tick count.
+    /// invert. Destination form: travels from the declared strength to
+    /// `target_strength` over the window on the declared clock, then
+    /// HOLDS — the world settles (a negative target settles inverted).
+    /// Legacy form (drift_rate only): unbounded linear ramp, kept for
+    /// old configs. Pure in the clocks.
     fn edge_strength(&self, e: &EdgeConfig) -> f64 {
-        e.strength * (1.0 + e.drift_rate * self.total_ticks as f64)
+        self.edge_strength_at(e, self.uptime_secs(), self.total_ticks)
+    }
+
+    fn edge_strength_at(&self, e: &EdgeConfig, uptime_secs: f64, total_ticks: u64) -> f64 {
+        if let Some(target) = e.target_strength {
+            let p = travel_progress(
+                &e.clock,
+                e.at_tick.unwrap_or(0),
+                e.at_secs,
+                e.travel_ticks.unwrap_or(0),
+                e.travel_secs,
+                uptime_secs,
+                total_ticks,
+            );
+            e.strength + (target - e.strength) * p
+        } else {
+            e.strength * (1.0 + e.drift_rate * total_ticks as f64)
+        }
     }
 
     /// Noise-free cascade of the whole graph at the current tick, under
@@ -735,7 +1007,7 @@ impl Simulator {
                     }
                 }
 
-                let updated = if node.config.intake == "through" {
+                let mut updated = if node.config.intake == "through" {
                     node.map_channel_inputs_eff(
                         &incoming,
                         &e.weights,
@@ -755,6 +1027,14 @@ impl Simulator {
                     }
                     u
                 };
+
+                // Outside pushes enter here — inside the update, so they
+                // survive propagation and couple downstream like any real
+                // forcing on the node would.
+                let exo = exogenous_sum(&node.config, self.uptime_secs(), self.total_ticks);
+                for (slot, push) in updated.iter_mut().zip(exo.iter()) {
+                    *slot += push;
+                }
 
                 for (i, &new_v) in updated.iter().enumerate() {
                     if let Some(&old_v) = coupled_vals.get(i) {
@@ -850,11 +1130,19 @@ impl Simulator {
         Some(TruthReport {
             node_id: node_id.to_string(),
             total_ticks: self.total_ticks,
+            uptime_secs: self.uptime_secs(),
             objectives,
             effective_weights: eff.weights,
             base_from: eff.base_a,
             base_to: eff.base_b,
             base_progress: eff.progress,
+            offset_effective: offset,
+            noise_effective: effective_gaussian_sigma(
+                &self.noise,
+                self.uptime_secs(),
+                self.total_ticks,
+            ),
+            exogenous_effective: exogenous_sum(&node.config, self.uptime_secs(), self.total_ticks),
             edges,
         })
     }
@@ -862,9 +1150,10 @@ impl Simulator {
     fn generate_noise(&mut self) -> f64 {
         let mut noise = 0.0;
 
-        // Gaussian component
-        if self.noise.gaussian_sigma > 0.0 {
-            noise += self.gaussian_raw() * self.noise.gaussian_sigma;
+        // Gaussian component — under the effective (possibly settling) width
+        let sigma = effective_gaussian_sigma(&self.noise, self.uptime_secs(), self.total_ticks);
+        if sigma > 0.0 {
+            noise += self.gaussian_raw() * sigma;
         }
 
         // Colored component (autocorrelated)
@@ -1590,6 +1879,249 @@ mod tests {
         assert!(sim.drift_start("a", 1.0, None, None).unwrap().is_ok());
     }
 
+    // ── the event grammar (2026-11-19): destinations, clocks, pushes ──
+
+    fn edge_destination_config(
+        target: f64,
+        clock: Option<String>,
+        travel_ticks: u64,
+        travel_secs: Option<f64>,
+    ) -> BenchConfig {
+        serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0]]},
+                {"id": "b", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0,
+                 "weights": [[1.0]]}
+            ],
+            "edges": [
+                {"from": "a", "from_channel": 0, "to": "b", "to_channel": 0,
+                 "strength": 0.3, "target_strength": target,
+                 "at_tick": 10, "travel_ticks": travel_ticks,
+                 "travel_secs": travel_secs, "clock": clock}
+            ],
+            "noise": {"gaussian_sigma": 0.0}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn edge_destination_travels_then_holds() {
+        let sim = Simulator::from_config(edge_destination_config(0.9, None, 20, None));
+        // before cue: declared strength
+        assert!((sim.edge_strength_at(&sim.edges[0], 0.0, 5) - 0.3).abs() < 1e-12);
+        // mid-travel: halfway
+        let mid = sim.edge_strength_at(&sim.edges[0], 0.0, 20);
+        assert!((mid - 0.6).abs() < 1e-12, "mid-travel {mid}");
+        // after window: settled at destination, stays settled
+        assert!((sim.edge_strength_at(&sim.edges[0], 0.0, 100) - 0.9).abs() < 1e-12);
+        assert!((sim.edge_strength_at(&sim.edges[0], 0.0, 900) - 0.9).abs() < 1e-12);
+    }
+
+    #[test]
+    fn edge_destination_inversion_settles_inverted() {
+        let sim = Simulator::from_config(edge_destination_config(-0.3, None, 10, None));
+        // passes through zero mid-travel, settles inverted
+        let mid = sim.edge_strength_at(&sim.edges[0], 0.0, 15);
+        assert!(
+            (mid - 0.0).abs() < 1e-12,
+            "through zero at mid-travel, got {mid}"
+        );
+        let settled = sim.edge_strength_at(&sim.edges[0], 0.0, 500);
+        assert!(
+            (settled - (-0.3)).abs() < 1e-12,
+            "settles inverted, got {settled}"
+        );
+    }
+
+    #[test]
+    fn edge_destination_travels_on_wall_clock() {
+        let sim = Simulator::from_config(edge_destination_config(
+            0.9,
+            Some("wall".to_string()),
+            0,
+            Some(10.0),
+        ));
+        // cue at at_secs default 0; travel 10s of uptime, ticks irrelevant
+        assert!((sim.edge_strength_at(&sim.edges[0], 3.0, 9_999) - 0.3 - 0.6 * 0.3).abs() < 1e-12);
+        assert!((sim.edge_strength_at(&sim.edges[0], 60.0, 0) - 0.9).abs() < 1e-12);
+    }
+
+    #[test]
+    fn edge_declaring_both_forms_fails_loud_at_boot() {
+        let cfg_json = serde_json::json!({
+            "nodes": [{"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                        "weights": [[1.0]]}],
+            "edges": [{"from": "a", "from_channel": 0, "to": "a", "to_channel": 0,
+                        "strength": 0.3, "drift_rate": 0.001, "target_strength": 0.9}]
+        });
+        let result = std::panic::catch_unwind(|| {
+            let _ =
+                Simulator::from_config(serde_json::from_value::<BenchConfig>(cfg_json).unwrap());
+        });
+        assert!(
+            result.is_err(),
+            "both edge forms declared must fail at boot"
+        );
+    }
+
+    #[test]
+    fn exogenous_unknown_kind_fails_loud_at_boot() {
+        let cfg_json = serde_json::json!({
+            "nodes": [{"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                        "weights": [[1.0]],
+                        "exogenous": [{"kind": "sep", "amplitude": 0.2}]}],
+        });
+        let result = std::panic::catch_unwind(|| {
+            let _ =
+                Simulator::from_config(serde_json::from_value::<BenchConfig>(cfg_json).unwrap());
+        });
+        assert!(result.is_err(), "unknown exogenous kind must fail at boot");
+    }
+
+    #[test]
+    fn exogenous_windowless_sine_fails_loud_at_boot() {
+        let cfg_json = serde_json::json!({
+            "nodes": [{"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                        "weights": [[1.0]],
+                        "exogenous": [{"kind": "sine", "amplitude": 0.3,
+                                        "at_tick": 0, "travel_ticks": 0}]}],
+        });
+        let result = std::panic::catch_unwind(|| {
+            let _ =
+                Simulator::from_config(serde_json::from_value::<BenchConfig>(cfg_json).unwrap());
+        });
+        assert!(result.is_err(), "sine without a period must fail at boot");
+    }
+
+    #[test]
+    fn morph_travels_on_wall_clock() {
+        let cfg: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [{"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                        "weights": [[0.5]],
+                        "morphs": [{"at_tick": 0, "at_secs": 2.0, "travel_secs": 4.0,
+                                     "clock": "wall", "target_weights": [[1.0]]}]}],
+            "noise": {"gaussian_sigma": 0.0}
+        }))
+        .unwrap();
+        let sim = Simulator::from_config(cfg);
+        let nc = &sim.nodes["a"].config;
+        // before wall cue: declared weight
+        let e0 = sim.shape_at(nc, 1.0, 1_000_000);
+        assert!((e0.weights[0][0] - 0.5).abs() < 1e-12);
+        // halfway on uptime, regardless of ticks
+        let em = sim.shape_at(nc, 4.0, 0);
+        assert!(
+            (em.weights[0][0] - 0.75).abs() < 1e-12,
+            "wall mid-travel {}",
+            em.weights[0][0]
+        );
+        // settled
+        let es = sim.shape_at(nc, 30.0, 7);
+        assert!((es.weights[0][0] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn exogenous_step_ramps_then_holds_and_sine_stays_bounded() {
+        let step = ExoConfig {
+            name: None,
+            kind: "step".to_string(),
+            amplitude: 0.2,
+            objective: 0,
+            clock: None,
+            at_tick: 10,
+            at_secs: None,
+            travel_ticks: 10,
+            travel_secs: None,
+        };
+        assert_eq!(exogenous_at(&step, 0.0, 5), 0.0);
+        assert!((exogenous_at(&step, 0.0, 15) - 0.1).abs() < 1e-12);
+        assert!((exogenous_at(&step, 0.0, 10_000) - 0.2).abs() < 1e-12);
+
+        let sine = ExoConfig {
+            name: None,
+            kind: "sine".to_string(),
+            amplitude: 0.3,
+            objective: 0,
+            clock: Some("wall".to_string()),
+            at_tick: 0,
+            at_secs: Some(0.0),
+            travel_ticks: 0,
+            travel_secs: Some(4.0),
+        };
+        // period 4s: at t=1 a quarter turn → amplitude; bounded ±0.3 forever
+        assert!((exogenous_at(&sine, 1.0, 0) - 0.3).abs() < 1e-9);
+        for t in [0.3f64, 1.7, 5.9, 100.3, 2501.1] {
+            let v = exogenous_at(&sine, t, 0);
+            assert!(v.abs() <= 0.3 + 1e-9, "sine bounded, got {v} at {t}");
+        }
+    }
+
+    #[test]
+    fn noise_sigma_settles_at_declared_target() {
+        let cfg: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [{"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                        "weights": [[1.0]]}],
+            "noise": {"gaussian_sigma": 0.02, "target_gaussian_sigma": 0.06,
+                       "sigma_at_tick": 5, "sigma_travel_ticks": 10}
+        }))
+        .unwrap();
+        let sim = Simulator::from_config(cfg);
+        assert!((effective_gaussian_sigma(&sim.noise, 0.0, 0) - 0.02).abs() < 1e-12);
+        assert!((effective_gaussian_sigma(&sim.noise, 0.0, 10) - 0.04).abs() < 1e-12);
+        assert!((effective_gaussian_sigma(&sim.noise, 0.0, 999) - 0.06).abs() < 1e-12);
+    }
+
+    #[test]
+    fn truth_reports_the_effective_world() {
+        let cfg: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [{"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                        "param_lower": 0.0, "param_upper": 100.0,
+                        "weights": [[1.0]],
+                        "exogenous": [{"kind": "step", "amplitude": 0.25,
+                                        "at_tick": 0, "travel_ticks": 5}],
+                        "drifts": [{"rate_per_second": 0.01, "cap": 0.5,
+                                     "when": {"uptime_secs_gte": 0.0}}]}],
+            "noise": {"gaussian_sigma": 0.02, "target_gaussian_sigma": 0.04,
+                       "sigma_at_tick": 0, "sigma_travel_ticks": 10}
+        }))
+        .unwrap();
+        let mut sim = Simulator::from_config(cfg);
+        // pump past the push's travel window (5 ticks)
+        for _ in 0..8 {
+            sim.apply("a", &[50.0]);
+        }
+        // cue the declared drift by advancing wall time
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        sim.apply("a", &[50.0]);
+        let t = sim.truth("a").unwrap();
+        assert!(t.uptime_secs >= 0.0);
+        assert!(
+            t.offset_effective > 0.0,
+            "live drift counted: {}",
+            t.offset_effective
+        );
+        assert!(
+            t.noise_effective > 0.02 && t.noise_effective <= 0.04,
+            "sigma settling, got {}",
+            t.noise_effective
+        );
+        assert!(
+            (t.exogenous_effective[0] - 0.25).abs() < 1e-12,
+            "push settled, got {}",
+            t.exogenous_effective[0]
+        );
+        // the push is IN the truth objectives: base linear 0.5 + push 0.25
+        assert!(
+            (t.objectives[0] - (0.5 + 0.25 + t.offset_effective)).abs() < 1e-9,
+            "obj {} vs base+push+offset {}",
+            t.objectives[0],
+            0.5 + 0.25 + t.offset_effective
+        );
+    }
+
     // ── the golden trajectory: one committed run, replayed within tolerance ──
     //
     // The pointwise tests above pin single formulas; the golden pins
@@ -1876,6 +2408,12 @@ mod tests {
                     return Some(format!("{path}: {} keys vs {}", xm.len(), ym.len()));
                 }
                 xm.iter().find_map(|(k, x)| {
+                    // The wall clock is an observation stamp, not replayable
+                    // physics: real uptime differs between runs by
+                    // construction, exactly as a log timestamp would.
+                    if k == "uptime_secs" {
+                        return None;
+                    }
                     let y = ym.get(k)?;
                     first_float_drift(&format!("{path}.{k}"), x, y)
                 })
