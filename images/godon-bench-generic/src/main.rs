@@ -120,14 +120,14 @@ async fn apply(
     State(state): State<Arc<AppState>>,
     Path(node_id): Path<String>,
     Json(req): Json<ApplyRequest>,
-) -> Json<serde_json::Value> {
+) -> (StatusCode, Json<serde_json::Value>) {
     // Convert named params dict to array based on config
-    let node_config = state
-        .config
-        .nodes
-        .iter()
-        .find(|n| n.id == node_id)
-        .unwrap_or_else(|| panic!("unknown node: {}", node_id));
+    let Some(node_config) = state.config.nodes.iter().find(|n| n.id == node_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("unknown node: {node_id}") })),
+        );
+    };
 
     let mut param_array = vec![node_config.param_lower; node_config.params];
     for (key, val) in &req.params {
@@ -150,7 +150,10 @@ async fn apply(
         param_array.len(),
         objectives
     );
-    Json(build_metrics_response(&node_id, tick, &objectives))
+    (
+        StatusCode::OK,
+        Json(build_metrics_response(&node_id, tick, &objectives)),
+    )
 }
 
 async fn metrics_json(
@@ -181,31 +184,37 @@ async fn status(
 async fn truth(
     State(state): State<Arc<AppState>>,
     Path(node_id): Path<String>,
-) -> Json<serde_json::Value> {
+) -> (StatusCode, Json<serde_json::Value>) {
     let sim = state.sim.lock().unwrap();
     match sim.truth(&node_id) {
-        Some(t) => Json(serde_json::json!({
-            "node_id": t.node_id,
-            "total_ticks": t.total_ticks,
-            "uptime_secs": t.uptime_secs,
-            "objectives": t.objectives,
-            "effective_weights": t.effective_weights,
-            "base_from": t.base_from,
-            "base_to": t.base_to,
-            "base_progress": t.base_progress,
-            "offset_effective": t.offset_effective,
-            "noise_effective": t.noise_effective,
-            "exogenous_effective": t.exogenous_effective,
-            "edges": t.edges.iter().map(|e| serde_json::json!({
-                "from": e.from,
-                "to": e.to,
-                "to_channel": e.to_channel,
-                "strength_effective": e.strength_effective,
-            })).collect::<Vec<_>>(),
-        })),
-        None => Json(serde_json::json!({
-            "error": format!("unknown node: {node_id}")
-        })),
+        Some(t) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "node_id": t.node_id,
+                "total_ticks": t.total_ticks,
+                "uptime_secs": t.uptime_secs,
+                "objectives": t.objectives,
+                "effective_weights": t.effective_weights,
+                "base_from": t.base_from,
+                "base_to": t.base_to,
+                "base_progress": t.base_progress,
+                "offset_effective": t.offset_effective,
+                "noise_effective": t.noise_effective,
+                "exogenous_effective": t.exogenous_effective,
+                "edges": t.edges.iter().map(|e| serde_json::json!({
+                    "from": e.from,
+                    "to": e.to,
+                    "to_channel": e.to_channel,
+                    "strength_effective": e.strength_effective,
+                })).collect::<Vec<_>>(),
+            })),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("unknown node: {node_id}")
+            })),
+        ),
     }
 }
 
@@ -410,6 +419,23 @@ async fn drift_state(
 
 // ─── Main ───────────────────────────────────────────────────────────
 
+/// The router as behaviour, not plumbing: built once here, served by
+/// main, driven by the wire tests — request in, world moved, JSON out.
+fn build_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/config", get(get_config))
+        .route("/{node_id}/apply", post(apply))
+        .route("/{node_id}/metrics/json", get(metrics_json))
+        .route("/{node_id}/status", get(status))
+        .route("/{node_id}/truth", get(truth))
+        .route("/{node_id}/reset", post(reset))
+        .route("/{node_id}/drift/start", post(drift_start))
+        .route("/{node_id}/drift/state", get(drift_state))
+        .route("/{node_id}/exogenous/start", post(exogenous_start))
+        .with_state(state)
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::init();
@@ -451,19 +477,7 @@ async fn main() {
         config: config.clone(),
     });
 
-    // Build router: global endpoints + per-node endpoints
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/config", get(get_config))
-        .route("/{node_id}/apply", post(apply))
-        .route("/{node_id}/metrics/json", get(metrics_json))
-        .route("/{node_id}/status", get(status))
-        .route("/{node_id}/truth", get(truth))
-        .route("/{node_id}/reset", post(reset))
-        .route("/{node_id}/drift/start", post(drift_start))
-        .route("/{node_id}/drift/state", get(drift_state))
-        .route("/{node_id}/exogenous/start", post(exogenous_start))
-        .with_state(state);
+    let app = build_router(state);
 
     let port: u16 = std::env::var("PORT")
         .unwrap_or_else(|_| "8090".to_string())
@@ -545,3 +559,176 @@ fn default_config() -> BenchConfig {
 }
 
 use sim::{EdgeConfig as SimEdgeConfig, NodeConfig, NoiseConfig as SimNoiseConfig};
+
+// ── the wire tests: behaviour, not plumbing ──────────────────────────
+// The estate acceptance cell (2026-11-20) caught a bug this crate could
+// not see: TruthReport's four new fields existed on the struct and
+// nowhere on the wire, because the handler hand-built its JSON. These
+// tests drive the REAL router with REAL requests so a field, a shape,
+// or a status code can never again diverge between struct and HTTP.
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    fn test_state() -> Arc<AppState> {
+        let config: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]],
+                 "edges_note": null,
+                 "exogenous": [{"kind": "step", "amplitude": 0.25,
+                                 "at_tick": 0, "travel_ticks": 3}]},
+                {"id": "b", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[0.0]]}
+            ],
+            "edges": [{"from": "a", "from_channel": 0, "to": "b", "to_channel": 0,
+                        "strength": 0.3, "target_strength": -0.3,
+                        "at_tick": 5, "travel_ticks": 5}],
+            "noise": {"gaussian_sigma": 0.02, "target_gaussian_sigma": 0.05,
+                       "sigma_at_tick": 2, "sigma_travel_ticks": 4}
+        }))
+        .unwrap();
+        let sim = Arc::new(std::sync::Mutex::new(Simulator::from_config(
+            config.clone(),
+        )));
+        Arc::new(AppState { sim, config })
+    }
+
+    async fn call(
+        app: &axum::Router,
+        method: &str,
+        uri: &str,
+        body: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut b = Request::builder().method(method).uri(uri);
+        let req = match body {
+            Some(json) => {
+                b = b.header("content-type", "application/json");
+                b.body(Body::from(json.to_string())).unwrap()
+            }
+            None => b.body(Body::empty()).unwrap(),
+        };
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, v)
+    }
+
+    #[tokio::test]
+    async fn wire_truth_carries_every_reported_field() {
+        let app = build_router(test_state());
+        let (code, t) = call(&app, "GET", "/a/truth", None).await;
+        assert_eq!(code, StatusCode::OK);
+        for key in [
+            "node_id",
+            "total_ticks",
+            "uptime_secs",
+            "objectives",
+            "effective_weights",
+            "base_from",
+            "base_to",
+            "base_progress",
+            "offset_effective",
+            "noise_effective",
+            "exogenous_effective",
+            "edges",
+        ] {
+            assert!(
+                t.get(key).is_some(),
+                "truth wire is missing '{key}' — the exact class the estate cell caught"
+            );
+        }
+        let e = &t["edges"][0];
+        assert_eq!(e["from"], "a");
+        assert!((e["strength_effective"].as_f64().unwrap() - 0.3).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn wire_apply_takes_named_params_and_moves_the_world() {
+        let app = build_router(test_state());
+        let (code, _) = call(&app, "POST", "/a/apply", Some(r#"{"param_0":100.0}"#)).await;
+        assert_eq!(code, StatusCode::OK);
+        let (_, t) = call(&app, "GET", "/a/truth", None).await;
+        // base linear 1.0 + settled exogenous 0.25 (travel 3, 1 tick in: 1/3 ramp)
+        let obj = t["objectives"][0].as_f64().unwrap();
+        assert!(obj > 0.9 && obj < 1.2, "world moved: {obj}");
+    }
+
+    #[tokio::test]
+    async fn wire_apply_rejects_a_bare_array_loudly() {
+        // the exact silent-400 shape that stalled the estate cell
+        let app = build_router(test_state());
+        let (code, _) = call(&app, "POST", "/a/apply", Some(r#"[100.0]"#)).await;
+        assert_ne!(code, StatusCode::OK, "a bare array must not be accepted");
+    }
+
+    #[tokio::test]
+    async fn wire_exogenous_door_cues_and_refuses_junk() {
+        let app = build_router(test_state());
+        let (code, v) = call(
+            &app,
+            "POST",
+            "/b/exogenous/start",
+            Some(r#"{"kind":"step","amplitude":0.15,"objective":0,"travel_secs":0.0}"#),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "door cue accepted: {v}");
+        let (_, t) = call(&app, "GET", "/b/truth", None).await;
+        assert!(
+            (t["exogenous_effective"][0].as_f64().unwrap() - 0.15).abs() < 1e-9,
+            "instant step visible on the wire"
+        );
+        let (bad, _) = call(
+            &app,
+            "POST",
+            "/b/exogenous/start",
+            Some(r#"{"kind":"sine","amplitude":0.3}"#),
+        )
+        .await;
+        assert_eq!(
+            bad,
+            StatusCode::BAD_REQUEST,
+            "windowless sine refused at the door"
+        );
+        let (junk, _) = call(
+            &app,
+            "POST",
+            "/b/exogenous/start",
+            Some(r#"{"kind":"wobble","amplitude":0.3}"#),
+        )
+        .await;
+        assert_eq!(junk, StatusCode::BAD_REQUEST, "unknown kind refused");
+    }
+
+    #[tokio::test]
+    async fn wire_drift_door_and_state() {
+        let app = build_router(test_state());
+        let (code, v) = call(
+            &app,
+            "POST",
+            "/a/drift/start",
+            Some(r#"{"rate_per_second":0.01,"cap":0.5}"#),
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK, "drift cue accepted: {v}");
+        let (code2, s) = call(&app, "GET", "/a/drift/state", None).await;
+        assert_eq!(code2, StatusCode::OK);
+        assert!(
+            s.to_string().contains("rate_per_second"),
+            "state lists the drift"
+        );
+    }
+
+    #[tokio::test]
+    async fn wire_unknown_node_is_a_404() {
+        let app = build_router(test_state());
+        let (code, _) = call(&app, "GET", "/nope/truth", None).await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+    }
+}
