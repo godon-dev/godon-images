@@ -29,11 +29,17 @@
                 1.0
               ]
             ],
+            "exogenous_effective": [
+              0.0
+            ],
             "node_id": "a",
+            "noise_effective": 0.0,
             "objectives": [
               1.0
             ],
-            "total_ticks": 1
+            "offset_effective": 0.0,
+            "total_ticks": 1,
+            "uptime_secs": 0.00008281
           },
           "truth_b": {
             "base_from": "linear",
@@ -52,11 +58,17 @@
                 0.5
               ]
             ],
+            "exogenous_effective": [
+              0.0
+            ],
             "node_id": "b",
+            "noise_effective": 0.0,
             "objectives": [
               0.707
             ],
-            "total_ticks": 1
+            "offset_effective": 0.0,
+            "total_ticks": 1,
+            "uptime_secs": 0.000165189
           }
         },
         {
@@ -84,11 +96,17 @@
                 1.0
               ]
             ],
+            "exogenous_effective": [
+              0.0
+            ],
             "node_id": "a",
+            "noise_effective": 0.0,
             "objectives": [
               1.0
             ],
-            "total_ticks": 2
+            "offset_effective": 0.0,
+            "total_ticks": 2,
+            "uptime_secs": 0.00028499
           },
           "truth_b": {
             "base_from": "linear",
@@ -107,11 +125,17 @@
                 0.5
               ]
             ],
+            "exogenous_effective": [
+              0.0
+            ],
             "node_id": "b",
+            "noise_effective": 0.0,
             "objectives": [
               0.964
             ],
-            "total_ticks": 2
+            "offset_effective": 0.0,
+            "total_ticks": 2,
+            "uptime_secs": 0.000353432
           }
         },
         {
@@ -139,11 +163,17 @@
                 1.0
               ]
             ],
+            "exogenous_effective": [
+              0.0
+            ],
             "node_id": "a",
+            "noise_effective": 0.0,
             "objectives": [
               0.0
             ],
-            "total_ticks": 3
+            "offset_effective": 0.0,
+            "total_ticks": 3,
+            "uptime_secs": 0.000442754
           },
           "truth_b": {
             "base_from": "linear",
@@ -162,11 +192,17 @@
                 0.5
               ]
             ],
+            "exogenous_effective": [
+              0.0
+            ],
             "node_id": "b",
+            "noise_effective": 0.0,
             "objectives": [
               0.25
             ],
-            "total_ticks": 3
+            "offset_effective": 0.0,
+            "total_ticks": 3,
+            "uptime_secs": 0.000525494
           }
         },
         {
@@ -194,11 +230,17 @@
                 1.0
               ]
             ],
+            "exogenous_effective": [
+              0.0
+            ],
             "node_id": "a",
+            "noise_effective": 0.0,
             "objectives": [
               0.0
             ],
-            "total_ticks": 4
+            "offset_effective": 0.0,
+            "total_ticks": 4,
+            "uptime_secs": 0.000616199
           },
           "truth_b": {
             "base_from": "linear",
@@ -217,11 +259,17 @@
                 0.5
               ]
             ],
+            "exogenous_effective": [
+              0.0
+            ],
             "node_id": "b",
+            "noise_effective": 0.0,
             "objectives": [
               0.0
             ],
-            "total_ticks": 4
+            "offset_effective": 0.0,
+            "total_ticks": 4,
+            "uptime_secs": 0.000681926
           }
         },
         {
@@ -249,11 +297,17 @@
                 1.0
               ]
             ],
+            "exogenous_effective": [
+              0.0
+            ],
             "node_id": "a",
+            "noise_effective": 0.0,
             "objectives": [
               0.6
             ],
-            "total_ticks": 5
+            "offset_effective": 0.0,
+            "total_ticks": 5,
+            "uptime_secs": 0.000770998
           },
           "truth_b": {
             "base_from": "linear",
@@ -272,11 +326,17 @@
                 0.5
               ]
             ],
+            "exogenous_effective": [
+              0.0
+            ],
             "node_id": "b",
+            "noise_effective": 0.0,
             "objectives": [
               0.441
             ],
-            "total_ticks": 5
+            "offset_effective": 0.0,
+            "total_ticks": 5,
+            "uptime_secs": 0.000824371
           }
         }
       ]
@@ -305,12 +365,19 @@
                 1.0
               ]
             ],
+            "exogenous_effective": [
+              0.0,
+              0.0
+            ],
             "node_id": "m",
+            "noise_effective": 0.0,
             "objectives": [
               0.3,
               0.7
             ],
-            "total_ticks": 1
+            "offset_effective": 0.0,
+            "total_ticks": 1,
+            "uptime_secs": 0.00002046
           }
         },
         {
@@ -334,12 +401,19 @@
                 1.0
               ]
             ],
+            "exogenous_effective": [
+              0.0,
+              0.0
+            ],
             "node_id": "m",
+            "noise_effective": 0.0,
             "objectives": [
               0.3,
               0.7
             ],
-            "total_ticks": 2
+            "offset_effective": 0.0,
+            "total_ticks": 2,
+            "uptime_secs": 0.000057842
           }
         },
         {
@@ -363,12 +437,19 @@
                 1.5
               ]
             ],
+            "exogenous_effective": [
+              0.0,
+              0.0
+            ],
             "node_id": "m",
+            "noise_effective": 0.0,
             "objectives": [
               0.375,
               1.0499999999999998
             ],
-            "total_ticks": 3
+            "offset_effective": 0.0,
+            "total_ticks": 3,
+            "uptime_secs": 0.000091968
           }
         },
         {
@@ -392,12 +473,19 @@
                 2.0
               ]
             ],
+            "exogenous_effective": [
+              0.0,
+              0.0
+            ],
             "node_id": "m",
+            "noise_effective": 0.0,
             "objectives": [
               0.44999999999999996,
               1.4
             ],
-            "total_ticks": 4
+            "offset_effective": 0.0,
+            "total_ticks": 4,
+            "uptime_secs": 0.000125282
           }
         },
         {
@@ -421,12 +509,19 @@
                 2.5
               ]
             ],
+            "exogenous_effective": [
+              0.0,
+              0.0
+            ],
             "node_id": "m",
+            "noise_effective": 0.0,
             "objectives": [
               0.525,
               1.75
             ],
-            "total_ticks": 5
+            "offset_effective": 0.0,
+            "total_ticks": 5,
+            "uptime_secs": 0.000158686
           }
         },
         {
@@ -450,12 +545,19 @@
                 3.0
               ]
             ],
+            "exogenous_effective": [
+              0.0,
+              0.0
+            ],
             "node_id": "m",
+            "noise_effective": 0.0,
             "objectives": [
               0.6,
               2.0999999999999996
             ],
-            "total_ticks": 6
+            "offset_effective": 0.0,
+            "total_ticks": 6,
+            "uptime_secs": 0.000189586
           }
         }
       ]
