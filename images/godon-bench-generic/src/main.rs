@@ -277,6 +277,95 @@ async fn drift_start(
 
 /// GET /{node_id}/drift/state — every running drift (door + declared)
 /// with its cue stamps in both clocks and its current offset.
+#[derive(Debug, Deserialize)]
+struct ExoStartRequest {
+    kind: String,
+    amplitude: f64,
+    #[serde(default)]
+    objective: usize,
+    #[serde(default)]
+    travel_secs: f64,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// POST /{node_id}/exogenous/start — cue an outside push NOW (the
+/// officer's "load spike, now"). kind: "step" (travel_secs = ramp
+/// window, then holds) or "sine" (travel_secs = period, bounded
+/// ±amplitude). Runs on wall time from the cue; composes additively
+/// with declared pushes and other cued pushes.
+async fn exogenous_start(
+    State(state): State<Arc<AppState>>,
+    Path(node_id): Path<String>,
+    Json(req): Json<ExoStartRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if req.kind != "step" && req.kind != "sine" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "kind must be \"step\" or \"sine\""
+            })),
+        );
+    }
+    if req.kind == "sine" && req.travel_secs <= 0.0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "a sine push needs travel_secs > 0 (its period) — windowless it reads as exactly 0"
+            })),
+        );
+    }
+    if !req.amplitude.is_finite() || req.amplitude == 0.0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "amplitude must be a finite non-zero number"
+            })),
+        );
+    }
+    if !req.travel_secs.is_finite() || req.travel_secs < 0.0 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "travel_secs must be a finite number >= 0"
+            })),
+        );
+    }
+    let mut sim = state.sim.lock().unwrap();
+    match sim.exogenous_start(
+        &node_id,
+        &req.kind,
+        req.amplitude,
+        req.objective,
+        req.travel_secs,
+        req.name,
+    ) {
+        Some(Ok(live)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "started",
+                "node": node_id,
+                "name": live.name,
+                "kind": live.kind,
+                "amplitude": live.amplitude,
+                "objective": live.objective,
+                "travel_secs": live.travel_secs,
+                "cued_uptime_secs": live.cued_uptime_secs
+            })),
+        ),
+        Some(Err(())) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "objective index out of range for this node"
+            })),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "unknown node" })),
+        ),
+    }
+}
+
 async fn drift_state(
     State(state): State<Arc<AppState>>,
     Path(node_id): Path<String>,
@@ -369,6 +458,7 @@ async fn main() {
         .route("/{node_id}/reset", post(reset))
         .route("/{node_id}/drift/start", post(drift_start))
         .route("/{node_id}/drift/state", get(drift_state))
+        .route("/{node_id}/exogenous/start", post(exogenous_start))
         .with_state(state);
 
     let port: u16 = std::env::var("PORT")

@@ -141,12 +141,20 @@ fn exogenous_at(cfg: &ExoConfig, uptime_secs: f64, total_ticks: u64) -> f64 {
     }
 }
 
-/// Per-objective sum of a node's outside pushes at one instant.
-fn exogenous_sum(nc: &NodeConfig, uptime_secs: f64, total_ticks: u64) -> Vec<f64> {
+/// Per-objective sum of a node's outside pushes at one instant — the
+/// declared list (config schedule, per-event clock) plus the door-cued
+/// list (wall time since each cue), composing additively.
+fn exogenous_sum(state: &NodeState, uptime_secs: f64, total_ticks: u64) -> Vec<f64> {
+    let nc = &state.config;
     let mut out = vec![0.0; nc.objectives];
     for exo in &nc.exogenous {
         if let Some(slot) = out.get_mut(exo.objective) {
             *slot += exogenous_at(exo, uptime_secs, total_ticks);
+        }
+    }
+    for live in &state.live_exogenous {
+        if let Some(slot) = out.get_mut(live.objective) {
+            *slot += live_exo_value(live, uptime_secs);
         }
     }
     out
@@ -197,8 +205,11 @@ pub struct DriftParamWhen {
 /// settled shape to the target over that many ticks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MorphConfig {
-    /// Cue tick (tick clock) — for clock = "wall" it doubles as the ORDER
-    /// slot among the node's morphs; the cue itself is `at_secs`.
+    /// Gates entry into the node's morph chain on EVERY clock (the
+    /// chain walks in at_tick order and stops at the first future
+    /// entry) and is the cue on the tick clock. On clock = "wall" leave
+    /// it at the default 0 unless a deliberate entry delay is wanted —
+    /// the wall cue itself is `at_secs`.
     #[serde(default)]
     pub at_tick: u64,
     /// Wall-clock cue in seconds of bench uptime. Used when clock = "wall".
@@ -210,18 +221,16 @@ pub struct MorphConfig {
     pub target_weights: Option<Vec<Vec<f64>>>,
     #[serde(default)]
     pub target_base: Option<String>,
-    /// Trajectory clock for this event: "tick" (default — travel advances
-    /// with global ticks, activity-paced) or "wall" (travel advances with
-    /// bench uptime, agent-independent). Only the TRAVEL changes clock:
-    /// the morph still enters the chain once ticks reach `at_tick` (keep
-    /// it 0 for wall events), and the cue instant is `at_secs`. Receipts
-    /// convert between clocks via the room's measured cadence (declared
-    /// term).
+    /// Trajectory clock for this event: "tick" (default — cue and travel
+    /// advance with global ticks, activity-paced) or "wall" (cue and
+    /// travel advance with bench uptime, agent-independent). One rule for
+    /// every event: cue and travel each run on the declared clock.
+    /// Receipts convert between clocks via the room's measured cadence
+    /// (declared term).
     #[serde(default)]
     pub clock: Option<String>,
-    /// Wall-clock travel window in seconds, when clock = "wall". Defaults
-    /// to 0 — an instant step at the cue, the same shape travel_ticks = 0
-    /// gives on the tick clock.
+    /// Wall-clock travel window in seconds. Required at boot when
+    /// clock = "wall" (declare 0.0 deliberately for an instant step).
     #[serde(default)]
     pub travel_secs: Option<f64>,
 }
@@ -259,9 +268,9 @@ pub struct EdgeConfig {
     /// if both are set).
     #[serde(default)]
     pub target_strength: Option<f64>,
-    /// Cue tick for the destination travel — tick clock only. When
-    /// clock = "wall" this field is ignored: the cue is `at_secs`
-    /// (default 0.0, travel starts at boot).
+    /// Cue tick for the destination travel (tick clock only). For
+    /// clock = "wall" the cue is `at_secs` — required at boot; this
+    /// field is not read on the wall clock.
     #[serde(default)]
     pub at_tick: Option<u64>,
     /// Wall-clock cue (seconds of uptime) when clock = "wall".
@@ -365,6 +374,46 @@ pub struct LiveDrift {
     pub cued_tick: u64,
 }
 
+/// A door-cued outside push, running on wall time from its cue —
+/// the officer's hand for exogenous forcing: "load spike, now".
+/// Bounded by declaration at cue time (amplitude; step settles, sine
+/// orbits ±amplitude).
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveExo {
+    pub name: Option<String>,
+    pub kind: String,
+    pub amplitude: f64,
+    pub objective: usize,
+    /// step: ramp window in seconds (0 = instant); sine: period.
+    pub travel_secs: f64,
+    pub cued_uptime_secs: f64,
+}
+
+/// One live push's value at an instant — wall time since its cue.
+fn live_exo_value(live: &LiveExo, now_secs: f64) -> f64 {
+    let elapsed = (now_secs - live.cued_uptime_secs).max(0.0);
+    if elapsed <= 0.0 {
+        return 0.0;
+    }
+    match live.kind.as_str() {
+        "sine" => {
+            let period = if live.travel_secs > 0.0 {
+                live.travel_secs
+            } else {
+                1.0
+            };
+            live.amplitude * (2.0 * std::f64::consts::PI * elapsed / period).sin()
+        }
+        _ => {
+            if live.travel_secs <= 0.0 {
+                live.amplitude
+            } else {
+                live.amplitude * (elapsed / live.travel_secs).min(1.0)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeState {
     #[allow(dead_code)]
@@ -378,6 +427,9 @@ pub struct NodeState {
     pub drifts_cued: Vec<bool>,
     /// Drifts currently running (declared + door), composing additively.
     pub live_drifts: Vec<LiveDrift>,
+    /// Outside pushes currently running (door-cued), composing additively
+    /// with the declared list.
+    pub live_exogenous: Vec<LiveExo>,
 }
 
 impl NodeState {
@@ -393,6 +445,7 @@ impl NodeState {
             tick: 0,
             drifts_cued,
             live_drifts: Vec::new(),
+            live_exogenous: Vec::new(),
         }
     }
 
@@ -730,6 +783,125 @@ impl Simulator {
                 "edge {}->{} declares target_strength AND drift_rate — one edge change form per edge",
                 e.from, e.to
             );
+            // No silent defaults on the wall clock: a wall-clocked event
+            // must DECLARE its wall cue and travel (cross-review 2026-11-19).
+            if e.target_strength.is_some() && e.clock.as_deref() == Some("wall") {
+                assert!(
+                    e.at_secs.is_some(),
+                    "edge {}->{}: clock=\"wall\" requires at_secs (at_tick is not read on the wall clock)",
+                    e.from, e.to
+                );
+                assert!(
+                    e.travel_secs.is_some(),
+                    "edge {}->{}: clock=\"wall\" requires travel_secs (declare 0.0 for an instant step)",
+                    e.from, e.to
+                );
+            }
+        }
+        // The vocabulary is closed: unknown kinds and clock names fail
+        // loud — a typo must not silently read as step/tick. And a sine
+        // needs a window: windowless on the tick clock it samples at
+        // whole multiples of a 1-tick period and reads as exactly 0
+        // forever (cross-review 2026-11-19).
+        for nc in &config.nodes {
+            for exo in &nc.exogenous {
+                assert!(
+                    matches!(exo.kind.as_str(), "step" | "sine"),
+                    "node '{}': exogenous kind must be \"step\" or \"sine\", got {:?}",
+                    nc.id,
+                    exo.kind
+                );
+                if let Some(c) = &exo.clock {
+                    assert!(
+                        matches!(c.as_str(), "tick" | "wall"),
+                        "node '{}': exogenous clock must be \"tick\" or \"wall\", got {:?}",
+                        nc.id,
+                        c
+                    );
+                }
+                if exo.kind == "sine" {
+                    let windowless = if exo.clock.as_deref() == Some("wall") {
+                        exo.travel_secs.is_none_or(|t| t <= 0.0)
+                    } else {
+                        exo.travel_ticks == 0
+                    };
+                    assert!(
+                        !windowless,
+                        "node '{}': a sine push needs a window (travel_secs > 0 on wall, travel_ticks > 0 on tick) — windowless it reads as exactly 0",
+                        nc.id
+                    );
+                }
+            }
+            for m in &nc.morphs {
+                if let Some(c) = &m.clock {
+                    assert!(
+                        matches!(c.as_str(), "tick" | "wall"),
+                        "node '{}': morph clock must be \"tick\" or \"wall\", got {:?}",
+                        nc.id,
+                        c
+                    );
+                }
+            }
+        }
+        for e in &config.edges {
+            if let Some(c) = &e.clock {
+                assert!(
+                    matches!(c.as_str(), "tick" | "wall"),
+                    "edge {}->{}: clock must be \"tick\" or \"wall\", got {:?}",
+                    e.from,
+                    e.to,
+                    c
+                );
+            }
+        }
+        if let Some(c) = &config.noise.sigma_clock {
+            assert!(
+                matches!(c.as_str(), "tick" | "wall"),
+                "sigma clock must be \"tick\" or \"wall\", got {:?}",
+                c
+            );
+        }
+        for nc in &config.nodes {
+            for m in &nc.morphs {
+                if m.clock.as_deref() == Some("wall") {
+                    assert!(
+                        m.at_secs.is_some(),
+                        "node '{}': wall-clocked morph requires at_secs",
+                        nc.id
+                    );
+                    assert!(
+                        m.travel_secs.is_some(),
+                        "node '{}': wall-clocked morph requires travel_secs (declare 0.0 for an instant step)",
+                        nc.id
+                    );
+                }
+            }
+            for exo in &nc.exogenous {
+                if exo.clock.as_deref() == Some("wall") {
+                    assert!(
+                        exo.at_secs.is_some(),
+                        "node '{}': wall-clocked exogenous push requires at_secs",
+                        nc.id
+                    );
+                    assert!(
+                        exo.travel_secs.is_some(),
+                        "node '{}': wall-clocked exogenous push requires travel_secs (the sine period or step ramp)",
+                        nc.id
+                    );
+                }
+            }
+        }
+        if config.noise.sigma_clock.as_deref() == Some("wall")
+            && config.noise.target_gaussian_sigma.is_some()
+        {
+            assert!(
+                config.noise.sigma_at_secs.is_some(),
+                "wall-clocked sigma destination requires sigma_at_secs"
+            );
+            assert!(
+                config.noise.sigma_travel_secs.is_some(),
+                "wall-clocked sigma destination requires sigma_travel_secs"
+            );
         }
 
         // Fail loud at boot: a push declares its kind and clock, and a
@@ -837,6 +1009,43 @@ impl Simulator {
     /// The manual door (v1): cue a live drift on this node NOW.
     /// One door-origin drift per node — the second knock is the
     /// caller's 409, not a second drift.
+    /// Cue an outside push by hand — the officer's "load spike, now".
+    /// Runs on wall time from the cue; bounded by the declared amplitude.
+    /// Multiple pushes compose additively.
+    pub fn exogenous_start(
+        &mut self,
+        node_id: &str,
+        kind: &str,
+        amplitude: f64,
+        objective: usize,
+        travel_secs: f64,
+        name: Option<String>,
+    ) -> Option<Result<LiveExo, ()>> {
+        let now = self.uptime_secs();
+        let node = self.nodes.get_mut(node_id)?;
+        if objective >= node.config.objectives {
+            return Some(Err(()));
+        }
+        if kind == "sine" && travel_secs <= 0.0 {
+            // windowless sine reads as exactly 0 — refuse at the door
+            return Some(Err(()));
+        }
+        let live = LiveExo {
+            name,
+            kind: kind.to_string(),
+            amplitude,
+            objective,
+            travel_secs,
+            cued_uptime_secs: now,
+        };
+        info!(
+            "exogenous cued by door: node {} kind {} amplitude {} objective {} travel {:.3}s",
+            node.id, live.kind, live.amplitude, live.objective, live.travel_secs
+        );
+        node.live_exogenous.push(live.clone());
+        Some(Ok(live))
+    }
+
     pub fn drift_start(
         &mut self,
         node_id: &str,
@@ -979,10 +1188,16 @@ impl Simulator {
         let mut coupled: HashMap<String, Vec<f64>> = HashMap::new();
         for (id, n) in &self.nodes {
             let e = &eff[id];
-            coupled.insert(
-                id.clone(),
-                n.compute_base_eff(&e.weights, &e.base_a, Some(&e.base_b), e.progress),
-            );
+            // Seed with base + pushes: the initial map is what the first
+            // processed neighbors read as `prev`, so the pushes must ride
+            // it from the start (the update re-adds them — no double
+            // count, each node's value is rebuilt from its own parts).
+            let mut seed = n.compute_base_eff(&e.weights, &e.base_a, Some(&e.base_b), e.progress);
+            let exo = exogenous_sum(n, self.uptime_secs(), self.total_ticks);
+            for (slot, push) in seed.iter_mut().zip(exo.iter()) {
+                *slot += push;
+            }
+            coupled.insert(id.clone(), seed);
         }
 
         let max_iter = self.nodes.len().saturating_sub(1).max(1);
@@ -1031,7 +1246,7 @@ impl Simulator {
                 // Outside pushes enter here — inside the update, so they
                 // survive propagation and couple downstream like any real
                 // forcing on the node would.
-                let exo = exogenous_sum(&node.config, self.uptime_secs(), self.total_ticks);
+                let exo = exogenous_sum(node, self.uptime_secs(), self.total_ticks);
                 for (slot, push) in updated.iter_mut().zip(exo.iter()) {
                     *slot += push;
                 }
@@ -1142,7 +1357,7 @@ impl Simulator {
                 self.uptime_secs(),
                 self.total_ticks,
             ),
-            exogenous_effective: exogenous_sum(&node.config, self.uptime_secs(), self.total_ticks),
+            exogenous_effective: exogenous_sum(node, self.uptime_secs(), self.total_ticks),
             edges,
         })
     }
@@ -1899,7 +2114,7 @@ mod tests {
             "edges": [
                 {"from": "a", "from_channel": 0, "to": "b", "to_channel": 0,
                  "strength": 0.3, "target_strength": target,
-                 "at_tick": 10, "travel_ticks": travel_ticks,
+                 "at_tick": 10, "at_secs": 0.0, "travel_ticks": travel_ticks,
                  "travel_secs": travel_secs, "clock": clock}
             ],
             "noise": {"gaussian_sigma": 0.0}
@@ -2120,6 +2335,206 @@ mod tests {
             t.objectives[0],
             0.5 + 0.25 + t.offset_effective
         );
+    }
+
+    #[test]
+    fn destination_edge_flows_through_the_cascade() {
+        let cfg: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]]},
+                {"id": "b", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[0.0]]}
+            ],
+            "edges": [{"from": "a", "from_channel": 0, "to": "b", "to_channel": 0,
+                        "strength": 0.3, "target_strength": 0.9,
+                        "at_tick": 10, "travel_ticks": 10}],
+            "noise": {"gaussian_sigma": 0.0}
+        }))
+        .unwrap();
+        let mut sim = Simulator::from_config(cfg);
+        // a parked at full: b reads the coupling only
+        sim.apply("a", &[100.0]);
+        let before = sim.truth("b").unwrap().objectives[0];
+        assert!(
+            (before - 0.3).abs() < 1e-9,
+            "declared coupling, got {before}"
+        );
+        // past the travel window: b reads the settled destination
+        pump(&mut sim, &[100.0], 40);
+        let after = sim.truth("b").unwrap().objectives[0];
+        assert!((after - 0.9).abs() < 1e-9, "settled coupling, got {after}");
+    }
+
+    #[test]
+    fn push_propagates_downstream_through_coupling() {
+        let cfg: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]],
+                 "exogenous": [{"kind": "step", "amplitude": 0.25,
+                                 "at_tick": 0, "travel_ticks": 5}]},
+                {"id": "b", "params": 1, "objectives": 1, "base": "linear",
+                 "param_lower": 0.0, "param_upper": 100.0, "weights": [[0.0]]}
+            ],
+            "edges": [{"from": "a", "from_channel": 0, "to": "b", "to_channel": 0,
+                        "strength": 0.5}],
+            "noise": {"gaussian_sigma": 0.0}
+        }))
+        .unwrap();
+        let mut sim = Simulator::from_config(cfg);
+        sim.apply("a", &[50.0]); // a's base 0.5, push ramps toward 0.25
+        pump(&mut sim, &[50.0], 10); // push settled: a reads 0.75
+        let ta = sim.truth("a").unwrap().objectives[0];
+        assert!((ta - 0.75).abs() < 1e-9, "a carries base+push, got {ta}");
+        // the push rides the coupling: b = 0.5 x 0.75
+        let tb = sim.truth("b").unwrap().objectives[0];
+        assert!(
+            (tb - 0.375).abs() < 1e-9,
+            "downstream sees the push, got {tb}"
+        );
+    }
+
+    #[test]
+    fn exogenous_door_cues_a_push_mid_run() {
+        let cfg: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [{"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                        "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]]}],
+            "noise": {"gaussian_sigma": 0.0}
+        }))
+        .unwrap();
+        let mut sim = Simulator::from_config(cfg);
+        sim.apply("a", &[50.0]);
+        let t0 = sim.truth("a").unwrap();
+        assert!(
+            t0.exogenous_effective[0].abs() < 1e-12,
+            "no push before the cue"
+        );
+        // the officer's hand: instant step of 0.25
+        sim.exogenous_start("a", "step", 0.25, 0, 0.0, None)
+            .unwrap()
+            .unwrap();
+        sim.apply("a", &[50.0]);
+        let t1 = sim.truth("a").unwrap();
+        assert!(
+            (t1.exogenous_effective[0] - 0.25).abs() < 1e-12,
+            "door push in force, got {}",
+            t1.exogenous_effective[0]
+        );
+        assert!(
+            (t1.objectives[0] - (0.5 + 0.25)).abs() < 1e-9,
+            "and in the world, got {}",
+            t1.objectives[0]
+        );
+        // invalid objective refused
+        assert!(sim
+            .exogenous_start("a", "step", 0.1, 9, 0.0, None)
+            .unwrap()
+            .is_err());
+    }
+
+    #[test]
+    fn exogenous_door_ramp_travels_on_wall_time() {
+        let cfg: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [{"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                        "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]]}],
+            "noise": {"gaussian_sigma": 0.0}
+        }))
+        .unwrap();
+        let mut sim = Simulator::from_config(cfg);
+        sim.apply("a", &[50.0]);
+        // ramped push: 0.3 over 10 wall seconds
+        sim.exogenous_start("a", "step", 0.3, 0, 10.0, None)
+            .unwrap()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        sim.apply("a", &[50.0]);
+        let t = sim.truth("a").unwrap();
+        assert!(
+            t.exogenous_effective[0] > 0.0 && t.exogenous_effective[0] < 0.3,
+            "mid-ramp, got {}",
+            t.exogenous_effective[0]
+        );
+    }
+
+    #[test]
+    fn wall_clock_without_declared_wall_fields_fails_loud_at_boot() {
+        // edge: clock=wall, at_tick set, at_secs MISSING — the silent
+        // start-at-zero trap the cross-review caught (2026-11-19)
+        let cfg_json = serde_json::json!({
+            "nodes": [{"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                        "weights": [[1.0]]}],
+            "edges": [{"from": "a", "from_channel": 0, "to": "a", "to_channel": 0,
+                        "strength": 0.3, "target_strength": 0.9,
+                        "at_tick": 10, "travel_ticks": 20, "clock": "wall"}]
+        });
+        let result = std::panic::catch_unwind(|| {
+            let _ =
+                Simulator::from_config(serde_json::from_value::<BenchConfig>(cfg_json).unwrap());
+        });
+        assert!(
+            result.is_err(),
+            "wall clock without at_secs must fail at boot"
+        );
+    }
+
+    #[test]
+    fn closed_vocabulary_and_windowless_sine_fail_loud_at_boot() {
+        fn node_with(extra: serde_json::Value) -> serde_json::Value {
+            let mut n = serde_json::json!({
+                "id": "a", "params": 1, "objectives": 1, "base": "linear",
+                "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]]
+            });
+            let obj = n.as_object_mut().unwrap();
+            for (k, v) in extra.as_object().unwrap() {
+                obj.insert(k.clone(), v.clone());
+            }
+            n
+        }
+        fn boot_fails(node: serde_json::Value) -> bool {
+            let cfg_json = serde_json::json!({
+                "nodes": [node],
+                "noise": {"gaussian_sigma": 0.0}
+            });
+            std::panic::catch_unwind(|| {
+                let _ = Simulator::from_config(
+                    serde_json::from_value::<BenchConfig>(cfg_json).unwrap(),
+                );
+            })
+            .is_err()
+        }
+        // unknown kind must not silently read as a step
+        assert!(boot_fails(node_with(serde_json::json!({
+            "exogenous": [{"kind": "sep", "amplitude": 0.2}]
+        }))));
+        // windowless sine on the tick clock reads as exactly 0 — refuse
+        assert!(boot_fails(node_with(serde_json::json!({
+            "exogenous": [{"kind": "sine", "amplitude": 0.2}]
+        }))));
+        // clock typo must not silently behave as tick
+        assert!(boot_fails(node_with(serde_json::json!({
+            "morphs": [{"at_tick": 0, "clock": "wal", "target_weights": [[1.0]]}]
+        }))));
+    }
+
+    #[test]
+    fn door_refuses_windowless_sine() {
+        let cfg: BenchConfig = serde_json::from_value(serde_json::json!({
+            "nodes": [{"id": "a", "params": 1, "objectives": 1, "base": "linear",
+                        "param_lower": 0.0, "param_upper": 100.0, "weights": [[1.0]]}],
+            "noise": {"gaussian_sigma": 0.0}
+        }))
+        .unwrap();
+        let mut sim = Simulator::from_config(cfg);
+        assert!(sim
+            .exogenous_start("a", "sine", 0.3, 0, 0.0, None)
+            .unwrap()
+            .is_err());
+        // and a proper sine with a period is accepted
+        assert!(sim
+            .exogenous_start("a", "sine", 0.3, 0, 4.0, None)
+            .unwrap()
+            .is_ok());
     }
 
     // ── the golden trajectory: one committed run, replayed within tolerance ──
