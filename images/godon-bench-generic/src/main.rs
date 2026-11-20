@@ -187,11 +187,15 @@ async fn truth(
         Some(t) => Json(serde_json::json!({
             "node_id": t.node_id,
             "total_ticks": t.total_ticks,
+            "uptime_secs": t.uptime_secs,
             "objectives": t.objectives,
             "effective_weights": t.effective_weights,
             "base_from": t.base_from,
             "base_to": t.base_to,
             "base_progress": t.base_progress,
+            "offset_effective": t.offset_effective,
+            "noise_effective": t.noise_effective,
+            "exogenous_effective": t.exogenous_effective,
             "edges": t.edges.iter().map(|e| serde_json::json!({
                 "from": e.from,
                 "to": e.to,
