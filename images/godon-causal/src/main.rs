@@ -3121,7 +3121,14 @@ async fn probe_result(
                 .and_then(|m| m.get(ch))
                 .cloned()
                 .unwrap_or_default();
-            if push_obs.is_empty() && pause_obs.is_empty() {
+            // A cross-edge delta needs BOTH windows, exactly like the self
+            // delta below: median_f64 of an empty window is 0.0, so a
+            // one-windowed probe records the receiver's ABSOLUTE reading
+            // (or its negation) as a "shift" --- the ±7 garbage on live
+            // cross edges (P5 transfer room, root-caused 2026-11-23;
+            // regression of the receiver-keyed-curves rewrite). Skip
+            // instead: a probe without both windows is not a measurement.
+            if !windows_complete(&push_obs, &pause_obs) {
                 continue;
             }
             let push_median = median_f64(&push_obs);
@@ -4015,6 +4022,15 @@ fn median_f64(v: &[f64]) -> f64 {
     }
 }
 
+/// A delta between two windows is a measurement only when BOTH windows
+/// hold samples. One empty window would subtract median_f64([]) == 0.0
+/// and record an absolute reading as a shift (the live cross-edge
+/// garbage of the P5 transfer room). Every windowed delta -- self and
+/// cross -- goes through this gate.
+fn windows_complete(push: &[f64], pause: &[f64]) -> bool {
+    !push.is_empty() && !pause.is_empty()
+}
+
 /// Parse an ISO 8601 timestamp string to epoch seconds.
 /// Handles both naive (no timezone) and timezone-aware ISO strings.
 /// Naive timestamps are assumed UTC.
@@ -4220,6 +4236,29 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The P5 transfer-room regression (root-caused 2026-11-23): a
+    /// cross-edge probe with rows in only ONE half-window recorded the
+    /// receiver's absolute reading (or its negation) as a "shift",
+    /// because median_f64([]) == 0.0. A windowed delta is a measurement
+    /// only when both windows hold samples -- the self path always
+    /// demanded it; the cross path must too.
+    #[test]
+    fn test_windows_complete_gates_one_windowed_deltas() {
+        assert!(
+            !windows_complete(&[], &[0.30, 0.31]),
+            "pause-only is not a delta"
+        );
+        assert!(
+            !windows_complete(&[7.1, 7.2], &[]),
+            "push-only is not a delta"
+        );
+        assert!(!windows_complete(&[], &[]), "nothing is not a delta");
+        assert!(
+            windows_complete(&[7.1, 7.2], &[0.30, 0.31]),
+            "both windows is a delta"
+        );
+    }
 
     // ─── GET /curves ──────────────────────────────────────────────
 
