@@ -2996,6 +2996,62 @@ fn delta_answer(d: f64) -> (serde_json::Value, &'static str) {
     }
 }
 
+/// Which cut split a probe's window into its push and pause piles.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CutKind {
+    /// The sender's own ledger named the switch: its first pause trial
+    /// after its last push trial, both created inside the window.
+    Ledger,
+    /// No such row — the window's halfway point stood in. A guess:
+    /// right only while the two phases took equal time (one slow
+    /// trial, a late write, and it lands inside the pause; both piles
+    /// read "rest", the shift is a confident 0 — P5's zeros).
+    Midpoint,
+}
+
+impl CutKind {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            CutKind::Ledger => "ledger",
+            CutKind::Midpoint => "midpoint",
+        }
+    }
+}
+
+/// The cut between a probe's push window and its pause window. The
+/// walk sends only the window's ends; the switch itself is data — the
+/// sender creates a trial row at every decision, kind push or pause,
+/// so its first pause row after its last push row IS the moment the
+/// dial went back to rest. That row is used when it leaves room on
+/// both sides; otherwise the midpoint, and the answer names which.
+pub(crate) fn resolve_cut(
+    push_start: f64,
+    pause_end: f64,
+    ledger: Option<(f64, f64)>,
+) -> (f64, CutKind) {
+    let midpoint = (push_start + pause_end) / 2.0;
+    match ledger {
+        Some((_, first_pause))
+            if first_pause.is_finite() && first_pause > push_start && first_pause < pause_end =>
+        {
+            (first_pause, CutKind::Ledger)
+        }
+        _ => (midpoint, CutKind::Midpoint),
+    }
+}
+
+/// Where a cut sits in its window: 0 = at push_start, 1 = at
+/// pause_end, 0.5 = the old guess. Rides the answer so a diary can
+/// show how far the real switch was from the halfway point.
+pub(crate) fn cut_fraction(push_start: f64, pause_end: f64, cut: f64) -> f64 {
+    let span = pause_end - push_start;
+    if span.is_finite() && span > 0.0 {
+        (cut - push_start) / span
+    } else {
+        0.5
+    }
+}
+
 async fn probe_result(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ProbeResultRequest>,
@@ -3018,17 +3074,44 @@ async fn probe_result(
         )
     })?;
 
-    // Split the [push_start, pause_end] window at its midpoint: the first half
-    // covers the push (excitation) phase, the second half the pause (settling)
-    // phase. We compare the median receiver objective per window.
-    let midpoint = (push_start + pause_end) / 2.0;
+    // The cut between the push window and the pause window. The walk
+    // sends only the ends; the switch is the sender's own ledger row
+    // (its first pause trial after its last push trial). Exact when
+    // the ledger holds it; the midpoint otherwise, and the answer says
+    // which — a halfway cut is right only while both phases took equal
+    // time, and a wrong cut turns a live edge into a confident 0.
+    let ledger_cut = match state
+        .reader
+        .read_probe_cut(&req.sender_id, push_start, pause_end)
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!(
+                "characterize: sender {} ledger unreadable ({}): midpoint cut",
+                req.sender_id,
+                e
+            );
+            None
+        }
+    };
+    let (cut, cut_kind) = resolve_cut(push_start, pause_end, ledger_cut);
+    let cut_fraction = cut_fraction(push_start, pause_end, cut);
+    info!(
+        "characterize: cut={} fraction={:.3} sender={} param={} level={}",
+        cut_kind.name(),
+        cut_fraction,
+        req.sender_id,
+        req.probe_param,
+        req.probe_level
+    );
 
     // Per-receiver, per-channel series for each window. Every holding
     // receiver's rows are in the window — each listener is characterized
     // separately (its own medians, its own curve).
     let push_by_recv = state
         .reader
-        .read_receiver_observations(&req.group_id, &req.sender_id, push_start, midpoint)
+        .read_receiver_observations(&req.group_id, &req.sender_id, push_start, cut)
         .await
         .map_err(|e| {
             (
@@ -3041,7 +3124,7 @@ async fn probe_result(
 
     let pause_by_recv = state
         .reader
-        .read_receiver_observations(&req.group_id, &req.sender_id, midpoint, pause_end)
+        .read_receiver_observations(&req.group_id, &req.sender_id, cut, pause_end)
         .await
         .map_err(|e| {
             (
@@ -3285,12 +3368,12 @@ async fn probe_result(
     // from detection trials, not the curve registry.
     let self_push = state
         .reader
-        .read_self_observations(&req.group_id, &req.sender_id, push_start, midpoint)
+        .read_self_observations(&req.group_id, &req.sender_id, push_start, cut)
         .await
         .unwrap_or_default();
     let self_pause = state
         .reader
-        .read_self_observations(&req.group_id, &req.sender_id, midpoint, pause_end)
+        .read_self_observations(&req.group_id, &req.sender_id, cut, pause_end)
         .await
         .unwrap_or_default();
 
@@ -3650,6 +3733,11 @@ async fn probe_result(
         "delta": delta_json,
         "delta_state": delta_state,
         "converged": converged,
+        "cut": {
+            "kind": cut_kind.name(),
+            "at": cut,
+            "fraction": cut_fraction,
+        },
         "gaps": gaps,
         "unresolved_gaps": unresolved,
         "channels": channels_json,
@@ -4756,6 +4844,50 @@ mod tests {
         }"#;
         let result: Result<ProbeResultRequest, _> = serde_json::from_str(json);
         assert!(result.is_err(), "float timestamps must be rejected");
+    }
+
+    // ─── The probe's cut: ledger row first, midpoint as the named guess ──
+
+    #[test]
+    fn test_resolve_cut_ledger_names_the_switch() {
+        // 6 push trials then 6 pause trials of unequal length: the real
+        // switch sits at 6/11 of the window, a hair past the halfway
+        // point. The ledger row is used as-is.
+        let (push_start, pause_end) = (1000.0, 1110.0);
+        let first_pause = 1060.0;
+        let (cut, kind) = resolve_cut(push_start, pause_end, Some((1050.0, first_pause)));
+        assert_eq!(kind, CutKind::Ledger);
+        assert_eq!(cut, first_pause);
+        let f = cut_fraction(push_start, pause_end, cut);
+        assert!((f - 6.0 / 11.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_resolve_cut_no_ledger_is_the_midpoint_and_says_so() {
+        let (push_start, pause_end) = (1000.0, 1110.0);
+        let (cut, kind) = resolve_cut(push_start, pause_end, None);
+        assert_eq!(kind, CutKind::Midpoint);
+        assert_eq!(cut, (push_start + pause_end) / 2.0);
+        assert_eq!(cut_fraction(push_start, pause_end, cut), 0.5);
+    }
+
+    #[test]
+    fn test_resolve_cut_ledger_row_outside_the_window_is_not_trusted() {
+        // A row at or beyond either end leaves one pile empty — the
+        // old exactness (both windows must hold samples) is kept by
+        // refusing the row rather than cutting a window to nothing.
+        let (push_start, pause_end) = (1000.0, 1110.0);
+        for bad in [999.0, 1000.0, 1110.0, 1111.0, f64::NAN] {
+            let (cut, kind) = resolve_cut(push_start, pause_end, Some((998.0, bad)));
+            assert_eq!(kind, CutKind::Midpoint, "pause row at {bad}");
+            assert_eq!(cut, 1055.0, "pause row at {bad}");
+        }
+    }
+
+    #[test]
+    fn test_cut_fraction_degenerate_window_is_half() {
+        assert_eq!(cut_fraction(1000.0, 1000.0, 1000.0), 0.5);
+        assert_eq!(cut_fraction(1000.0, 999.0, 999.5), 0.5);
     }
 
     // ─── JSON response serialization (the named-null contract) ─────
