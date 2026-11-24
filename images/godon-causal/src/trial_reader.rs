@@ -364,6 +364,52 @@ impl TrialReader {
         let trials = self.read_trials(systemtender_id).await?;
         Ok(ProbeTrials::from_trials(systemtender_id, &trials))
     }
+
+    /// The probe's real transition, read from the sender's own ledger:
+    /// the last `push` trial created inside [start_epoch, end_epoch]
+    /// and the first `pause` trial created after it (and before the
+    /// window ends). The walk creates a trial row at the decision, so
+    /// the pause row's creation IS the moment the dial went back to
+    /// rest — data, not a guess. `None` when the ledger holds no such
+    /// pair in the window (no walk trials, ledger unreachable is an
+    /// Err) — the caller then falls back to the midpoint and says so.
+    pub async fn read_probe_cut(
+        &self,
+        systemtender_id: &str,
+        start_epoch: f64,
+        end_epoch: f64,
+    ) -> Result<Option<(f64, f64)>, Error> {
+        let db = Self::systemtender_db_name(systemtender_id);
+        let client = self.connect(&db).await?;
+        let last_push = client
+            .query(
+                "SELECT EXTRACT(EPOCH FROM created_ts) FROM trials \
+                 WHERE kind = 'push' \
+                 AND EXTRACT(EPOCH FROM created_ts) >= $1::double precision \
+                 AND EXTRACT(EPOCH FROM created_ts) <= $2::double precision \
+                 ORDER BY created_ts DESC LIMIT 1",
+                &[&start_epoch, &end_epoch],
+            )
+            .await?
+            .first()
+            .map(|r| r.get::<_, f64>(0));
+        let Some(last_push) = last_push else {
+            return Ok(None);
+        };
+        let first_pause = client
+            .query(
+                "SELECT EXTRACT(EPOCH FROM created_ts) FROM trials \
+                 WHERE kind = 'pause' \
+                 AND EXTRACT(EPOCH FROM created_ts) > $1::double precision \
+                 AND EXTRACT(EPOCH FROM created_ts) <= $2::double precision \
+                 ORDER BY created_ts ASC LIMIT 1",
+                &[&last_push, &end_epoch],
+            )
+            .await?
+            .first()
+            .map(|r| r.get::<_, f64>(0));
+        Ok(first_pause.map(|p| (last_push, p)))
+    }
 }
 
 // ─── Classified Probe Trials ────────────────────────────────────────
