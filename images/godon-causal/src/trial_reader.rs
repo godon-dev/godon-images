@@ -365,6 +365,19 @@ impl TrialReader {
         Ok(ProbeTrials::from_trials(systemtender_id, &trials))
     }
 
+    /// Column 0 of the first row as an epoch, `None` when there is no
+    /// row. `try_get`, never `get`: a column that does not arrive as
+    /// float8 must be an Err the caller can degrade on (midpoint cut,
+    /// said in the answer) -- a `get` here panicked the handler and
+    /// the probe got no answer at all (flight 45398627127: EXTRACT
+    /// yields numeric unless cast, which the SELECT now does).
+    fn epoch_of_first(rows: &[tokio_postgres::Row]) -> Result<Option<f64>, Error> {
+        match rows.first() {
+            Some(r) => Ok(Some(r.try_get::<_, f64>(0)?)),
+            None => Ok(None),
+        }
+    }
+
     /// The probe's real transition, read from the sender's own ledger:
     /// the last `push` trial created inside [start_epoch, end_epoch]
     /// and the first `pause` trial created after it (and before the
@@ -383,31 +396,29 @@ impl TrialReader {
         let client = self.connect(&db).await?;
         let last_push = client
             .query(
-                "SELECT EXTRACT(EPOCH FROM created_ts) FROM trials \
+                "SELECT EXTRACT(EPOCH FROM created_ts)::double precision FROM trials \
                  WHERE kind = 'push' \
                  AND EXTRACT(EPOCH FROM created_ts) >= $1::double precision \
                  AND EXTRACT(EPOCH FROM created_ts) <= $2::double precision \
                  ORDER BY created_ts DESC LIMIT 1",
                 &[&start_epoch, &end_epoch],
             )
-            .await?
-            .first()
-            .map(|r| r.get::<_, f64>(0));
+            .await?;
+        let last_push = Self::epoch_of_first(&last_push)?;
         let Some(last_push) = last_push else {
             return Ok(None);
         };
         let first_pause = client
             .query(
-                "SELECT EXTRACT(EPOCH FROM created_ts) FROM trials \
+                "SELECT EXTRACT(EPOCH FROM created_ts)::double precision FROM trials \
                  WHERE kind = 'pause' \
                  AND EXTRACT(EPOCH FROM created_ts) > $1::double precision \
                  AND EXTRACT(EPOCH FROM created_ts) <= $2::double precision \
                  ORDER BY created_ts ASC LIMIT 1",
                 &[&last_push, &end_epoch],
             )
-            .await?
-            .first()
-            .map(|r| r.get::<_, f64>(0));
+            .await?;
+        let first_pause = Self::epoch_of_first(&first_pause)?;
         Ok(first_pause.map(|p| (last_push, p)))
     }
 }
