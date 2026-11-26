@@ -67,6 +67,7 @@ struct AppState {
     /// forever (found live, Sep 19: "archive DB unavailable at
     /// startup" skipped ensure_wish_tables entirely).
     tables_ensured: std::sync::atomic::AtomicBool,
+    walker_state: tokio::sync::OnceCell<()>,
     /// One walker per wish: the book's GET is the loop's step, and every
     /// reader of the page (controller poll, owner glance, watcher) used
     /// to drive a step of their own - concurrent walkers journaled the
@@ -150,6 +151,18 @@ async fn upsert_connectome_with_retry(
     Err(last.expect("retries > 0"))
 }
 
+/// Run `ensure` the first time this process asks, never again. A failed
+/// ensure leaves the cell empty, so the next read tries again; readers that
+/// waited on a failed run all see that one error. The cell lives with the
+/// process -- a database reset under a running process is not seen (the
+/// wish tables' `tables_ensured` makes the same trade).
+async fn ensure_once<E>(
+    cell: &tokio::sync::OnceCell<()>,
+    ensure: impl std::future::Future<Output = Result<(), E>>,
+) -> Result<(), E> {
+    cell.get_or_try_init(|| ensure).await.map(|_| ())
+}
+
 impl AppState {
     fn new(reader: TrialReader) -> Self {
         Self {
@@ -161,6 +174,7 @@ impl AppState {
             anchors: RwLock::new(HashMap::new()),
             wander: RwLock::new(HashMap::new()),
             tables_ensured: std::sync::atomic::AtomicBool::new(false),
+            walker_state: tokio::sync::OnceCell::new(),
             walks_in_flight: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
@@ -181,6 +195,22 @@ impl AppState {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(client)
+    }
+
+    /// `walker_state` ensured once per process on the first success -- the
+    /// wish tables' pattern. The walk view is read several times a second
+    /// while a room runs, and each read ran the CREATE TABLE IF NOT EXISTS
+    /// on a fresh archive connection: 5,166 catalog statements in ten
+    /// minutes in room 45828710352 (2026-11-26), none without a room.
+    pub async fn ensure_walker_state(
+        &self,
+        client: &tokio_postgres::Client,
+    ) -> Result<(), tokio_postgres::Error> {
+        ensure_once(
+            &self.walker_state,
+            curve_store::ensure_walker_state_table(client),
+        )
+        .await
     }
 
     /// Bank the outcome channel's neutral reading (memory now, the
@@ -4121,7 +4151,7 @@ async fn walk_view(
     let group = params.group.unwrap_or_else(|| "default".to_string());
     let mut refinement_level = 0u32;
     if let Ok(client) = state.reader.connect_archive().await {
-        match curve_store::ensure_walker_state_table(&client).await {
+        match state.ensure_walker_state(&client).await {
             Ok(()) => {
                 if let Ok(n) =
                     curve_store::load_refinement_level(&client, &group, &sender_id, &params.param)
@@ -4156,7 +4186,7 @@ async fn walk_view_refine(
 ) -> Json<serde_json::Value> {
     match state.reader.connect_archive().await {
         Ok(client) => {
-            if let Err(e) = curve_store::ensure_walker_state_table(&client).await {
+            if let Err(e) = state.ensure_walker_state(&client).await {
                 return Json(serde_json::json!({
                     "error": format!("walker_state setup failed: {}", e)
                 }));
@@ -5215,5 +5245,45 @@ mod refusal_log_tests {
             incomplete: 0,
         });
         assert!(l.contains("window=[1000.000,1014.000,1027.000]"), "{l}");
+    }
+}
+
+#[cfg(test)]
+mod ensure_once_tests {
+    //! The walk view's table is ensured once per process, not per read
+    //! (2026-11-26). Room 45828710352: the walkers read the view several
+    //! times a second and each read ran `CREATE TABLE IF NOT EXISTS` on a
+    //! fresh archive connection -- 5,166 catalog statements in ten minutes,
+    //! none without a room.
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    async fn counting(runs: &AtomicUsize, fail_first: bool) -> Result<(), String> {
+        let k = runs.fetch_add(1, Ordering::SeqCst) + 1;
+        if fail_first && k == 1 {
+            Err("archive unreachable".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_ensure_runs_once_however_often_the_view_is_read() {
+        let cell = tokio::sync::OnceCell::new();
+        let runs = AtomicUsize::new(0);
+        for _ in 0..3 {
+            ensure_once(&cell, counting(&runs, false)).await.unwrap();
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_ensure_is_tried_again_on_the_next_read() {
+        let cell = tokio::sync::OnceCell::new();
+        let runs = AtomicUsize::new(0);
+        assert!(ensure_once(&cell, counting(&runs, true)).await.is_err());
+        ensure_once(&cell, counting(&runs, true)).await.unwrap();
+        ensure_once(&cell, counting(&runs, false)).await.unwrap();
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
     }
 }
