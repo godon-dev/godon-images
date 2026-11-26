@@ -193,16 +193,17 @@ impl TrialReader {
     /// readings. The probe window holds rows from EVERY holding receiver;
     /// grouping by receiver keeps each listener's response its own — the
     /// shift of B must never mix into C's medians (multi-receiver mingling).
+    /// The caller supplies the archive connection — one per request since
+    /// 2026-11-25; the reads used to open one each.
     pub async fn read_receiver_observations(
         &self,
+        client: &tokio_postgres::Client,
         group_id: &str,
         sender_id: &str,
         start_epoch: f64,
         end_epoch: f64,
     ) -> Result<std::collections::HashMap<String, std::collections::HashMap<String, Vec<f64>>>, Error>
     {
-        let client = self.connect("archive_db").await?;
-
         // Receiver rows only: same group, not the sender's own self-reads,
         // and phase-tagged (receiver HOLD trials carry the observed lease
         // phase; the sender's pause trials write untagged rows with
@@ -259,13 +260,12 @@ impl TrialReader {
     /// sender at neutral).
     pub async fn read_self_observations(
         &self,
+        client: &tokio_postgres::Client,
         group_id: &str,
         sender_id: &str,
         start_epoch: f64,
         end_epoch: f64,
     ) -> Result<std::collections::HashMap<String, Vec<f64>>, Error> {
-        let client = self.connect("archive_db").await?;
-
         let rows = client
             .query(
                 "SELECT CAST(objective_values AS TEXT) FROM receiver_observations \
