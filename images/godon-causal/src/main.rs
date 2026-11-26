@@ -163,6 +163,123 @@ async fn ensure_once<E>(
     cell.get_or_try_init(|| ensure).await.map(|_| ())
 }
 
+/// What one probe round owes the archive: the writes the walker used to
+/// wait for before its answer (room 45828710352, 2026-11-26: six anchor
+/// upserts each on a fresh connection, then the points -- most of an
+/// answer's 2 s). Collected while the answer is computed; run on ONE
+/// connection after the answer is sent, in the order they used to run.
+/// Best-effort as before: a failure logs, and the live registry --
+/// updated before the answer -- stays the truth for `/curves`.
+#[derive(Default)]
+struct ProbeWrites {
+    group_id: String,
+    sender_id: String,
+    probe_param: String,
+    probe_level: f64,
+    convergence_fraction: f64,
+    ambience: Option<String>,
+    /// Set by the handler inside the ambience bank, never from the
+    /// request alone: a declared takeover with nothing banked adopts nothing.
+    adopt_orphans: bool,
+    /// (receiver, channel, neutral, bar)
+    anchors: Vec<(String, String, f64, f64)>,
+    /// (receiver, channel, shift, bar)
+    points: Vec<(String, String, f64, f64)>,
+    ambience_rows: Vec<ambience_store::AmbienceRow>,
+}
+
+impl ProbeWrites {
+    fn for_round(req: &ProbeResultRequest) -> Self {
+        Self {
+            group_id: req.group_id.clone(),
+            sender_id: req.sender_id.clone(),
+            probe_param: req.probe_param.clone(),
+            probe_level: req.probe_level,
+            convergence_fraction: req.convergence_fraction,
+            ..Default::default()
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.anchors.is_empty()
+            && self.points.is_empty()
+            && self.ambience_rows.is_empty()
+            && !self.adopt_orphans
+    }
+}
+
+/// Run a round's writes on one archive connection: anchors, points, ambience
+/// rows, then the declared adoption -- the order they ran in before, when
+/// the walker still waited for them. Called after the answer is sent.
+async fn run_probe_writes(state: Arc<AppState>, w: ProbeWrites) {
+    let client = match state.connect_archive_ensured().await {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!(
+                "probe writes NOT persisted — archive DB unreachable (sender={} param={}): {}",
+                w.sender_id,
+                w.probe_param,
+                e
+            );
+            return;
+        }
+    };
+    for (recv, ch, neutral, bar) in &w.anchors {
+        let _ =
+            wish_book::bank_outcome_anchor(&client, &w.group_id, recv, ch, *neutral, *bar).await;
+    }
+    for (recv, ch, shift, bar) in &w.points {
+        curve_store::persist_point(
+            &client,
+            &w.group_id,
+            &w.sender_id,
+            recv,
+            &w.probe_param,
+            ch,
+            w.probe_level,
+            *shift,
+            *bar,
+            w.convergence_fraction,
+            w.ambience.as_deref(),
+        )
+        .await;
+    }
+    for row in &w.ambience_rows {
+        let _ = ambience_store::insert_ambience_point(&client, row).await;
+    }
+    // Successor adoption, declared only (rung 8): orphaned local ground on
+    // this dial re-parents to the tender that banked its ground on it and
+    // declares the takeover -- the handler sets the flag inside that bank.
+    // DB flip and registry move together; adopted rows keep their provenance.
+    if w.adopt_orphans {
+        let entries = state.curves.read().await.snapshot();
+        let live: Vec<String> = entries
+            .iter()
+            .map(|e| e.sender_id.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let db_n = ambience_store::reparent_orphaned(
+            &client,
+            &w.group_id,
+            &w.sender_id,
+            &w.probe_param,
+            &live,
+        )
+        .await
+        .unwrap_or(0);
+        let mem_n = state
+            .ambiences
+            .reparent(&w.group_id, &w.sender_id, &w.probe_param, &live);
+        if db_n > 0 || mem_n > 0 {
+            info!(
+                "AMBIENCE ADOPT: {} orphaned row(s) on dial {} re-parented to tender {} (registry points moved: {})",
+                db_n, w.probe_param, w.sender_id, mem_n
+            );
+        }
+    }
+}
+
 impl AppState {
     fn new(reader: TrialReader) -> Self {
         Self {
@@ -3270,6 +3387,9 @@ async fn probe_result(
         }
     }
 
+    // What the round owes the archive, collected here and written after
+    // the answer is on its way -- see `ProbeWrites`.
+    let mut writes = ProbeWrites::for_round(&req);
     let mut incomplete = 0usize;
     let mut per_receiver: Vec<(String, ReceiverResult)> = Vec::new();
     for recv in &receivers {
@@ -3322,6 +3442,9 @@ async fn probe_result(
             let push_mad = mad(&push_obs);
             let pause_mad = mad(&pause_obs);
             let shift_bar = (push_mad * push_mad + pause_mad * pause_mad).sqrt();
+            writes
+                .points
+                .push((recv.clone(), ch.clone(), shift, shift_bar));
 
             // The pause window is the walked dial at neutral: its median
             // is what this outcome channel shows at rest — the anchor
@@ -3329,17 +3452,9 @@ async fn probe_result(
             // units. Banked on every probe round, freshest wins.
             if !pause_obs.is_empty() {
                 state.bank_anchor(recv, ch, pause_median, pause_mad).await;
-                if let Ok(client) = state.connect_archive_ensured().await {
-                    let _ = wish_book::bank_outcome_anchor(
-                        &client,
-                        &req.group_id,
-                        recv,
-                        ch,
-                        pause_median,
-                        pause_mad,
-                    )
-                    .await;
-                }
+                writes
+                    .anchors
+                    .push((recv.clone(), ch.clone(), pause_median, pause_mad));
             }
 
             let outcome = {
@@ -3393,6 +3508,11 @@ async fn probe_result(
     }
 
     if per_receiver.is_empty() {
+        // The anchors banked above reach the archive as before, off the
+        // walker's clock.
+        if !writes.is_empty() {
+            tokio::spawn(run_probe_writes(state.clone(), writes));
+        }
         log::warn!(
             "{}",
             refusal_line(
@@ -3515,20 +3635,17 @@ async fn probe_result(
 
             // The self channel's own anchor: the sender's reading at
             // neutral, from the same pause window.
+            let self_neutral = median_f64(&q);
+            let self_bar = mad(&q);
             state
-                .bank_anchor(&req.sender_id, &ch, median_f64(&q), mad(&q))
+                .bank_anchor(&req.sender_id, &ch, self_neutral, self_bar)
                 .await;
-            if let Ok(client) = state.connect_archive_ensured().await {
-                let _ = wish_book::bank_outcome_anchor(
-                    &client,
-                    &req.group_id,
-                    &req.sender_id,
-                    &ch,
-                    median_f64(&q),
-                    mad(&q),
-                )
-                .await;
-            }
+            writes
+                .anchors
+                .push((req.sender_id.clone(), ch.clone(), self_neutral, self_bar));
+            writes
+                .points
+                .push((req.sender_id.clone(), ch.clone(), shift, bar));
 
             state.curves.write().await.probe(
                 &req.sender_id,
@@ -3569,141 +3686,61 @@ async fn probe_result(
     }
     converged = fold_self_verdict(converged, &mut gaps, &self_out);
 
-    // Write-through persistence per receiver × channel (best-effort,
-    // failure only logs).
-    if let Ok(client) = state.reader.connect_archive().await {
-        for (recv, rr) in per_receiver.iter() {
-            for (name, c) in rr.channels.iter() {
-                curve_store::persist_point(
-                    &client,
-                    &req.group_id,
-                    &req.sender_id,
-                    recv,
-                    &req.probe_param,
-                    name,
-                    req.probe_level,
-                    c.shift,
-                    c.shift_bar,
-                    req.convergence_fraction,
-                    ambience.as_deref(),
-                )
-                .await;
-            }
-        }
+    // Write-through persistence per receiver × channel: collected in
+    // `writes` above and run after the answer (`run_probe_writes`),
+    // best-effort as before -- a failure logs.
+    writes.ambience = ambience.clone();
+    // Local ground (rung 5): the fenced walk's own-effect points,
+    // keyed by the resting spot — the ambience stamp finally READ.
+    // Baseline = the standing map with the walked dial pinned at
+    // the declared anchor (stable across the window's levels).
+    if let (Some(anchor), Some(standing)) = (req.ambience_anchor, ambience_value.as_ref()) {
+        let baseline =
+            ambiences::canonical_baseline(standing, &req.sender_id, &req.probe_param, anchor);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let epoch = req.ambience_epoch.unwrap_or(0);
         for (name, shift, bar) in self_channels.iter() {
-            curve_store::persist_point(
-                &client,
+            let point = ambiences::AmbiencePoint {
+                level: req.probe_level,
+                shift: *shift,
+                bar: *bar,
+                epoch,
+                written_at: now,
+            };
+            state.ambiences.record(
                 &req.group_id,
-                &req.sender_id,
                 &req.sender_id,
                 &req.probe_param,
                 name,
-                req.probe_level,
-                *shift,
-                *bar,
-                req.convergence_fraction,
-                ambience.as_deref(),
-            )
-            .await;
-        }
-        // Local ground (rung 5): the fenced walk's own-effect points,
-        // keyed by the resting spot — the ambience stamp finally READ.
-        // Baseline = the standing map with the walked dial pinned at
-        // the declared anchor (stable across the window's levels).
-        if let (Some(anchor), Some(standing)) = (req.ambience_anchor, ambience_value.as_ref()) {
-            let baseline =
-                ambiences::canonical_baseline(standing, &req.sender_id, &req.probe_param, anchor);
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs_f64())
-                .unwrap_or(0.0);
-            let epoch = req.ambience_epoch.unwrap_or(0);
-            for (name, shift, bar) in self_channels.iter() {
-                let point = ambiences::AmbiencePoint {
-                    level: req.probe_level,
-                    shift: *shift,
-                    bar: *bar,
-                    epoch,
-                    written_at: now,
-                };
-                state.ambiences.record(
-                    &req.group_id,
-                    &req.sender_id,
-                    &req.probe_param,
-                    name,
-                    &baseline,
-                    anchor,
-                    point,
-                );
-                let _ = ambience_store::insert_ambience_point(
-                    &client,
-                    &ambience_store::AmbienceRow {
-                        group_id: req.group_id.clone(),
-                        tender_id: req.sender_id.clone(),
-                        ambience_param: req.probe_param.clone(),
-                        channel: name.clone(),
-                        baseline: baseline.clone(),
-                        anchor,
-                        level: req.probe_level,
-                        shift: *shift,
-                        bar: *bar,
-                        epoch,
-                        written_at: now,
-                    },
-                )
-                .await;
-            }
-            info!(
-                "AMBIENCE BANK: tender {} param {} level {} anchor {} epoch {} — {} channel(s) at baseline {}",
-                req.sender_id, req.probe_param, req.probe_level, anchor, epoch,
-                self_channels.len(), baseline
+                &baseline,
+                anchor,
+                point,
             );
-
-            // Successor adoption, declared only (rung 8,
-            // designs/2026-10-11 XX + amendment): orphaned local
-            // ground on this dial re-parents to the tender that banks
-            // here — ONLY when this bank declares the takeover. The
-            // default is the frozen-prior doctrine: hints, until
-            // re-walked or declared. Liveness is the same truth the
-            // positions view derives; DB flip and registry move
-            // together; adopted rows keep their provenance.
-            if req.adopt_orphans == Some(true) {
-                let entries = state.curves.read().await.snapshot();
-                let live: Vec<String> = entries
-                    .iter()
-                    .map(|e| e.sender_id.clone())
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .collect();
-                let db_n = ambience_store::reparent_orphaned(
-                    &client,
-                    &req.group_id,
-                    &req.sender_id,
-                    &req.probe_param,
-                    &live,
-                )
-                .await
-                .unwrap_or(0);
-                let mem_n = state.ambiences.reparent(
-                    &req.group_id,
-                    &req.sender_id,
-                    &req.probe_param,
-                    &live,
-                );
-                if db_n > 0 || mem_n > 0 {
-                    info!(
-                        "AMBIENCE ADOPT: {} orphaned row(s) on dial {} re-parented to tender {} (registry points moved: {})",
-                        db_n, req.probe_param, req.sender_id, mem_n
-                    );
-                }
-            }
+            writes.ambience_rows.push(ambience_store::AmbienceRow {
+                group_id: req.group_id.clone(),
+                tender_id: req.sender_id.clone(),
+                ambience_param: req.probe_param.clone(),
+                channel: name.clone(),
+                baseline: baseline.clone(),
+                anchor,
+                level: req.probe_level,
+                shift: *shift,
+                bar: *bar,
+                epoch,
+                written_at: now,
+            });
         }
-    } else {
-        log::error!(
-            "curve point NOT persisted — archive DB unreachable (sender={} param={})",
-            req.sender_id,
-            req.probe_param
+        info!(
+            "AMBIENCE BANK: tender {} param {} level {} anchor {} epoch {} — {} channel(s) at baseline {}",
+            req.sender_id, req.probe_param, req.probe_level, anchor, epoch,
+            self_channels.len(), baseline
         );
+        // The adoption is owed only by a round that banked its ground
+        // here, as before: declared AND anchored.
+        writes.adopt_orphans = req.adopt_orphans == Some(true);
     }
 
     // The answer's delta: finite when the curve has a prior grid to
@@ -3834,7 +3871,7 @@ async fn probe_result(
         })
         .collect();
 
-    Ok(Json(serde_json::json!({
+    let answer = serde_json::json!({
         "sender_id": req.sender_id,
         "probe_param": req.probe_param,
         "probe_level": req.probe_level,
@@ -3859,7 +3896,13 @@ async fn probe_result(
         "self": self_json,
         "ambience": ambience,
         "k_retire": crate::probe_curves::k_retire(),
-    })))
+    });
+    // The answer goes out now; the archive gets its writes right after,
+    // on one connection, off the walker's clock.
+    if !writes.is_empty() {
+        tokio::spawn(run_probe_writes(state.clone(), writes));
+    }
+    Ok(Json(answer))
 }
 
 /// One self-channel's verdict inputs, gathered by the caller (which holds
@@ -5285,5 +5328,48 @@ mod ensure_once_tests {
         ensure_once(&cell, counting(&runs, true)).await.unwrap();
         ensure_once(&cell, counting(&runs, false)).await.unwrap();
         assert_eq!(runs.load(Ordering::SeqCst), 2);
+    }
+}
+
+#[cfg(test)]
+mod probe_writes_tests {
+    //! The walker's answer no longer waits for the archive (2026-11-26):
+    //! what a round owes the archive is collected first and written after.
+    use super::*;
+
+    fn round(adopt: Option<bool>) -> ProbeResultRequest {
+        ProbeResultRequest {
+            group_id: "room".to_string(),
+            sender_id: "walker".to_string(),
+            probe_param: "param_0".to_string(),
+            probe_level: 75.0,
+            push_start: "2026-11-26T13:25:00".to_string(),
+            pause_end: "2026-11-26T13:25:07".to_string(),
+            convergence_fraction: 0.9,
+            param_range: None,
+            ambience_anchor: None,
+            ambience_epoch: None,
+            adopt_orphans: adopt,
+        }
+    }
+
+    #[test]
+    fn a_round_that_banked_nothing_has_nothing_to_write() {
+        assert!(ProbeWrites::for_round(&round(None)).is_empty());
+    }
+
+    #[test]
+    fn a_banked_anchor_is_something_to_write() {
+        let mut w = ProbeWrites::for_round(&round(None));
+        w.anchors
+            .push(("listener".to_string(), "objective_0".to_string(), 0.5, 0.1));
+        assert!(!w.is_empty());
+    }
+
+    #[test]
+    fn a_round_that_declares_the_takeover_but_banked_no_ground_owes_nothing() {
+        // As before: the adoption ran only inside the ambience bank -- a
+        // declared takeover with no anchor or no standing ambience did nothing.
+        assert!(ProbeWrites::for_round(&round(Some(true))).is_empty());
     }
 }
