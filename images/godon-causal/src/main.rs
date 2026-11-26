@@ -3052,6 +3052,58 @@ pub(crate) fn cut_fraction(push_start: f64, pause_end: f64, cut: f64) -> f64 {
     }
 }
 
+/// What the engine saw in a probe's two windows when no receiver had both — the
+/// numbers on the refusal line, so a room's log tells "no rows" from "rows in one
+/// window" from "rows without usable values" without a debug log level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RefusalCensus {
+    pub receivers_push: usize,
+    pub receivers_pause: usize,
+    pub rows_push: usize,
+    pub rows_pause: usize,
+    /// receiver/channel pairs skipped because one window was empty
+    pub incomplete: usize,
+}
+
+/// The refusal line. The 422 alone said none of this: room 45570732023 (2026-11-25)
+/// had 135 refusals and not one line in the engine's log, so its diary counted
+/// requests, not banked points.
+pub(crate) fn refusal_line(
+    sender: &str,
+    param: &str,
+    level: f64,
+    push_start: f64,
+    cut: f64,
+    pause_end: f64,
+    c: &RefusalCensus,
+) -> String {
+    format!(
+        "characterize: REFUSED sender={} param={} level={} window=[{:.3},{:.3},{:.3}] \
+         receivers push={} pause={} rows push={} pause={} incomplete={} -- no receiver with both windows",
+        sender,
+        param,
+        level,
+        push_start,
+        cut,
+        pause_end,
+        c.receivers_push,
+        c.receivers_pause,
+        c.rows_push,
+        c.rows_pause,
+        c.incomplete
+    )
+}
+
+/// Channel values seen, over all receivers and channels of one window.
+fn rows_in(
+    series: &std::collections::HashMap<String, std::collections::HashMap<String, Vec<f64>>>,
+) -> usize {
+    series
+        .values()
+        .map(|per_recv| per_recv.values().map(Vec::len).sum::<usize>())
+        .sum()
+}
+
 async fn probe_result(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ProbeResultRequest>,
@@ -3109,9 +3161,21 @@ async fn probe_result(
     // Per-receiver, per-channel series for each window. Every holding
     // receiver's rows are in the window — each listener is characterized
     // separately (its own medians, its own curve).
+    // One archive connection for this request's window reads. Each read used to
+    // open its own: four handshakes on Yugabyte under a room's load were most of the
+    // 0.95-1.9 s an answer took, and the walker's patience ended at 2 s (room
+    // 45570732023, 2026-11-25).
+    let archive = state.reader.connect_archive().await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": format!("failed to connect to the archive: {}", e)
+            })),
+        )
+    })?;
     let push_by_recv = state
         .reader
-        .read_receiver_observations(&req.group_id, &req.sender_id, push_start, cut)
+        .read_receiver_observations(&archive, &req.group_id, &req.sender_id, push_start, cut)
         .await
         .map_err(|e| {
             (
@@ -3124,7 +3188,7 @@ async fn probe_result(
 
     let pause_by_recv = state
         .reader
-        .read_receiver_observations(&req.group_id, &req.sender_id, cut, pause_end)
+        .read_receiver_observations(&archive, &req.group_id, &req.sender_id, cut, pause_end)
         .await
         .map_err(|e| {
             (
@@ -3176,6 +3240,7 @@ async fn probe_result(
         }
     }
 
+    let mut incomplete = 0usize;
     let mut per_receiver: Vec<(String, ReceiverResult)> = Vec::new();
     for recv in &receivers {
         let push_by_ch = push_by_recv.get(recv);
@@ -3212,6 +3277,7 @@ async fn probe_result(
             // regression of the receiver-keyed-curves rewrite). Skip
             // instead: a probe without both windows is not a measurement.
             if !windows_complete(&push_obs, &pause_obs) {
+                incomplete += 1;
                 continue;
             }
             let push_median = median_f64(&push_obs);
@@ -3297,6 +3363,24 @@ async fn probe_result(
     }
 
     if per_receiver.is_empty() {
+        log::warn!(
+            "{}",
+            refusal_line(
+                &req.sender_id,
+                &req.probe_param,
+                req.probe_level,
+                push_start,
+                cut,
+                pause_end,
+                &RefusalCensus {
+                    receivers_push: push_by_recv.len(),
+                    receivers_pause: pause_by_recv.len(),
+                    rows_push: rows_in(&push_by_recv),
+                    rows_pause: rows_in(&pause_by_recv),
+                    incomplete,
+                },
+            )
+        );
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(serde_json::json!({
@@ -3368,12 +3452,12 @@ async fn probe_result(
     // from detection trials, not the curve registry.
     let self_push = state
         .reader
-        .read_self_observations(&req.group_id, &req.sender_id, push_start, cut)
+        .read_self_observations(&archive, &req.group_id, &req.sender_id, push_start, cut)
         .await
         .unwrap_or_default();
     let self_pause = state
         .reader
-        .read_self_observations(&req.group_id, &req.sender_id, cut, pause_end)
+        .read_self_observations(&archive, &req.group_id, &req.sender_id, cut, pause_end)
         .await
         .unwrap_or_default();
 
@@ -5060,5 +5144,76 @@ mod tests {
         assert_eq!(curves.len(), 2, "only this sender's this-param curves");
         let self_curve = curves.iter().find(|c| c["receiver_id"] == "S").unwrap();
         assert_eq!(self_curve["levels"].as_array().unwrap().len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod refusal_log_tests {
+    //! One line per refused probe (2026-11-25). Room 45570732023: 135 refusals and
+    //! not one line in the engine's log — the diary counted requests, not banked points.
+    use super::*;
+
+    fn line(c: RefusalCensus) -> String {
+        refusal_line("dc329dda", "param_0", 75.0, 1000.0, 1014.0, 1027.0, &c)
+    }
+
+    #[test]
+    fn no_rows_at_all_is_named() {
+        let l = line(RefusalCensus {
+            receivers_push: 0,
+            receivers_pause: 0,
+            rows_push: 0,
+            rows_pause: 0,
+            incomplete: 0,
+        });
+        assert!(l.contains("REFUSED"), "{l}");
+        assert!(l.contains("sender=dc329dda param=param_0 level=75"), "{l}");
+        assert!(
+            l.contains("receivers push=0 pause=0 rows push=0 pause=0 incomplete=0"),
+            "{l}"
+        );
+    }
+
+    #[test]
+    fn rows_in_one_window_only_are_told_from_no_rows() {
+        let l = line(RefusalCensus {
+            receivers_push: 5,
+            receivers_pause: 0,
+            rows_push: 9,
+            rows_pause: 0,
+            incomplete: 5,
+        });
+        assert!(
+            l.contains("receivers push=5 pause=0 rows push=9 pause=0 incomplete=5"),
+            "{l}"
+        );
+    }
+
+    #[test]
+    fn rows_without_usable_values_are_told_from_missing_rows() {
+        // receivers seen in both windows, but no channel value survived (null readings)
+        let l = line(RefusalCensus {
+            receivers_push: 5,
+            receivers_pause: 5,
+            rows_push: 0,
+            rows_pause: 0,
+            incomplete: 0,
+        });
+        assert!(
+            l.contains("receivers push=5 pause=5 rows push=0 pause=0 incomplete=0"),
+            "{l}"
+        );
+    }
+
+    #[test]
+    fn the_line_carries_the_two_windows() {
+        let l = line(RefusalCensus {
+            receivers_push: 0,
+            receivers_pause: 0,
+            rows_push: 0,
+            rows_pause: 0,
+            incomplete: 0,
+        });
+        assert!(l.contains("window=[1000.000,1014.000,1027.000]"), "{l}");
     }
 }
